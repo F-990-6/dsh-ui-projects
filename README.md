@@ -378,6 +378,30 @@ cases are named in `glass.css`:
 If a browser lacks `:has()`, none of the above matches and the skin degrades to translucent fills
 alone — nothing captured, nothing leaked.
 
+**The composer is the one surface reached by a `data-` hook of its own.** It is not a floating surface
+by role and it is not the frame, and it paints an opaque fill of its own
+(`--dsw-specific-input-major` → `#fff` / `#2c2c2e`), so the frame's frost stopped at its edge. It gets
+the material through `[data-composer-card]` — a hand-written attribute in `ui-conversation`, which the
+shell's own layout code queries too — and its frost sits on `[data-composer-card]::before` with the
+card carrying `isolation: isolate`. The blur is deliberately **not** on the card itself: the card is
+already `position: relative` and has no `fixed` descendant today, so putting it there would work and
+would also make the card a containing block for anything a future client renders inside it — the
+failure this project has already paid for twice. The shared fill token is not rebound, because five
+other surfaces paint with it.
+
+The composer's frost is in **every** degradation list — both tiers, the mobile query, and all four
+suppression branches — and under those four branches its fill goes opaque with every other one. That
+completeness is the part that is easy to miss and impossible to see: a block that forgets the composer
+leaves the one large card at full blur on the device or in the mode that asked for less.
+
+**The seat around it is deliberately untouched.** The shipped rule on the seat ramps to
+`var(--dsw-alias-bg-base)` over 36px and then holds that colour for the rest of the seat — invisible
+only while the token matches the page around it, which is exactly what a translucent skin stops being
+true. Restating it in glass terms was tried and seen in a screenshot of the running application: a
+glass-tinted rectangle spanning the column below the card, with a hard edge where the seat ends. The
+suite now asserts that the skin says nothing about the seat at all. A fade that dissolves content
+instead of painting a fill is a `mask-image` on the scroller, which is a different change.
+
 Two rules keep the result readable, and both are asserted by the suite:
 
 - **Label tokens are never redefined.** Text keeps its shipped colour, so every
@@ -635,7 +659,8 @@ a mobile viewport gets the reduced blur with no overflow, and — measuring the 
 screenshot pixels — text over the glass stays readable. Turning the switch off must
 restore the *exact* set of blurred surfaces and the original token values. It also checks the
 dark palette, the `prefers-contrast: more` branch in BOTH themes, the reduced tier on a device
-forced to be weak, the checklist's confirmation and its withdrawal through the card's reset, and the
+forced to be weak, the composer's own material and its step-downs (16px on a phone, 12px on a
+two-core device), the checklist's confirmation and its withdrawal through the card's reset, and the
 first frame with this bundle blocked (`--shot` writes `glass.png` and `glass-dark.png`).
 
 Dark mode is entered the way a skin actually sees it: by setting `data-ds-dark-theme` on `body`,

@@ -2324,6 +2324,189 @@ await test('the composer stat rows are hidden, and without moving the composer',
   excludes(declarations, 'overflow')
 })
 
+await test('the composer is given the frame material, with the frost kept off the card', async () => {
+  /*
+   * The composer's material, and the two structural properties that make it safe.
+   *
+   * `[data-composer-card]` is the shipped input bar and `[data-composer-seat]` the sticky wrapper
+   * around it; both are hand-written `data-` attributes in `ui-conversation`, which is what makes
+   * them usable at all — the card's own class is a build-hashed CSS-module name.
+   *
+   * The load-bearing distinction is WHERE the blur lives. On the card it would create a containing
+   * block for fixed descendants, which is the failure this project has paid for twice; on a
+   * pseudo-element it does not. So the assertion below is not decoration: it fails if somebody
+   * "simplifies" the rule by moving `backdrop-filter` onto the card, which would look tidier and
+   * reintroduce the whole class of bug the moment a popover is rendered inside the composer.
+   */
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  const css = String(harness.allCss())
+  const flat = css.replace(/\s+/g, ' ')
+
+  /** The declarations of the first rule whose selector is exactly `selector`. */
+  const bodyOf = (selector) => {
+    const at = flat.indexOf(`${selector}{`)
+    if (at === -1) return ''
+    const end = flat.indexOf('}', at)
+    return end === -1 ? '' : flat.slice(at + selector.length + 1, end)
+  }
+  const CARD = 'body[data-ui-project-liquid-glass="on"] [data-composer-card]'
+  const card = bodyOf(CARD)
+  const frost = bodyOf(`${CARD}::before`)
+  truthy(card !== '', 'the composer card has a rule')
+  truthy(frost !== '', 'and a frost layer of its own')
+
+  // The material, spelled the way the rest of the skin spells it.
+  contains(card, 'background: var(--lg-glass-bg)', 'the glass fill')
+  contains(card, 'border-radius: var(--lg-glass-radius)', 'the glass radius')
+  contains(card, 'isolation: isolate', 'and the stacking context the frost needs to land in')
+  // The blur is on the pseudo-element and NOT on the card. Two assertions, because the second is
+  // the one that keeps the containing-block class of bug out.
+  contains(frost, 'backdrop-filter: blur(var(--lg-glass-blur))', 'the frost blurs what is behind it')
+  contains(frost, '-webkit-backdrop-filter', 'with the prefixed twin')
+  contains(frost, 'z-index: -1', 'behind the card’s own fill')
+  contains(frost, 'pointer-events: none', 'without intercepting clicks')
+  excludes(card, 'backdrop-filter', 'the card itself never carries the filter')
+
+  /*
+   * The ring is the SHIPPED one, composed with the glass shadow rather than replacing it — and the
+   * glow it replaces is stated here too, so a later edit cannot turn "replaced" into "stacked".
+   */
+  contains(card, 'var(--dsw-elevation-stroke)', 'the shipped elevation ring is kept')
+  contains(card, 'var(--lg-glass-shadow)', 'beside the glass shadow')
+  contains(card, 'var(--lg-glass-inner-highlight)', 'and the inner highlight')
+  excludes(card, '--dsw-elevation-soft', 'while the shipped glow is replaced, not stacked with ours')
+
+  /*
+   * The seat, which this skin deliberately says NOTHING about.
+   *
+   * The obvious completion of this feature is to restate the seat's own fade in glass terms — the
+   * shipped rule ramps to `var(--dsw-alias-bg-base)`, and this skin makes that token transparent, so
+   * the ramp is inert. It was written, and a screenshot of the running application showed why it
+   * cannot be: the shipped rule ramps over 36px and then holds that colour for the whole seat, which
+   * is invisible only while it matches the page. A translucent hold is a visible rectangle spanning
+   * the column with a hard edge where the seat ends — and in the hero phase the seat does not even
+   * reach the bottom of the viewport, so the edge is in the middle of the page.
+   *
+   * So the assertion is an absence, with the reason attached: any future rule on the seat has to
+   * answer to it.
+   */
+  excludes(css, '[data-composer-seat]', 'the skin declares nothing about the composer seat')
+
+  /*
+   * The shared input token, which must NOT be rebound.
+   *
+   * `--dsw-specific-input-major` paints approval cards, the question card, four attachment surfaces
+   * and a chat element as well as the composer. Rebinding it is the obvious way to make the composer
+   * translucent and the wrong one: it would restyle five surfaces the specification never mentioned.
+   * This assertion is the guard, and it is why the material above is applied to the card instead.
+   */
+  excludes(css, '--dsw-specific-input-major:', 'the shared input fill is never rebound by this skin')
+
+  /*
+   * Every degradation block that reduces or removes the blur names the composer too.
+   *
+   * Both halves matter and both were found the same way — by reading the emitted sheet instead of
+   * remembering which blocks existed: the tier blocks and the mobile block would otherwise leave the
+   * composer at 20px while every other layer dropped, and the four suppression blocks would leave it
+   * as the one translucent, blurred surface on a page whose reader had asked for neither.
+   */
+  const blocksFor = (prelude) => {
+    const blocks = []
+    let from = 0
+    for (;;) {
+      const start = flat.indexOf(prelude, from)
+      if (start === -1) return blocks
+      let depth = 0
+      let end = flat.length
+      for (let index = start; index < flat.length; index += 1) {
+        if (flat[index] === '{') depth += 1
+        else if (flat[index] === '}') {
+          depth -= 1
+          if (depth === 0) {
+            end = index + 1
+            break
+          }
+        }
+      }
+      blocks.push(flat.slice(start, end))
+      from = end
+    }
+  }
+  for (const [prelude, label] of [
+    ["body[data-ui-project-liquid-glass=\"on\"][data-ui-perf='medium']", 'medium'],
+    ["body[data-ui-project-liquid-glass=\"on\"][data-ui-perf='low']", 'low'],
+    ['@media (max-width: 768px)', 'mobile'],
+  ]) {
+    const blocks = blocksFor(prelude)
+    truthy(blocks.length > 0, `the ${label} degradation block exists`)
+    truthy(
+      blocks.some((block) => block.includes('[data-composer-card]::before')),
+      `the ${label} block degrades the composer's frost too`,
+    )
+  }  for (const branch of [
+    '@supports not ((backdrop-filter: blur(1px))',
+    '@media (prefers-reduced-transparency: reduce)',
+    '@media (forced-colors: active)',
+    '@media (prefers-contrast: more)',
+  ]) {
+    const blocks = blocksFor(branch)
+    truthy(blocks.length > 0, `the ${branch} branch exists`)
+    /*
+     * `some`, not `blocks[0]`: three of these four conditions appear TWICE in the emitted sheet —
+     * once in `tokens.css` for the fills and once in `glass.css` for the blur — and the first one is
+     * always the token block. Asking the first match whether it suppresses a frosted layer asks the
+     * wrong block the right question, which is how the equivalent assertion in the first-paint test
+     * failed the first time it ran too.
+     */
+    truthy(
+      blocks.some((block) => block.includes('[data-composer-card]::before')),
+      `${branch} drops the composer's frost`,
+    )
+    truthy(
+      blocks.some((block) => /\[data-composer-card\]\{ background: var\(--dsw-alias-bg-base\)/.test(block)),
+      `${branch} takes the composer's fill opaque with every other one`,
+    )
+  }
+})
+
+await test('the composer hooks and the ring token still exist in the installed client', async () => {
+  /*
+   * Two anti-rot checks, because both halves of this feature are borrowed from the shipped client
+   * rather than owned by this package.
+   *
+   * The hooks: a `data-` attribute is a contract with somebody else's markup, and nothing in this
+   * repository would notice if the composer were rewritten without them — the rules would simply
+   * stop matching, and the composer would quietly go back to being opaque.
+   *
+   * The ring: `--dsw-elevation-stroke` is composed into the card's shadow. It is declared by the
+   * installed design system today. `every value the skin reads is one the skin or the design system
+   * declares` already fails on a dangling reference in general; this states the specific dependency,
+   * because a vanished ring is invisible in review and in a screenshot.
+   */
+  const shipped = await shippedDesignTokens()
+  for (const token of ['--dsw-elevation-stroke', '--dsw-elevation-stroke-color', '--dsw-alias-border-l2']) {
+    truthy(shipped.has(token), `the installed client declares ${token}`)
+  }
+
+  const { readFile } = await import('node:fs/promises')
+  const install = join(
+    process.env.LOCALAPPDATA ?? join(process.env.USERPROFILE ?? '', 'AppData', 'Local'),
+    'npm-cache',
+    '_npx',
+    '1e7f6d9597241db0',
+    'node_modules',
+    '@deepseek-ai',
+  )
+  const conversation = await readFile(join(install, 'dsh-client-ui-conversation', 'lib', 'client.js'), 'utf8')
+  const chat = await readFile(join(install, 'dsh-client-ui-chat', 'lib', 'client.js'), 'utf8')
+  contains(conversation, 'data-composer-card', 'the shipped conversation client still renders the card hook')
+  contains(conversation, 'data-composer-seat', 'and the seat hook')
+  // The seat is the shell's own layout reference too, in a different package — a second reason the
+  // hook is stable rather than incidental.
+  contains(chat, '[data-composer-seat]', 'and the chat client still queries the seat')
+})
+
 await test('the scoper refuses to emit a doubled project marker', async () => {
   /*
    * The bug this catches, in full.

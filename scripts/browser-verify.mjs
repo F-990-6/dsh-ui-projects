@@ -417,6 +417,15 @@ const HELPERS = `
 const PROBE = `(() => {${HELPERS}
   const blurred = sweepBlur();
   const body = getComputedStyle(document.body);
+  /*
+   * The composer, read the same way the frame is: the fill from the card and the blur from the
+   * pseudo-element that carries it. Nothing here assumes the rules exist — a missing hook or a
+   * missing pseudo answers null and the assertions below say so.
+   */
+  const card = document.querySelector('[data-composer-card]');
+  const seat = document.querySelector('[data-composer-seat]');
+  const cardStyle = card === null ? null : getComputedStyle(card);
+  const frostStyle = card === null ? null : getComputedStyle(card, '::before');
   return {
     blurredCount: blurred.length,
     blurred: blurred.slice(0, 10),
@@ -427,6 +436,17 @@ const PROBE = `(() => {${HELPERS}
     systemAttr: document.documentElement.getAttribute('data-ui-projects'),
     frames: document.querySelectorAll('[data-rightbar-col]').length,
     overlay: document.querySelectorAll('[data-shell-overlay]').length,
+    composer: {
+      cardFound: card !== null,
+      seatFound: seat !== null,
+      fill: cardStyle === null ? null : cardStyle.backgroundColor,
+      isolation: cardStyle === null ? null : cardStyle.isolation,
+      shadow: cardStyle === null ? null : cardStyle.boxShadow,
+      radius: cardStyle === null ? null : cardStyle.borderRadius,
+      frostBlur: frostStyle === null ? null : String(frostStyle.backdropFilter || frostStyle.webkitBackdropFilter || ''),
+      frostRadius: frostStyle === null ? null : frostStyle.borderRadius,
+      seatFade: seat === null ? null : String(getComputedStyle(seat).backgroundImage),
+    },
     tokens: {
       // Read from the BODY: that is where the shipped client declares its tokens,
       // and where a project stylesheet therefore has to override them.
@@ -738,6 +758,25 @@ try {
     await session.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/settings/*', requestStage: 'Request' }] })
     page.on('Fetch.requestPaused', (params) => {
       /*
+       * Answer a paused request, tolerating the one answer that can legitimately fail.
+       *
+       * A paused request is discarded when the page navigates away from it, and answering it
+       * afterwards fails with `Invalid InterceptionId`. This suite navigates constantly, so the race
+       * is not avoidable — and it is not a failure of anything. It must still be CAUGHT: these sends
+       * are fire-and-forget, and an unhandled rejection does not fail an assertion, it aborts the
+       * entire run mid-suite. That is how this was found: a full green run up to the mobile check,
+       * then a crash with no verdict at all.
+       *
+       * Anything else is recorded rather than thrown, so a real interception problem shows up in the
+       * console assertions instead of silently disappearing.
+       */
+      const answer = (method, request) =>
+        session.send(method, request).catch((err) => {
+          const message = String(err?.message ?? err)
+          if (/Invalid InterceptionId/i.test(message)) return
+          pageErrors.push(`[no-write] ${method}: ${message}`)
+        })
+      /*
        * Every paused request MUST be answered or the page hangs, so the decision is wrapped: a
        * handler that threw would present as a frozen application rather than as a failed assertion.
        */
@@ -746,13 +785,13 @@ try {
         const carriesChecks = String(params.request.postData ?? '').includes('checks')
         if (isWrite && carriesChecks) {
           refusedWrites += 1
-          void session.send('Fetch.failRequest', { requestId: params.requestId, errorReason: 'Aborted' })
+          void answer('Fetch.failRequest', { requestId: params.requestId, errorReason: 'Aborted' })
           return
         }
       } catch {
         /* fall through to continuing the request */
       }
-      void session.send('Fetch.continueRequest', { requestId: params.requestId })
+      void answer('Fetch.continueRequest', { requestId: params.requestId })
     })
   }
 
@@ -901,6 +940,41 @@ try {
     equal(after.tokens.accent, '#007aff', "the skin's own accent reaches the page")
     truthy(before.tokens.brand !== '', 'the shipped brand accent is present to compare against')
     equal(after.tokens.brand, before.tokens.brand, 'and the skin did not re-brand it')
+
+    /*
+     * The composer, which is the surface the specification never named.
+     *
+     * Measured, not asserted from the stylesheet: the fill has to actually change, the blur has to
+     * be on the pseudo-element, and the pseudo-element has to be the thing that carries it — the card
+     * itself must stay free of `backdrop-filter`, because that property is what would create a
+     * containing block for a fixed descendant.
+     */
+    truthy(after.composer.cardFound, 'the composer card is in the document')
+    truthy(after.composer.seatFound, 'and the seat it sits in')
+    /*
+     * The alpha, read from the computed colour rather than pattern-matched for a `/`: Chrome
+     * serialises a computed `backgroundColor` in the legacy comma form (`rgba(255, 255, 255, 0.58)`),
+     * so a translucency test written the way the token values are written would fail on a correct
+     * page. `undefined` means the colour has no alpha channel, i.e. it is opaque.
+     */
+    const alphaOf = (value) => /rgba\([^)]*,\s*([\d.]+)\)\s*$/.exec(String(value))?.[1]
+    equal(alphaOf(before.composer.fill), undefined, `the shipped card is opaque (${before.composer.fill})`)
+    truthy(
+      after.composer.fill !== before.composer.fill,
+      `the card's fill changed: ${before.composer.fill} → ${after.composer.fill}`,
+    )
+    truthy(
+      Number(alphaOf(after.composer.fill)) < 1,
+      `and it is now translucent (${after.composer.fill})`,
+    )
+    contains(after.composer.frostBlur, 'blur', `the frost is on the pseudo-element (${after.composer.frostBlur})`)
+    contains(after.composer.frostBlur, '20px', `at the full radius (${after.composer.frostBlur})`)
+    equal(after.composer.isolation, 'isolate', 'with the stacking context the frost needs to land in')
+    /*
+     * The seat is deliberately NOT asserted here. The skin declares no rule about it — that absence
+     * is asserted in `suite` — and a browser-side value comparison would be vacuous: with the skin
+     * off no skin rule applies, so the two readings are equal whatever the skin says.
+     */
   })
 
   await test('the switch reports its state accessibly after the change', async () => {
@@ -1013,6 +1087,14 @@ try {
     equal(restored.tokens.layer1, before.tokens.layer1, 'the layer-1 token is back to its original value')
     equal(restored.tokens.sidebar, before.tokens.sidebar, 'the sidebar fill is back to its original value')
     equal(restored.tokens.accent, '', 'the skin vocabulary is gone')
+    /*
+     * The composer too, and the comparison is against the RECORDED value rather than a colour written
+     * here: hard-coding `#fff` would fail on a dark-themed instance for a reason that has nothing to
+     * do with the skin, which is a mistake this suite has already made once.
+     */
+    equal(restored.composer.fill, before.composer.fill, 'the composer fill is back to the shipped opaque value')
+    equal(restored.composer.frostBlur, before.composer.frostBlur, 'and its frost layer is gone')
+    equal(restored.composer.isolation, before.composer.isolation, 'with the stacking context it declared')
   })
 
   await test('a mobile-sized viewport gets the reduced blur with no overflow', async () => {
@@ -1053,6 +1135,16 @@ try {
           width: window.innerWidth,
           mobileQuery: matchMedia('(max-width: 768px)').matches,
           resolvedRadius: getComputedStyle(document.body).getPropertyValue(${JSON.stringify(MOBILE_BLUR_TOKEN)}).trim(),
+          /*
+           * The composer's own frost, read from its pseudo-element. It is in this probe because a
+           * phone is where it matters most — the card is nearly the full width of the viewport — and
+           * because a degradation block that forgot it would otherwise pass this test while leaving
+           * the one large surface at the desktop radius.
+           */
+          composerBlur: (() => {
+            const card = document.querySelector('[data-composer-card]');
+            return card === null ? null : String(getComputedStyle(card, '::before').backdropFilter || '');
+          })(),
         };
       })()`)
       equal(mobile.width, 390, 'the emulated viewport applied')
@@ -1065,6 +1157,11 @@ try {
           `mobile query ${mobile.mobileQuery}; blurred ${JSON.stringify(mobile.blurred)}`,
       )
       equal(mobile.overflow, false, 'the skin introduces no horizontal overflow')
+      contains(
+        String(mobile.composerBlur),
+        `${MOBILE_BLUR_PX}px`,
+        `the composer steps down with everything else on a phone (${mobile.composerBlur})`,
+      )
     } finally {
       await session.send('Emulation.clearDeviceMetricsOverride')
     }
@@ -1522,9 +1619,11 @@ try {
     const readTier = `(() => {
       const column = document.querySelector('[data-ui-skin-column]')
       const frame = column === null ? null : column.parentElement
+      const card = document.querySelector('[data-composer-card]')
       return {
         tier: document.body.getAttribute('data-ui-perf'),
         blur: frame === null ? null : getComputedStyle(frame, '::before').backdropFilter,
+        composerBlur: card === null ? null : String(getComputedStyle(card, '::before').backdropFilter || ''),
       }
     })()`
     const original = await evaluate(session, 'navigator.hardwareConcurrency')
@@ -1536,6 +1635,16 @@ try {
       const weak = await evaluate(session, readTier)
       equal(weak.tier, 'low', 'two cores cap the tier at low')
       contains(String(weak.blur), '12px', `and the frost drops to the low radius (${weak.blur})`)
+      /*
+       * And the composer drops with it. Without this the tier block would leave the one card the
+       * reader types into at the desktop radius on a device that can afford least — the same
+       * omission as the suppression branches, in the other direction.
+       */
+      contains(
+        String(weak.composerBlur),
+        '12px',
+        `the composer's frost drops too on a capped device (${weak.composerBlur})`,
+      )
     } finally {
       await session.send('Emulation.setHardwareConcurrencyOverride', { hardwareConcurrency: original })
     }
@@ -1557,6 +1666,11 @@ try {
     // The stronger half: whatever tier was chosen, the frost matches THAT tier's radius, so the
     // attribute and the stylesheet cannot drift apart.
     contains(String(capable.blur), RADIUS[capable.tier], `and the frost is at ${capable.tier} radius (${capable.blur})`)
+    contains(
+      String(capable.composerBlur),
+      RADIUS[capable.tier],
+      `and so is the composer's (${capable.composerBlur})`,
+    )
   })
 
   /*

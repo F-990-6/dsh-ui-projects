@@ -268,6 +268,86 @@ body[data-ds-dark-theme] {
   box-shadow: var(--lg-glass-shadow), var(--lg-glass-inner-highlight);
 }
 
+/* ── the composer ─────────────────────────────────────────────────────────── */
+/*
+ * The input card was the last opaque surface in the application: it paints
+ * `--dsw-specific-input-major`, which resolves through `--dsw-static-neutral-bluish-00` /
+ * `-850` to `#fff` in light and `#2c2c2e` in dark, so the frame's frost stopped at its edge. This
+ * is a specification gap rather than a defect: the specification names floating surfaces — dialog,
+ * menu, listbox, tooltip — and the composer is none of those.
+ *
+ * ## Why the blur is on a pseudo-element rather than on the card
+ *
+ * The card is ALREADY `position: relative` (measured in the shipped `InputBar_module.card`), so it is
+ * already the containing block for every positioned descendant that has no closer one: adding
+ * `backdrop-filter` to it could not move a single `absolute` child. And it has no `fixed` descendant
+ * to move — every popover in the composer's neighbourhood is portalled to `document.body` (the model
+ * menu, the four stat dialogs, the attachment drop overlay and the lightbox, all verified in the
+ * deployed bundles), while the one menu that renders in place, `[data-trigger-menu]`, is
+ * `position: absolute` inside an ancestor that is positioned already.
+ *
+ * So the containing-block rule would have nothing to act on today. The pseudo-element is still the
+ * right construction, for a reason about tomorrow rather than today: `isolation` plus a `::before`
+ * keep the card free of the property that creates the containing block, so a future client that
+ * renders a popover INSIDE the card cannot be captured by it. That is the failure this project has
+ * already paid for twice — a settings panel collapsing into a column, and a dialog re-anchoring to a
+ * sidebar — and the frame's own frost is built the same way, for the same reason.
+ *
+ * ## Why `isolation` is required rather than decorative
+ *
+ * `z-index: -1` needs a stacking context to land in. Without one the pseudo-element escapes to the
+ * nearest ancestor context — here the seat, which already carries `z-index: 7` — and the seat's own
+ * background would paint over the frost. `isolation: isolate` supplies that context without creating
+ * a containing block for `fixed` descendants, which is the same distinction the frame relies on.
+ *
+ * ## The token this deliberately does NOT touch
+ *
+ * `--dsw-specific-input-major` is shared: approval cards, the question card, four attachment surfaces
+ * and a chat element all paint with it. Rebinding it would restyle five surfaces the specification
+ * never asked about, so the material is applied here, to the card.
+ *
+ * `--lg-glass-radius` is 22px, exactly the radius the shipped card already declares: the material
+ * vocabulary is adopted, the geometry is not changed.
+ */
+[data-composer-card] {
+  isolation: isolate;
+  background: var(--lg-glass-bg);
+  border-radius: var(--lg-glass-radius);
+  /*
+   * Three shadows, and the first is the SHIPPED ring rather than one of ours.
+   *
+   * `--dsw-elevation-stroke` is `0 0 0 .5px var(--dsw-elevation-stroke-color)`, and the card sets
+   * that colour to `--dsw-alias-border-l2` locally — so keeping the ring keeps the design system's
+   * elevation semantics, including its colour and any future change to it. Both tokens are declared
+   * in the installed frontend, and `suite` asserts that they still are: a token that disappears
+   * should fail a test, not silently paint nothing. No `var()` fallback is written here on purpose,
+   * because a fallback would turn that loud failure back into a quiet one.
+   *
+   * What is REPLACED rather than kept: `--dsw-elevation-soft` is that ring plus two soft glows
+   * (`0 4px 16px #00000008, 0 0 24px #00000008`). Composing all four would stack two elevations on
+   * one surface, so the glows give way to `--lg-glass-shadow`. This is a deliberate change of the
+   * glow's shape, not an oversight: the shipped ring survives, the shipped glow does not.
+   */
+  box-shadow: var(--dsw-elevation-stroke), var(--lg-glass-shadow), var(--lg-glass-inner-highlight);
+}
+
+/*
+ * The frost itself: one layer, for the same reason the frame has one. The card's fill is
+ * translucent, so this shows through it — and `backdrop-filter` blurs what is BEHIND a surface, the
+ * messages scrolling under the input box, never the text on it.
+ */
+[data-composer-card]::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: var(--lg-glass-radius);
+  backdrop-filter: blur(var(--lg-glass-blur)) saturate(var(--lg-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-glass-blur)) saturate(var(--lg-glass-saturate));
+}
+
+
 /* ── the composer's stat rows — cross-package, by request ─────────────────── */
 /*
  * Two rows of small text sit under the composer: dsh's own token and efficiency pills, and
@@ -329,9 +409,34 @@ body .cm-root {
    transparency goes. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   :where(:has(> [data-ui-skin-column]))::before,
+  [data-composer-card]::before,
   :where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+  }
+
+  /*
+   * And the composer's fill goes opaque with them, because a translucent fill is only readable
+   * while something is blurring what is behind it. `--dsw-alias-bg-base` is opaque under every one
+   * of these four queries — asserted, not assumed — so the composer follows the frame instead of
+   * becoming the one surface that stays see-through. Without `backdrop-filter` the card would
+   * otherwise show the message text scrolling under it at 42% opacity, which is the exact failure
+   * the checklist item `text-readable` exists for.
+   *
+   * The same declaration appears in all four suppression blocks. That repetition is the price of
+   * writing a component rule instead of a token override: the branch conditions are different
+   * at-rules and cannot be combined.
+   *
+   * The SEAT is deliberately not treated the same way, and the reason is worth keeping. The shipped
+   * rule on it ramps to `var(--dsw-alias-bg-base)` over 36px and then HOLDS that colour for the rest
+   * of the seat, which is invisible only while the token matches the page around it. Restating it
+   * with the translucent glass fill was tried, and a screenshot of the running application showed
+   * exactly what that shape implies: a glass-tinted rectangle spanning the column below the card,
+   * with a hard edge where the seat ends — a visible band, not a fade. Leaving the shipped rule
+   * alone is the honest option, so this skin has no opinion about the seat at all.
+   */
+  [data-composer-card] {
+    background: var(--dsw-alias-bg-base);
   }
 }
 
@@ -357,10 +462,17 @@ body .cm-root {
   }
 
   :where(:has(> [data-ui-skin-column]))::before,
+  [data-composer-card]::before,
   :where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
+
+  /* The composer's fill, opaque with the rest — see the note in the `@supports not` block. */
+  [data-composer-card] {
+    background: var(--dsw-alias-bg-base);
+  }
+
 }
 
 /* The platform owns the palette in forced-colors mode, so the skin steps back entirely —
@@ -374,10 +486,17 @@ body .cm-root {
   }
 
   :where(:has(> [data-ui-skin-column]))::before,
+  [data-composer-card]::before,
   :where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
+
+  /* The composer's fill, opaque with the rest — see the note in the `@supports not` block. */
+  [data-composer-card] {
+    background: var(--dsw-alias-bg-base);
+  }
+
 }
 
 /* ── the effect tier the device can afford ────────────────────────────────── */
@@ -398,12 +517,14 @@ body .cm-root {
  * rules above, which is exactly what a later-specified override of the same property needs.
  */
 body[data-ui-perf='medium'] :where(:has(> [data-ui-skin-column]))::before,
+body[data-ui-perf='medium'] [data-composer-card]::before,
 body[data-ui-perf='medium'] :where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
   backdrop-filter: blur(var(--lg-glass-blur-medium)) saturate(var(--lg-glass-saturate));
   -webkit-backdrop-filter: blur(var(--lg-glass-blur-medium)) saturate(var(--lg-glass-saturate));
 }
 
 body[data-ui-perf='low'] :where(:has(> [data-ui-skin-column]))::before,
+body[data-ui-perf='low'] [data-composer-card]::before,
 body[data-ui-perf='low'] :where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
   backdrop-filter: blur(var(--lg-glass-blur-low)) saturate(var(--lg-glass-saturate));
   -webkit-backdrop-filter: blur(var(--lg-glass-blur-low)) saturate(var(--lg-glass-saturate));
@@ -427,19 +548,33 @@ body[data-ui-perf='low'] :where([role='dialog'], [role='menu'], [role='listbox']
   }
 
   :where(:has(> [data-ui-skin-column]))::before,
+  [data-composer-card]::before,
   :where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
+
+  /* The composer's fill, opaque with the rest — see the note in the `@supports not` block. Under
+     this query every fill in `tokens.css` has gone opaque, and the composer would otherwise be the
+     only translucent surface left on a page someone asked for more contrast on. */
+  [data-composer-card] {
+    background: var(--dsw-alias-bg-base);
+  }
+
 }
 
 /* ── narrow viewports ─────────────────────────────────────────────────────── */
 
 /* A smaller radius is both cheaper and more correct on a phone, where the surface behind the
    glass is close to the glass. The value comes from a token rather than a second literal, so
-   the rule and the value cannot drift apart. */
+   the rule and the value cannot drift apart.
+
+   The composer is in this list for the same reason it is in the tier lists: on a phone it is
+   nearly the full width of the viewport, so it is the one card whose blur is worth reducing
+   there. Found by reading the emitted sheet rather than by remembering the block existed. */
 @media (max-width: 768px) {
   :where(:has(> [data-ui-skin-column]))::before,
+  [data-composer-card]::before,
   :where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
     backdrop-filter: blur(var(--lg-glass-blur-mobile)) saturate(var(--lg-glass-saturate));
     -webkit-backdrop-filter: blur(var(--lg-glass-blur-mobile)) saturate(var(--lg-glass-saturate));

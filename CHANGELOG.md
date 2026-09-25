@@ -25,6 +25,89 @@ Verification vocabulary used below:
 
 ---
 
+## Round 27 — the composer gets the frame material
+
+**Status: done. `suite` 558 assertions / 0 failing, `host` green, `browser` 122 assertions / 0
+failing. `settings.yaml`'s `ui-projects` record byte-identical after the run. Snapshot 41.**
+
+The composer was the last opaque surface in the application. This is a specification gap rather than
+a defect — the specification names floating surfaces (dialog, menu, listbox, tooltip) and the
+composer is none of those — but it left the one element the reader types into painting `#fff` /
+`#2c2c2e` on top of the frame's frost.
+
+**Changed**
+
+- `[data-composer-card]` takes the material: `--lg-glass-bg`, `--lg-glass-radius` (22px, exactly the
+  radius the shipped card already used), and `box-shadow: var(--dsw-elevation-stroke),
+  var(--lg-glass-shadow), var(--lg-glass-inner-highlight)` — the shipped ring kept, the shipped glow
+  replaced rather than stacked.
+- Its frost lives on `[data-composer-card]::before` with `z-index: -1`, and the card carries
+  `isolation: isolate` to give that layer a stacking context to land in.
+- The composer's frost is added to **every** degradation list: medium tier, low tier, the mobile
+  query, and all four suppression branches (`@supports not`, `prefers-reduced-transparency`,
+  `forced-colors`, `prefers-contrast: more`). Under the four suppression branches the card's fill
+  goes opaque with every other one.
+
+**Three decisions worth recording**
+
+1. **The blur is on a pseudo-element, not on the card.** The card is already `position: relative`, so
+   it is already the containing block for its positioned descendants, and it has no `fixed`
+   descendant — every popover in its neighbourhood is portalled to `document.body` (verified in the
+   deployed bundles: the model menu, four stat dialogs, the attachment overlay and lightbox). So the
+   containing-block rule would have nothing to act on *today*; the pseudo-element is there for
+   tomorrow, so that a future client rendering a popover inside the composer cannot be captured by
+   it. `suite` asserts the absence of `backdrop-filter` on the card, and a sabotage run that moved it
+   there failed exactly that assertion.
+2. **The shared fill token is not rebound.** `--dsw-specific-input-major` paints approval cards, the
+   question card, four attachment surfaces and a chat element as well as the composer. Rebinding it is
+   the obvious way to make the composer translucent and the wrong one. `suite` asserts the skin never
+   declares it, and a sabotage run that did failed that assertion.
+3. **The seat's fade is left alone — after trying the opposite.** The shipped rule ramps to
+   `var(--dsw-alias-bg-base)` over 36px and then HOLDS that colour for the rest of the seat, which is
+   invisible only while the token matches the page around it; this skin makes it transparent, so the
+   ramp is inert. Restating it with the glass fill was written, built, and **seen in a screenshot of
+   the running application**: a glass-tinted rectangle spanning the column below the card, with a hard
+   edge where the seat ends (and in the hero phase the seat does not reach the bottom of the viewport,
+   so that edge is in the middle of the page). It was reverted, and `suite` now asserts that the skin
+   declares nothing at all about the seat, with the reason attached. A fade that dissolves content
+   rather than painting a fill is a `mask-image` on the scroller — a different change, not this one.
+
+**Also fixed, found by the run crashing.** `--no-write`'s Fetch handler answered paused requests with
+fire-and-forget sends. CDP discards a paused request when the page navigates away from it, answering
+one then fails with `Invalid InterceptionId`, and an unhandled rejection does not fail an assertion —
+it aborts the whole run. The first full run of this round was green through the mobile check and then
+died with no verdict at all. Now the race is caught and ignored, and anything else is recorded in the
+console assertions instead of vanishing.
+
+**Found by reading the emitted sheet rather than from memory, twice.** The mobile block
+(`max-width: 768px`) was not in the plan — it was noticed while inspecting the built CSS, and it
+would have left the composer at the desktop radius on a phone. And `forced-colors` made the four
+suppression branches, not three.
+
+**Negative results.** The seat fade (above). And a stale build: the first run of the new assertions
+failed on the mobile clause because the bundle had not been rebuilt — which is also the proof that
+the clause bites.
+
+**Verification:** `suite` 558 / 0, `host` green, `browser` 122 / 0 with the composer measured in a
+real Chrome — the fill changes and is translucent, the blur is on the pseudo-element at 20px, the card
+carries no `backdrop-filter`, and the frost steps down to 16px on a phone and 12px on a two-core
+device. Two sabotage runs, each failing exactly its own assertion. The material was also judged by
+eye: `E:\dsh\.shots\glass-closed.png` (light, dialog closed) shows the card reading as glass over the
+page background, with the band from the reverted seat rule visibly gone.
+**Not measured end to end:** the composer's fill in dark mode. It is covered by construction — the
+card's rule is asserted, the dark token rebinding is asserted, and the dark branch is asserted to be
+in force — but no assertion reads the card's computed fill with `data-ds-dark-theme` set, so that
+combination rests on the pieces rather than on a measurement of its own.
+
+**One observation, not attributable.** `ui-theme.preference` changed from `dark` to `light` during
+this round. The successful run's first screenshot (22:28:33) is already light and the settings write
+is at 22:28:40, so the change happened before that run's theme phases — it was not the dark phase of
+that run. The suite does drive the same attribute the shipped theme plugin persists, so a run remains
+a plausible cause in general; it is recorded rather than explained away, and the timing here does not
+implicate this run.
+
+---
+
 ## Round 26 — withdrawing a recorded verification
 
 **Status: done. `suite` 517 assertions / 0 failing, `host` green, `browser` 108 assertions / 0
