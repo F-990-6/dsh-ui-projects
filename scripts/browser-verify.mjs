@@ -958,6 +958,45 @@ try {
   })
 
   /*
+   * The effect tier, against a device forced to be weak.
+   *
+   * `Emulation.setHardwareConcurrencyOverride` applies to the TARGET, so it has to be set BEFORE the
+   * page loads: the tier is decided once at `apply` time from the signals available then, not
+   * polled. Both directions are checked, because a mechanism that only ever lowered the tier would
+   * pass a one-sided test while leaving every capable machine on the cheap treatment.
+   *
+   * The blur is read from the frame's `::before` — the one frost layer — so this measures what the
+   * stylesheet resolved, not what the attribute claims.
+   */
+  await test('a low-capacity device gets the reduced tier, and a capable one keeps the full tier', async () => {
+    const readTier = `(() => {
+      const column = document.querySelector('[data-ui-skin-column]')
+      const frame = column === null ? null : column.parentElement
+      return {
+        tier: document.body.getAttribute('data-ui-perf'),
+        blur: frame === null ? null : getComputedStyle(frame, '::before').backdropFilter,
+      }
+    })()`
+    const original = await evaluate(session, 'navigator.hardwareConcurrency')
+    truthy(typeof original === 'number' && original > 0, `the browser reports a core count (${original})`)
+
+    try {
+      await session.send('Emulation.setHardwareConcurrencyOverride', { hardwareConcurrency: 2 })
+      await navigate(pageUrl)
+      const weak = await evaluate(session, readTier)
+      equal(weak.tier, 'low', 'two cores cap the tier at low')
+      contains(String(weak.blur), '12px', `and the frost drops to the low radius (${weak.blur})`)
+    } finally {
+      await session.send('Emulation.setHardwareConcurrencyOverride', { hardwareConcurrency: original })
+    }
+
+    await navigate(pageUrl)
+    const capable = await evaluate(session, readTier)
+    equal(capable.tier, 'high', 'a capable device returns to the tier the skin declares')
+    contains(String(capable.blur), '20px', `and the frost is back at full radius (${capable.blur})`)
+  })
+
+  /*
    * Step 5, verified the hard way — and deliberately LAST, because it blocks the bundle.
    *
    * Everything above drives the RUNNING application, and a skin that is correct once the bundle

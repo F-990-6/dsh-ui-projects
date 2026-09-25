@@ -11,6 +11,7 @@
  */
 
 const React = require('react')
+const { rankOf } = require('./project-constants.js')
 
 /**
  * @param {object} props
@@ -68,6 +69,17 @@ function UiProjectsSection(props) {
 
   const activeNames = snapshot.projects.filter((project) => project.enabled).map((project) => project.name)
   const skinProjects = snapshot.projects.filter((project) => project.type === 'skin')
+  /*
+   * Any active project whose DECLARED tier is above the tier in force has been demoted — by the
+   * device, since that is the only thing that lowers it. Naming the project and the tier it now
+   * runs at is what keeps a cheaper material from reading as a rendering bug.
+   */
+  const demoted =
+    snapshot.perfLevel === undefined
+      ? []
+      : snapshot.projects.filter(
+          (project) => project.enabled && rankOf(project.perfLevel) > rankOf(snapshot.perfLevel),
+        )
 
   const children = [
     React_.createElement(
@@ -97,6 +109,13 @@ function UiProjectsSection(props) {
       React_.createElement('span', null, t.storage[snapshot.storageKind] ?? t.storage.local),
     ),
     skinProjects.length > 1 ? React_.createElement('p', { className: 'uip-hint', key: 'skinhint' }, t.skinHint) : null,
+    demoted.length > 0
+      ? React_.createElement(
+          'p',
+          { className: 'uip-hint', key: 'perfhint' },
+          t.perfDemoted(demoted.map((project) => project.name).join(', '), t.perf[snapshot.perfLevel]),
+        )
+      : null,
     failure === undefined ? null : React_.createElement('p', { className: 'uip-error', key: 'failure' }, failure),
     snapshot.projects.length === 0
       ? React_.createElement(
@@ -116,6 +135,7 @@ function UiProjectsSection(props) {
               t,
               pending: pending[project.id] === true,
               activeNames,
+              outOfOrder: snapshot.outOfOrderId === project.id,
               onToggle: () => run(project.id, store.toggle(project.id)),
               onReset: () => run(project.id, store.resetOne(project.id)),
             }),
@@ -131,7 +151,7 @@ function UiProjectsSection(props) {
  * @param {object} input
  * @returns {any}
  */function createCard(input) {
-  const { React: R, project, t, pending, activeNames, onToggle, onReset } = input
+  const { React: R, project, t, pending, activeNames, outOfOrder, onToggle, onReset } = input
   const name = project.name
 
   const badges = [
@@ -142,6 +162,22 @@ function UiProjectsSection(props) {
     ),
     R.createElement('span', { className: 'uip-badge', key: 'scope' }, t.scopes[project.scope] ?? project.scope),
   ]
+  const perfLabel = t.perf?.[project.perfLevel]
+  if (perfLabel !== undefined) {
+    badges.push(R.createElement('span', { className: 'uip-badge', key: 'perf', 'data-kind': 'perf' }, perfLabel))
+  }
+  /*
+   * The execution order, shown only where it means something.
+   *
+   * A skin is alone by policy and never sorted, so its priority is noise; among enhancements it is
+   * the difference between two projects' effects landing in one order or the other, which is worth
+   * being able to read off the card.
+   */
+  if (project.type === 'enhancement' && t.priority !== undefined) {
+    badges.push(
+      R.createElement('span', { className: 'uip-badge', key: 'priority', 'data-kind': 'priority' }, t.priority(project.priority)),
+    )
+  }
   for (const feature of project.supports) {
     const label = t.supports[feature]
     if (label !== undefined) badges.push(R.createElement('span', { className: 'uip-badge', key: feature }, label))
@@ -172,6 +208,14 @@ function UiProjectsSection(props) {
   }
   if (replacements.length > 0) {
     body.push(R.createElement('p', { className: 'uip-description', key: 'replaces' }, t.replacedBy(replacements.join(', '))))
+  }
+  /*
+   * This project's position is one the next load will change. A click applies what the user asked
+   * for and does not re-order the projects already running — re-applying them to reorder would
+   * make the interface flicker — so the consequence is stated here instead of being invisible.
+   */
+  if (outOfOrder === true) {
+    body.push(R.createElement('p', { className: 'uip-hint', key: 'order' }, t.orderHint(name)))
   }
   if (project.error !== undefined) {
     body.push(

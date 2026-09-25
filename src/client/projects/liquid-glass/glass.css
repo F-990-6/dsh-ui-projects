@@ -91,6 +91,15 @@ body {
    */
   --lg-glass-blur-mobile: 16px;
   --lg-glass-blur-menu: 30px;
+  /*
+   * The two degradation tiers the runtime selects between by publishing `data-ui-perf`, and the
+   * reason the specification's "12–16px on a low-end device" has values to name at all.
+   *
+   * The FULL tier is `--lg-glass-blur` (20px) and needs no token of its own: it is what the rules
+   * already use when no attribute is present.
+   */
+  --lg-glass-blur-medium: 16px;
+  --lg-glass-blur-low: 12px;
   --lg-accent-alt: #5856d6;
   --lg-accent-alt-dark: #5e5ce6;
 }
@@ -357,6 +366,35 @@ body .cm-root {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
+}
+
+/* ── the effect tier the device can afford ────────────────────────────────── */
+
+/*
+ * `perfLevel` on a project is a declaration of what it was designed for; the runtime compares the
+ * heaviest declaration among the active projects against the device and writes the LOWER of the two
+ * as `data-ui-perf` on the body. These two blocks are what reads it.
+ *
+ * AUTHORED AS `body[…]`, AND THAT IS NOT COSMETIC. The scoper replaces a leading `html`/`:root`
+ * with the project marker, and the marker is a `body[…]` selector — so `html[data-ui-perf='low']`
+ * here would compile to `body[marker][data-ui-perf='low']` and work, while the same attribute
+ * written on `<html>` by the runtime would match nothing at all. Naming the element the attribute
+ * actually lives on makes that failure impossible to reintroduce by accident. `runtime.js` carries
+ * the same note next to `PERF_ATTRIBUTE`.
+ *
+ * No `!important`, no specificity fight: both blocks are one attribute more specific than the base
+ * rules above, which is exactly what a later-specified override of the same property needs.
+ */
+body[data-ui-perf='medium'] :where(:has(> [data-ui-skin-column]))::before,
+body[data-ui-perf='medium'] :where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
+  backdrop-filter: blur(var(--lg-glass-blur-medium)) saturate(var(--lg-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-glass-blur-medium)) saturate(var(--lg-glass-saturate));
+}
+
+body[data-ui-perf='low'] :where(:has(> [data-ui-skin-column]))::before,
+body[data-ui-perf='low'] :where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
+  backdrop-filter: blur(var(--lg-glass-blur-low)) saturate(var(--lg-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-glass-blur-low)) saturate(var(--lg-glass-saturate));
 }
 
 /* ── narrow viewports ─────────────────────────────────────────────────────── */

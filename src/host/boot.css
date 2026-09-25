@@ -3,19 +3,18 @@
  *
  * WHY THIS FILE EXISTS. The shell paints before the client bundle is loaded, so a skin that only
  * arrives with that bundle is a skin the first frame does not have. This is the part of Liquid
- * Glass that a first paint can actually use, inlined by the host half through
- * `webserver/index-inject` — see `src/host/index.js`.
+ * Glass that a first paint can use, inlined by the host half through `webserver/index-inject` —
+ * see `src/host/index.js`.
  *
- * IT IS A SUBSET, COPIED VERBATIM. Every block below also appears, character for character, in the
- * CSS the skin emits after the runtime scoper has run, and `scripts/build.mjs` fails the build if
- * that stops being true. So this file cannot drift into a second, slightly-different palette: to
- * change a value, change it in `tokens.css` or `glass.css` and re-derive this file from
- * `node scripts/emitted-css.mjs`.
+ * IT IS A DERIVED SUBSET, NOT A SECOND SOURCE. Every block below also appears, character for
+ * character, in the CSS the skin emits after the runtime scoper has run, and `scripts/build.mjs`
+ * fails the build if that stops being true. Regenerate it with `node tools/derive-boot-css.mjs`
+ * after changing a body-level rule in `tokens.css` or `glass.css` — never edit it by hand.
  *
  * WHY IT IS ALREADY SCOPED. Project stylesheets are authored plainly and scoped at runtime. This
  * one is written the way the scoper would emit it (`body[data-ui-project-liquid-glass="on"]`),
  * because the host has no scoper and because it is inlined unconditionally: every selector carries
- * the marker, so with the skin off this whole sheet is inert and the host needs no branch.
+ * the marker, so with the skin off the whole sheet is inert and the host needs no branch.
  *
  * WHAT IS NOT HERE, ON PURPOSE. The frost. It hangs off `data-ui-skin-column`, which the client
  * runtime stamps once the application's DOM exists, so no first frame can have it. The blur lands
@@ -130,6 +129,9 @@ body[data-ui-project-liquid-glass="on"]{
 
   --lg-glass-blur-mobile: 16px;
   --lg-glass-blur-menu: 30px;
+
+  --lg-glass-blur-medium: 16px;
+  --lg-glass-blur-low: 12px;
   --lg-accent-alt: #5856d6;
   --lg-accent-alt-dark: #5e5ce6;
 }

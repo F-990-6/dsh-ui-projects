@@ -20,6 +20,10 @@ import {
   FEATURE_DARK,
   FEATURE_MOBILE,
   PROJECT_TYPES,
+  PERF_MEDIUM,
+  PROJECT_PERF_LEVELS,
+  DEFAULT_PRIORITY,
+  rankOf,
 } from './project-constants.js'
 
 export { TYPE_SKIN, TYPE_ENHANCEMENT, FEATURE_LIGHT, FEATURE_DARK, FEATURE_MOBILE }
@@ -49,6 +53,10 @@ const ID_PATTERN = /^[a-z][a-z0-9-]{1,47}$/
  * @property {'global'|'layout'|'component'} [scope] How wide the project reaches;
  *   `global` implies it may rebind design tokens.
  * @property {string[]} [supports] Any of `light`, `dark`, `mobile`.
+ * @property {'low'|'medium'|'high'} [perfLevel] The heaviest effect tier this project was designed
+ *   for. Defaults to `medium`. The runtime publishes the heaviest tier among active projects,
+ *   capped by what the device can afford, as `data-ui-perf` on the body — so a stylesheet degrades
+ *   itself by reading that attribute rather than by measuring anything.
  * @property {string} [preview] Preview descriptor: a CSS gradient for a generated
  *   thumbnail, or a path/URL to an image. Optional.
  * @property {string} [previewLabel] Alt text for the generated thumbnail.
@@ -57,6 +65,10 @@ const ID_PATTERN = /^[a-z][a-z0-9-]{1,47}$/
  *   torn down by the runtime on cleanup, so a project never removes its own CSS.
  * @property {(ctx: UiProjectContext) => void} [cleanup] Optional extra teardown for
  *   side effects the runtime cannot own. Must be idempotent.
+ * @property {number} [priority] Execution order among composable projects: a LOWER number is
+ *   applied FIRST, ties broken by registration order. Defaults to `100`. Only meaningful between
+ *   projects that can be active together — a skin is alone by policy, and a dependency still runs
+ *   before whatever requires it regardless of the numbers.
  * @property {string[]} [requires] Ids that must be active too; the runtime keeps
  *   them consistent and refuses to enable a project whose dependency is missing.
  */
@@ -164,6 +176,25 @@ export class UiProjectRegistry {
     return Array.from(this.active).sort()
   }
 
+  /**
+   * The heaviest `perfLevel` among the projects that are currently applied, or undefined when none
+   * is applied.
+   *
+   * Declared demand only — the device half of the decision lives in `perf.js`, and the runtime is
+   * what combines the two. Returning `undefined` rather than a default is what lets "nothing is
+   * active" travel as "no tier at all" all the way to the attribute being removed.
+   * @returns {'low'|'medium'|'high'|undefined}
+   */
+  highestPerfLevel() {
+    let highest
+    for (const id of this.active) {
+      const level = this.projects.get(id)?.perfLevel
+      if (typeof level !== 'string') continue
+      if (highest === undefined || rankOf(level) > rankOf(highest)) highest = level
+    }
+    return highest
+  }
+
   /** @param {string} id @returns {boolean} */
   #setActive(id) {
     if (this.active.has(id)) return false
@@ -220,6 +251,29 @@ export class UiProjectRegistry {
     return this.listByType(TYPE_SKIN)
       .filter((other) => other.id !== id && this.active.has(other.id))
       .map((other) => other.id)
+  }
+
+  /**
+   * The order these projects must be applied in: lower `priority` first, ties by registration.
+   *
+   * Registration order is the tie-break because it is the only ordering that is both stable and
+   * meaningful: it is the order the composition declared its projects in. Sorting the applied set
+   * instead — which is what used to happen, since `activeIds()` sorts — produced alphabetical
+   * order, so a rename could change when a project ran and nothing recorded that it had.
+   *
+   * The order is a REQUEST, not a guarantee: `requires` still wins, because a dependency must be
+   * applied before the project depending on it regardless of what either one declares here.
+   * @param {string[]} [ids] defaults to the applied projects
+   * @returns {string[]}
+   */
+  canonicalOrder(ids = this.activeIds()) {
+    const registered = this.ids()
+    return [...ids].sort((a, b) => {
+      const left = this.projects.get(a)?.priority ?? DEFAULT_PRIORITY
+      const right = this.projects.get(b)?.priority ?? DEFAULT_PRIORITY
+      if (left !== right) return left - right
+      return registered.indexOf(a) - registered.indexOf(b)
+    })
   }
 
   /**
@@ -282,6 +336,31 @@ export function normalize(definition) {
   if (!PROJECT_TYPES.includes(type)) {
     throw new TypeError(`[dsh-ui-projects] UI project "${id}" has unknown type "${String(type)}"`)
   }
+  /*
+   * A tier is validated the way `type` is, and NOT the way `scope` is.
+   *
+   * `scope` is currently accepted as-is, which means a typo in it is invisible: the value reaches
+   * the card, renders as its own fallback label, and nothing else reads it. A `perfLevel` typo
+   * would be worse than invisible — the runtime ranks unknown tiers as `medium`, so a project
+   * asking for `low` and spelling it `Low` would silently be given a heavier treatment than it
+   * declared. Failing at registration is the only place that costs nothing.
+   */
+  const perfLevel = definition.perfLevel ?? PERF_MEDIUM
+  if (!PROJECT_PERF_LEVELS.includes(perfLevel)) {
+    throw new TypeError(
+      `[dsh-ui-projects] UI project "${id}" has unknown perfLevel "${String(perfLevel)}": expected one of ${PROJECT_PERF_LEVELS.join(', ')}`,
+    )
+  }
+  /*
+   * An integer, not merely a number: the sort is the contract, and a fractional priority would
+   * make two projects' relative order depend on float equality in a way no reader could predict.
+   */
+  const priority = definition.priority ?? DEFAULT_PRIORITY
+  if (!Number.isInteger(priority)) {
+    throw new TypeError(
+      `[dsh-ui-projects] UI project "${id}" has a non-integer priority "${String(priority)}": expected a whole number, lower runs first`,
+    )
+  }
   return Object.freeze({
     id,
     name,
@@ -291,6 +370,8 @@ export function normalize(definition) {
     defaultEnabled: definition.defaultEnabled === true,
     scope: definition.scope ?? 'component',
     supports: Object.freeze(Array.isArray(definition.supports) ? definition.supports.slice() : []),
+    perfLevel,
+    priority,
     preview: typeof definition.preview === 'string' ? definition.preview : undefined,
     previewLabel: typeof definition.previewLabel === 'string' ? definition.previewLabel : undefined,
     apply: typeof definition.apply === 'function' ? definition.apply : undefined,

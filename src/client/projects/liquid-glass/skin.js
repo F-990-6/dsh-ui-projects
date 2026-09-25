@@ -34,7 +34,7 @@
  * gone. `glass.css` documents why, and what replaced it.
  */
 
-const { TYPE_SKIN, FEATURE_LIGHT, FEATURE_DARK, FEATURE_MOBILE } = require('../../project-constants.js')
+const { TYPE_SKIN, FEATURE_LIGHT, FEATURE_DARK, FEATURE_MOBILE, PERF_HIGH } = require('../../project-constants.js')
 const tokensCss = require('./tokens.css')
 const glassCss = require('./glass.css')
 
@@ -72,6 +72,13 @@ module.exports = {
   defaultEnabled: false,
   scope: 'global',
   supports: [FEATURE_LIGHT, FEATURE_DARK, FEATURE_MOBILE],
+  /*
+   * `high`, honestly: this is a full-viewport `backdrop-filter`-backed material, and the tier
+   * exists so that a device which cannot afford it gets the 16px or 12px treatment instead of the
+   * full 20px. Declaring `medium` here to "be safe" would move the decision away from the device,
+   * which is the only thing that can actually measure it.
+   */
+  perfLevel: PERF_HIGH,
   preview: PREVIEW,
   previewLabel: 'Liquid Glass frosted layers over a blue gradient',
 

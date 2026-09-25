@@ -28,5 +28,49 @@ export const PROJECT_TYPES = [TYPE_SKIN, TYPE_ENHANCEMENT]
 /** Every value `scope` may take, widest first. */
 export const PROJECT_SCOPES = ['global', 'layout', 'component']
 
+/**
+ * Execution order for composable projects: a LOWER number is applied FIRST.
+ *
+ * 100 sits in the middle of the useful range on purpose, so a project can ask to run before the
+ * default (any smaller number) or after it (any larger one) without touching anything else. Ties
+ * are broken by registration order, which is what makes the sequence reproducible: the previous
+ * behaviour was alphabetical by id — an accident of `activeIds()` sorting — so renaming a project
+ * silently changed when it ran, and nothing about the order related to what any project needed.
+ */
+export const DEFAULT_PRIORITY = 100
+
 /** Every value `supports` may take. */
 export const PROJECT_FEATURES = [FEATURE_LIGHT, FEATURE_DARK, FEATURE_MOBILE]
+
+/**
+ * Rendering-budget tiers a project may declare in `perfLevel`, cheapest first.
+ *
+ * A tier is a DECLARATION, not a measurement: it is the heaviest effect the project was designed
+ * for. The runtime compares the heaviest declared tier among the active projects against what the
+ * device can afford, and publishes the LOWER of the two as `data-ui-perf` on the body. A stylesheet
+ * reads that attribute as "the tier allowed right now", so `high` on a weak device gets the low
+ * treatment, and a project declaring `low` never gets more than it asked for.
+ */
+export const PERF_LOW = 'low'
+export const PERF_MEDIUM = 'medium'
+export const PERF_HIGH = 'high'
+
+/** Every value `perfLevel` may take, cheapest first — the ORDER is part of the contract. */
+export const PROJECT_PERF_LEVELS = [PERF_LOW, PERF_MEDIUM, PERF_HIGH]
+
+/**
+ * Rank one tier for comparison. The order of `PROJECT_PERF_LEVELS` is the contract; this is only
+ * its arithmetic — which is why it lives beside the list and not in `perf.js`: the registry needs
+ * to compare tiers, and it has no business knowing anything about device signals.
+ *
+ * An unrecognised value ranks as the middle tier instead of throwing. Registration refuses unknown
+ * tiers outright, so this is only reachable by a caller passing something odd, and a comparison
+ * inside a diagnostic must never be the thing that takes a page down.
+ * @param {unknown} level
+ * @returns {number}
+ */
+export function rankOf(level) {
+  if (level === PERF_LOW) return 0
+  if (level === PERF_HIGH) return 2
+  return 1
+}

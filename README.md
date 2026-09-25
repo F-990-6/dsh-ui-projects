@@ -57,9 +57,11 @@ no core package, no route, no business plugin. Any state the plugin persisted li
 src/host/index.js                 host row: the browser half's reachability, its settings
                                   namespace, and the first-paint injection
 src/host/boot.css                 the first-paint subset of the skin, inlined into <head>
+                                  (derived — see tools/derive-boot-css.mjs)
 src/client/
   index.js                        composition root: registry + persistence + runtime + settings section
-  project-constants.js            the shared vocabulary (skin/enhancement, light/dark/mobile)
+  project-constants.js            the shared vocabulary (skin/enhancement, light/dark/mobile,
+                                  low/medium/high, and the tier ranking)
   registry.js                     what UI projects exist, and the enable/disable policy
   persist.js                      where state lives (dsh settings document, else localStorage)
   runtime.js                      the only DOM-touching module in project code; applies and
@@ -67,6 +69,7 @@ src/client/
                                   touching a project's own DOM.
   diagnostics.js                  the self-diagnosis overlay; a temporary instrument, off by default
   scope-css.js                    rewrites a project's CSS so it can only apply while active
+  perf.js                         what the device can afford: signals, tiers, the frame probe
   store.js                        what the settings page reads
   panel.js                        the Settings › UI page, rendered from the registry alone
   locale.js                       copy for the two shipped locales
@@ -89,11 +92,65 @@ src/client/
   defaultEnabled: false,         // a skin ships off; the user turns it on
   scope: 'global',               // 'global' | 'layout' | 'component'
   supports: ['light', 'dark', 'mobile'],
+  perfLevel: 'high',             // 'low' | 'medium' | 'high' — what it was designed for
+  priority: 100,                 // execution order among composable projects; lower runs first
   preview: 'radial-gradient(…)', // a CSS background, or an image path
   apply(ctx) { … },              // runs while active
   cleanup(ctx) { … },            // optional extra teardown; must be idempotent
 }
 ```
+
+### The effect tier
+
+`perfLevel` is a **declaration**, not a measurement: the heaviest effect the project was designed
+for. The device half lives in `perf.js`, and the two meet in exactly one place — an attribute on the
+body:
+
+```js
+document.body.dataset.uiPerf   // 'low' | 'medium' | 'high', or absent when nothing is applied
+```
+
+`min(heaviest active declaration, what the device can afford)`. `saveData` is the strongest device
+signal and the only statement of intent available; core count is a weak demoter, and an unreadable
+count is treated as capable rather than suspect. A frame-time probe runs once, a second after the
+skin is applied, and can only ever lower the tier. `deviceMemory` is deliberately not consulted —
+Chromium-only and capped, so it would classify Firefox and Safari by the absence of an API.
+
+The stylesheet then degrades itself, with no JavaScript in the rendering path:
+
+```css
+body[data-ui-perf='low'] :where(:has(> [data-ui-skin-column]))::before {
+  backdrop-filter: blur(var(--lg-glass-blur-low)) saturate(var(--lg-glass-saturate));
+}
+```
+
+**Authored against `body`, and that is load-bearing.** The scoper replaces a leading `html`/`:root`
+with the project marker, and the marker is a `body[…]` selector — so `html[data-ui-perf='low']`
+compiles to `body[data-ui-project-<id>="on"][data-ui-perf='low']` and works, while the same
+attribute written on `<html>` by the runtime would match nothing at all. Naming the element the
+attribute lives on makes that failure impossible to reintroduce by accident.
+
+When the device demotes a project below what it declared, the settings card says so — a cheaper
+material with no explanation reads as a rendering bug.
+
+### Execution order
+
+Composable projects can be active together, so they need an order. `priority` supplies it: **a lower
+number is applied first**, `100` by default, ties broken by registration order. Only enhancements
+show the badge — a skin is alone by policy and is never sorted.
+
+The order is a **request**, and two things outrank it:
+
+- **`requires` always wins.** A dependency is applied before whatever depends on it, whatever the
+  numbers say, because that is correctness rather than preference.
+- **A click does not re-order.** Enabling a higher-priority project while a lower-priority one is
+  already running applies the new one last and leaves the session as it stands: re-applying live
+  projects to reorder them would make the interface flicker, which is the thing this package spends
+  its time removing. The card then says which project will move, and the next load applies the
+  canonical order.
+
+Before this existed the order was alphabetical by id — an accident of `activeIds()` sorting — so
+renaming a project silently changed when it ran and nothing recorded that it had.
 
 ### Policy
 
@@ -402,6 +459,19 @@ cannot import CSS. Before writing it, the build proves `src/host/boot.css` is a 
 the skin itself emits — rule by rule, whitespace-insensitively, with any drift failing the build
 and naming the offending rule. That check is the only thing keeping two copies of the same
 palette from becoming two different palettes.
+
+`src/host/boot.css` itself is DERIVED, not written. After changing a body-level rule in
+`tokens.css` or `glass.css` — adding a token, adding a conditional branch — regenerate it:
+
+```powershell
+node tools/derive-boot-css.mjs          # rewrite src/host/boot.css from the scoped skin CSS
+node tools/derive-boot-css.mjs --check  # report drift and change nothing (exits 1 when stale)
+```
+
+It copies every rule whose selector is about the marked body element itself — those are the
+declarations a first paint can use — and skips descendant rules like `body[marker] .lg-glass`, which
+need DOM a first frame does not have. Editing the file by hand is how the first frame starts to
+disagree with every later one.
 
 ### Verifying against a running dsh
 

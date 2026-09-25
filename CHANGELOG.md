@@ -25,6 +25,112 @@ Verification vocabulary used below:
 
 ---
 
+## Round 20 — step 6, unit B/1: execution order
+
+**Status: done. `suite` 412 assertions / 0 failing, `host` green. No browser check: this is
+invisible to a browser suite (see below).**
+
+Split out of the planned unit B because ordering is a *timing* problem and region conflicts are a
+*metadata* problem; the two share only `normalize()`. This half fixes an existing defect.
+
+**Changed**
+
+- `priority` on a project definition: integer, default `100`, **lower runs first**, validated the way
+  `perfLevel` is — a non-integer throws at registration, because the sort is the contract and a
+  fractional priority would make two projects' relative order depend on float comparison.
+- `registry.canonicalOrder(ids)`: sort by `(priority, registration index)`, stable.
+- `runtime.start()` and `resetAll()` apply the canonical order. **This is the defect:** the restore
+  path used to iterate `record.enabled`, which `#remember()` writes as `activeIds()` — a sorted
+  array — so the real order was alphabetical by id. Renaming a project silently changed when it ran.
+- `requires` still wins over `priority`: a dependency is applied before its dependent regardless of
+  the numbers. Ordering is a request; dependency order is correctness.
+- `runtime.appliedOrder` records what was actually applied, and `outOfOrderId()` names the first
+  project running earlier than priority says it should. A click deliberately does not re-order — it
+  would flicker — so without this the promise "the order is restored on the next load" would be
+  unverifiable. The card for that project says so instead.
+- **Deleted `snapshot.conflicts`.** It held the active skin ids, nothing read it (the panel derives
+  its "will replace X" line from the project list it already has), and a second silently unread
+  notion of "conflict" is what makes the real one hard to trust.
+
+**THE FINDING: an assertion that had been passing vacuously.** Writing the ordering test needed a
+seeded `localStorage` record, so it copied the key from the sweep test next door —
+`dsh.ui.projects.v1`. It read nothing. The real key is `dsh.ui-projects.v1`: **one character, a
+hyphen against a dot**, and the two literals are indistinguishable at a glance. That revealed the
+original: the sweep test asserts "while the key this plugin does use is untouched" against the same
+wrong literal, so for as long as it has existed it has proved that the plugin does not touch a key
+the plugin has never read. The assertion was not wrong about the sweep — the legacy-key half is
+real — it was wrong about what it was checking, under a label that said otherwise.
+
+Fixed structurally rather than by correcting the typo: `plugin.__internals.persistKeys` now exposes
+`localKey` and `settingsNamespace` from the module that owns them, and both tests read the real
+value. The next rename cannot silently orphan them.
+
+**Found by a failing test, not by review** — and only because the new test's own premise was
+checked rather than assumed. The debugging path is worth recording: the storage object was verified
+to be the right one, the key was verified present at adapter creation, and `getItem` still returned
+`null`; only comparing the literals byte by byte showed why.
+
+**Verification:** `suite` (+18 assertions). The ordering tests register projects in a deliberately
+scrambled order with priorities `10/100/200`, seed the record in yet another order, and compare the
+**recorded apply sequence** against the canonical one; ties are pinned against alphabetical order
+(`zulu` before `alpha`); `requires` is pinned against a `priority: 1` dependent. `host` unchanged.
+
+---
+
+## Round 19 — step 6, unit A: the effect tier
+
+**Status: done. `suite` 394 assertions / 0 failing, `host` green. The browser check is written but
+not yet run.**
+
+Specification §7.1 asks every project to declare a performance level, and §7.2 asks for a low-end
+device to get a cheaper treatment. Those two connect only through something a stylesheet can read,
+so the work was: a declared tier, a device estimate, and one attribute between them.
+
+**Changed**
+
+- `perfLevel: 'low'|'medium'|'high'` on a project definition, defaulting to `medium` and **validated
+  the way `type` is** — an unknown tier throws at registration. Deliberately not the way `scope` is:
+  `scope` is accepted as-is, so a typo there is invisible, and a `perfLevel` typo would be worse than
+  invisible, because the ranking treats unknown tiers as `medium`. A project asking for `low` and
+  spelling it `Low` would silently be given a heavier treatment than it declared.
+- `src/client/perf.js`, the device half: `saveData` (a statement of intent, and the strongest signal
+  available), core count as a weak demoter, and an optional frame-time probe. `deviceMemory` is
+  deliberately NOT consulted — Chromium-only and capped, so using it would classify Firefox and
+  Safari by the absence of an API rather than by their hardware.
+- `data-ui-perf` carrying the heaviest declared demand among active projects, capped by the device
+  class, and removed when the last project goes off.
+- `glass.css` gains `--lg-glass-blur-medium: 16px` / `--lg-glass-blur-low: 12px` and the two blocks
+  that read the attribute. `boot.css` was re-derived: the new tokens are body-level declarations,
+  and a first frame has to agree with every later frame.
+
+**THE ATTRIBUTE GOES ON THE BODY, NOT ON `<html>` — a correction to the plan, and the mechanism
+behind it.** The plan said `html[data-ui-perf]`. The scoper REPLACES a leading `html`/`:root` with
+the project marker (`scope-css.js`, `scopeCompound`), and the marker is
+`body[data-ui-project-…="on"]`. So a degradation rule authored as `html[data-ui-perf='low'] …`
+compiles to `body[data-ui-project-…="on"][data-ui-perf='low'] …` — and matches only if the runtime
+wrote the attribute on the body. On `<html>`, every such rule would have matched nothing, silently:
+the failure this package has now paid for three times (the dead dark branch, the dead
+`overflow: clip`, the dead ambient seat). The rules are authored as `body[data-ui-perf='…']` so the
+selector states where the attribute actually lives.
+
+**Tooling:** `tools/derive-boot-css.mjs` is now a permanent tool rather than the throwaway Round 17
+used and deleted — it derives `src/host/boot.css` from the scoped skin CSS, with a `--check` mode.
+Round 17 needed it once; every body-level change needs it again, which is what makes it a tool.
+
+**A guard gap noticed here and fixed in unit C.** The build proves `boot.css` is a SUBSET of the
+skin's emitted CSS — one direction only. Adding a body-level rule to `tokens.css` and forgetting to
+re-derive would pass the build while the first frame silently lacked the rule. Unit C turns that
+check into equality.
+
+**Verification:** `suite` (+30 assertions: the pure policy functions with their boundaries, the
+attribute appearing on the body and leaving with the last project, the demotion reaching the card,
+and a mis-cased tier failing registration), `host` unchanged and green. The new
+`browser-verify.mjs` check forces `hardwareConcurrency` to 2 with
+`Emulation.setHardwareConcurrencyOverride` before load, then asserts the attribute AND the resolved
+`backdrop-filter` (12px, and 20px once the override is lifted) — **not yet run.**
+
+---
+
 ## Round 18 — two absolute claims that were not true, and how they were found
 
 **Status: documentation and one comment only. Nothing executable moved, so `suite` and `host` were

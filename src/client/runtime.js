@@ -20,6 +20,7 @@
  */
 
 import { scopeCss } from './scope-css.js'
+import { combineLevels, createFrameProbe, deviceLevel, minLevel, readSignals } from './perf.js'
 
 /**
  * The attribute the runtime stamps on the application's layout columns.
@@ -45,6 +46,19 @@ const OVERSIZE_THRESHOLD_PX = 4
 const TYPE_SKIN = 'skin'
 
 const ROOT_MARKER = 'data-ui-projects'
+
+/**
+ * The attribute carrying the effect tier in force, and the element it goes on.
+ *
+ * ON THE BODY, beside the project marker, and that is a correctness requirement rather than a
+ * preference. A project stylesheet is scoped by rewriting its first compound: `html…` and `:root`
+ * are REPLACED by the marker (`scope-css.js`), so `html[data-ui-perf='low'] .x` compiles to
+ * `body[data-ui-project-<id>="on"][data-ui-perf='low'] .x`. Put the attribute on `<html>` and every
+ * degradation rule in every project becomes a selector that matches nothing — silently, which is
+ * the failure this package has already paid for twice (the dead dark branch, the dead
+ * `overflow: clip`).
+ */
+const PERF_ATTRIBUTE = 'data-ui-perf'
 
 /**
  * How long the two retry loops below may poll before they give up.
@@ -101,6 +115,29 @@ export class UiProjectRuntime {
     this.markingState = new Map()
     /** @type {Map<string, string>} per-project persisted settings */
     this.settings = new Map()
+    /**
+     * What the device signals said at load, and then the lowest tier anything has since measured.
+     *
+     * Only ever moves DOWN. A measurement that comes back better than the signals — or better than
+     * a previous measurement — is discarded, so the tier cannot oscillate with load and a demoted
+     * device is never promoted back by a lucky second of idling.
+     * @type {'low'|'medium'|'high'|undefined}
+     */
+    this.deviceClass = deviceLevel(readSignals())
+    /** @type {(() => void) | undefined} */
+    this.stopFrameProbe = undefined
+    /**
+     * The order projects were actually applied in, oldest first.
+     *
+     * Kept because `priority` is a request that a single click deliberately does not enforce: the
+     * runtime applies what the user asked for and leaves the session's order as it stands, because
+     * re-applying live projects to reorder them would make the interface flicker — the exact thing
+     * this package spends its time removing. That trade is only honest if the divergence is
+     * DETECTABLE, which is what this list is for; without it, "the order is restored on the next
+     * load" would be an unverifiable claim rather than a checked one.
+     * @type {string[]}
+     */
+    this.appliedOrder = []
     /** @type {HTMLElement | undefined} */
     this.root = undefined
     this.disposed = false
@@ -165,7 +202,11 @@ export class UiProjectRuntime {
     const wanted = record.initialized
       ? record.enabled
       : this.registry.list().filter((project) => project.defaultEnabled).map((project) => project.id)
-    for (const id of wanted) await this.#enable(id, { persist: false })
+    // Sorted: the order projects run in is a request the composition makes, not the order an
+    // object's keys happen to come back in. See `canonicalOrder`.
+    for (const id of this.registry.canonicalOrder(wanted)) await this.#enable(id, { persist: false })
+    this.#syncPerfAttribute()
+    if (this.registry.activeIds().length > 0) this.#startFrameProbe()
   }
 
   /**
@@ -176,6 +217,8 @@ export class UiProjectRuntime {
   async enable(id) {
     return this.#serialize(async () => {
       await this.#enable(id, { persist: false })
+      this.#syncPerfAttribute()
+      if (this.registry.isEnabled(id)) this.#startFrameProbe()
       await this.#remember()
     })
   }
@@ -188,6 +231,7 @@ export class UiProjectRuntime {
   async disable(id) {
     return this.#serialize(async () => {
       await this.#disable(id, { persist: false })
+      this.#syncPerfAttribute()
       await this.#remember()
     })
   }
@@ -213,7 +257,26 @@ export class UiProjectRuntime {
       for (const project of this.registry.list()) {
         if (project.defaultEnabled) await this.#enable(project.id, { persist: false })
       }
+      this.#syncPerfAttribute()
     })
+  }
+
+  /**
+   * The first applied project whose position differs from the canonical order, or undefined.
+   *
+   * Returns the one that is running EARLIER than it should — that is the project whose position the
+   * next load will change, so it is the one worth naming on a card. A single click deliberately does
+   * not re-order anything (see `appliedOrder`); this is how that trade is made visible instead of
+   * silent.
+   * @returns {string | undefined}
+   */
+  outOfOrderId() {
+    const applied = this.appliedOrder.filter((id) => this.registry.isEnabled(id))
+    const canonical = this.registry.canonicalOrder(applied)
+    for (let index = 0; index < applied.length; index += 1) {
+      if (applied[index] !== canonical[index]) return applied[index]
+    }
+    return undefined
   }
 
   /**
@@ -232,6 +295,7 @@ export class UiProjectRuntime {
       const enabled = record.enabled.filter((entry) => entry !== id)
       if (project.defaultEnabled && !enabled.includes(id)) enabled.push(id)
       await this.#write({ ...record, initialized: true, enabled })
+      this.#syncPerfAttribute()
     })
   }
 
@@ -243,6 +307,12 @@ export class UiProjectRuntime {
       this.#release(id)
       this.registry.markInactive(id)
     }
+    this.stopFrameProbe?.()
+    this.stopFrameProbe = undefined
+    this.appliedOrder = []
+    // The tier goes with the last project: a page with no UI project applied must carry no
+    // `data-ui-perf` at all, or every rule keyed on it would keep matching against nothing.
+    this.#removeAttribute(this.bodyElement(), PERF_ATTRIBUTE)
     this.#unmarkRoot()
     this.root = undefined
   }
@@ -280,6 +350,7 @@ export class UiProjectRuntime {
     }
     this.disposers.set(id, owned)
     this.registry.markActive(id)
+    if (!this.appliedOrder.includes(id)) this.appliedOrder.push(id)
     void options
   }
 
@@ -295,6 +366,7 @@ export class UiProjectRuntime {
       this.#setRootAttribute('data-ui-skin', undefined)
     }
     this.registry.markInactive(id)
+    this.appliedOrder = this.appliedOrder.filter((entry) => entry !== id)
     void options
   }
 
@@ -744,6 +816,53 @@ export class UiProjectRuntime {
     const next = this.serial.then(task, task)
     this.serial = next.catch(() => {})
     return next
+  }
+
+  /**
+   * The effect tier in force right now, or undefined when nothing is applied.
+   *
+   * Heaviest declared demand among the active projects, capped by what the device can afford. Read
+   * by the diagnostics overlay and by the tests; the stylesheet reads the ATTRIBUTE instead, so
+   * this is a reporting surface rather than the mechanism.
+   * @returns {'low'|'medium'|'high'|undefined}
+   */
+  perfLevel() {
+    return combineLevels(
+      this.registry.list().map((project) => (this.registry.isEnabled(project.id) ? project.perfLevel : undefined)),
+      this.deviceClass,
+    )
+  }
+
+  /**
+   * Publish that tier on the body, or remove it when there is none.
+   *
+   * Called after every operation that can change the active set rather than from inside
+   * `#enable`/`#disable`, because those two have early returns on their error paths and a stale
+   * attribute is exactly the kind of leftover this package exists to prevent. The public entry
+   * points all funnel here once their work has settled.
+   */
+  #syncPerfAttribute() {
+    const level = this.perfLevel()
+    if (level === undefined) this.#removeAttribute(this.bodyElement(), PERF_ATTRIBUTE)
+    else this.#setAttribute(this.bodyElement(), PERF_ATTRIBUTE, level)
+  }
+
+  /**
+   * Start measuring frame time, and lower the device class if the measurement says so.
+   *
+   * Started only once something is actually applied — a page with no UI project on it should not
+   * spend a second measuring anything — and idempotent, so `start()` may call it on every restore.
+   */
+  #startFrameProbe() {
+    if (this.stopFrameProbe !== undefined) return
+    this.stopFrameProbe = createFrameProbe({
+      onLevel: (level) => {
+        const next = minLevel(this.deviceClass, level)
+        if (next === this.deviceClass) return
+        this.deviceClass = next
+        this.#syncPerfAttribute()
+      },
+    })
   }
 
   /**

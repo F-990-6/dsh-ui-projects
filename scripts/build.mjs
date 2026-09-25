@@ -74,6 +74,7 @@ const ENTRY_FILE = 'index.js'
 const MODULE_ORDER = [
   'project-constants.js',
   'scope-css.js',
+  'perf.js',
   'registry.js',
   'persist.js',
   'runtime.js',

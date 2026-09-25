@@ -28,12 +28,13 @@
  * (see `installBuiltInProjects` and the section renderer below).
  */
 const { UiProjectRegistry } = require('./registry.js')
-const { createPersist } = require('./persist.js')
+const { createPersist, LOCAL_KEY, SETTINGS_NS } = require('./persist.js')
 const { createRuntime } = require('./runtime.js')
 const { createStore, detectLocale, onLocaleChange } = require('./store.js')
 const { collectDiagnostics, mountDiagnostics } = require('./diagnostics.js')
 const { strings } = require('./locale.js')
 const { scopeCss } = require('./scope-css.js')
+const perf = require('./perf.js')
 const coreCss = require('./styles/core.css')
 
 /** The settings slot this plugin occupies. */
@@ -280,6 +281,25 @@ module.exports = {
      * global and no document at all, so the check has to go through here.
      */
     collectDiagnostics,
+    /**
+     * The device half of the effect tier, so the suite can exercise the policy directly.
+     *
+     * These are pure functions over a signals object, which is the point of keeping them in their
+     * own module: the sandbox has no `navigator` and no `requestAnimationFrame`, so every branch
+     * below the policy — which tier a core count implies, what a measured median means, how a
+     * demand and a device combine — would otherwise be unreachable from a test.
+     */
+    perf,
+    /**
+     * The storage key and namespace, so a test can never spell them wrong.
+     *
+     * This exists because one already did: a test asserted "the key this plugin does use is
+     * untouched" against `dsh.ui.projects.v1` while the real key is `dsh.ui-projects.v1` — one
+     * character apart — so the assertion proved nothing for as long as it existed, and a new test
+     * that copied the literal inherited the same silence. Reading the constants from the module
+     * that owns them is what makes a rename safe.
+     */
+    persistKeys: { localKey: LOCAL_KEY, settingsNamespace: SETTINGS_NS },
   },
   /** @returns {import('./registry.js').UiProjectDefinition} the shipped Liquid Glass project. */
   get liquidGlass() {

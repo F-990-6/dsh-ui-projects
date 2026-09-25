@@ -909,6 +909,14 @@ function materializeEntry(source, require) {
 
 const { plugin, sandbox, origin, source: bundleSource } = await loadClientBundle()
 const { Registry, scopeCss, strings, detectLocale } = plugin.__internals
+/**
+ * The `localStorage` key the fallback adapter uses, taken from the module that owns it.
+ *
+ * Typed by hand it was wrong — `dsh.ui.projects.v1` against a real `dsh.ui-projects.v1` — and the
+ * assertion that depended on it had been passing vacuously. Reading it here is what makes the
+ * literal impossible to get wrong twice.
+ */
+const LOCAL_STORAGE_KEY = plugin.__internals.persistKeys.localKey
 // The opacity scale is shared by every project, so the tests assert against the same
 // constants the runtime uses rather than repeating the numbers.
 const { MATERIAL_ALPHA_CEILING, MATERIAL_ALPHA_FLOOR, MATERIAL_SCALE_REVISION } = await import(
@@ -923,7 +931,7 @@ let activeCleanup
  *
  * Each boot tears down the previous one first, so tests neither leak effects into
  * one another nor double-dispose them.
- * @param {{ withStorage?: boolean | ReturnType<typeof createStorage>, withSettingsScope?: boolean, scopeRecord?: Record<string, unknown>, scopeDelayMs?: number, scopeError?: string, withTheme?: boolean, detachedFrame?: boolean, viewportWidth?: number, viewportHeight?: number, fakeTimers?: boolean }} [options]
+ * @param {{ withStorage?: boolean | ReturnType<typeof createStorage>, withSettingsScope?: boolean, scopeRecord?: Record<string, unknown>, scopeDelayMs?: number, scopeError?: string, withTheme?: boolean, detachedFrame?: boolean, viewportWidth?: number, viewportHeight?: number, fakeTimers?: boolean, device?: { cores?: number, saveData?: boolean } }} [options]
  */
 async function boot(options = {}) {
   // Tear down BEFORE the sandbox globals move: a previous instance's disposers
@@ -975,6 +983,18 @@ async function boot(options = {}) {
   // to decide whether the boot page is genuinely in the way.
   sandbox.window.innerWidth = options.viewportWidth ?? 1400
   sandbox.window.innerHeight = options.viewportHeight ?? 800
+  /*
+   * The device signals `perf.js` reads, set explicitly so a test decides the effect tier instead
+   * of inheriting whatever machine happens to run the suite. `undefined` means "this host exposes
+   * no signals", which is also the shape a browser without `navigator.connection` presents.
+   */
+  sandbox.navigator =
+    options.device === undefined
+      ? undefined
+      : {
+          connection: { saveData: options.device.saveData === true },
+          hardwareConcurrency: options.device.cores,
+        }
   sandbox.getComputedStyle = wrapGetComputedStyle(dom)
   // The bundle retries the frame lookup on a timer, because the shell has not mounted the
   // application when a project is first applied. A sandbox without timers would make that
@@ -1381,14 +1401,22 @@ await test('storage keys from a previous generation are swept on load', async ()
   const storage = createStorage()
   storage.map.set('dsh-liquid-glass.settings', '{"scale":1}')
   storage.map.set('dsh-liquid-glass.settings.version', '3')
-  storage.map.set('dsh.ui.projects.v1', '{"kept":true}')
+  /*
+   * The CURRENT key, read from the module that owns it rather than typed here.
+   *
+   * It used to be typed, and it was typed wrong — `dsh.ui.projects.v1` against a real key of
+   * `dsh.ui-projects.v1`, one character apart. So this line asserted the survival of a key the
+   * plugin has never read, under a label claiming it was the key the plugin uses. A rename could
+   * not have caught it either, because nothing tied the literal to the constant.
+   */
+  storage.map.set(LOCAL_STORAGE_KEY, '{"kept":true}')
 
   await boot({ withStorage: storage })
 
   equal(storage.map.has('dsh-liquid-glass.settings'), false, 'the stale settings key is swept')
   equal(storage.map.has('dsh-liquid-glass.settings.version'), false, 'and so is its version key')
   // The sweep is a list of two names, not "clear everything": the current key must survive.
-  equal(storage.map.has('dsh.ui.projects.v1'), true, 'while the key this plugin does use is untouched')
+  equal(storage.map.has(LOCAL_STORAGE_KEY), true, 'while the key this plugin actually uses is untouched')
 })
 
 await test('state uses the dsh settings document when the host offers a scope', async () => {
@@ -2595,6 +2623,209 @@ await test('the first-paint stylesheet carries the skin, and only under its mark
    */
   excludes(BOOT_CSS, '::before')
   excludes(BOOT_CSS, 'data-ui-skin-column')
+})
+
+/*
+ * The effect tier — step 6, first workstream.
+ *
+ * A project DECLARES what it was designed for (`perfLevel`); the device reports, always weakly,
+ * what it can afford; the runtime publishes the lower of the two as `data-ui-perf` on the body and
+ * the stylesheet degrades itself by reading that attribute. The policy is three pure functions on
+ * purpose: this sandbox has no `navigator` and no `requestAnimationFrame`, so anything expressed as
+ * an effect on globals could not be tested at all.
+ */
+await test('the effect tier is decided by pure functions over signals', () => {
+  const { deviceLevel, combineLevels, minLevel, levelForFrameInterval, median } = plugin.__internals.perf
+
+  // `saveData` is the strongest signal and the only statement of intent rather than an inference.
+  equal(deviceLevel({ saveData: true, cores: 16 }), 'low', 'saveData demotes regardless of cores')
+  equal(deviceLevel({ saveData: false, cores: 2 }), 'low', 'two cores is low')
+  equal(deviceLevel({ saveData: false, cores: 4 }), 'medium', 'four cores is medium')
+  equal(deviceLevel({ saveData: false, cores: 8 }), 'high', 'eight cores is high')
+  // An unreadable count is "no opinion", not "suspect": demoting on absence would classify a
+  // browser by which APIs it exposes rather than by its hardware.
+  equal(deviceLevel({}), 'high', 'no signals means capable')
+  equal(deviceLevel({ cores: 0 }), 'high', 'a nonsense count is ignored')
+  equal(deviceLevel({ cores: Number.NaN }), 'high', 'and so is a non-number')
+
+  equal(combineLevels([], 'high'), undefined, 'nothing active means no tier at all')
+  equal(combineLevels(['low', undefined, 'high'], 'high'), 'high', 'the heaviest demand wins')
+  equal(combineLevels(['high'], 'medium'), 'medium', 'the device caps it')
+  equal(combineLevels(['low'], 'high'), 'low', 'and it is never raised above the demand')
+  equal(minLevel(undefined, 'low'), 'low', 'no opinion defers')
+
+  equal(levelForFrameInterval(30), 'low', 'a slow median is low')
+  equal(levelForFrameInterval(20), 'medium', 'a middling median is medium')
+  equal(levelForFrameInterval(16.7), 'high', 'a 60Hz median is high')
+  equal(levelForFrameInterval(undefined), undefined, 'nothing measured means nothing claimed')
+  equal(median([1, 3, 2]), 2, 'median of an odd list')
+  equal(median([1, 2, 3, 4]), 2.5, 'median of an even list')
+  equal(median([]), undefined, 'median of nothing')
+})
+
+await test('the tier in force is published on the body, and removed with the last project', async () => {
+  const capable = await boot({ device: { cores: 8 } })
+  equal(capable.dom.document.body.getAttribute('data-ui-perf'), null, 'no project, no tier')
+  await capable.runtime.enable('liquid-glass')
+  equal(capable.dom.document.body.getAttribute('data-ui-perf'), 'high', 'the skin asks for the full tier')
+  await capable.runtime.disable('liquid-glass')
+  equal(capable.dom.document.body.getAttribute('data-ui-perf'), null, 'and the tier goes with it')
+
+  /*
+   * The device, not the skin, is what demotes it — and the attribute has to land on the BODY.
+   *
+   * That is not a detail: the scoper replaces a leading `html`/`:root` with the project marker, so
+   * a degradation rule authored as `html[data-ui-perf='low'] …` compiles to
+   * `body[data-ui-project-…="on"][data-ui-perf='low'] …`. Publishing the attribute anywhere else
+   * would leave every one of those rules matching nothing, silently.
+   */
+  const weak = await boot({ device: { saveData: true } })
+  await weak.runtime.enable('liquid-glass')
+  equal(weak.dom.document.body.getAttribute('data-ui-perf'), 'low', 'saveData caps the skin at reduced')
+  equal(
+    weak.dom.document.body.getAttribute('data-ui-project-liquid-glass'),
+    'on',
+    'the project marker itself is unaffected by the tier',
+  )
+  equal(weak.runtime.perfLevel(), 'low', 'and the runtime reports the same tier the stylesheet reads')
+})
+
+await test('the card shows the declared tier, and says when the device demoted it', async () => {
+  const harness = await boot({ device: { cores: 2 } })
+  await harness.runtime.enable('liquid-glass')
+  const markup = harness.render()
+  contains(markup, 'Performance: full')
+  // A cheaper material with no explanation reads as a rendering bug, so the demotion is stated.
+  contains(markup, 'Performance: reduced')
+  contains(markup, 'because this device reported less capacity')
+})
+
+await test('an unknown performance tier is refused at registration', () => {
+  const registry = new Registry()
+  let message = ''
+  try {
+    registry.register({ id: 'perf-typo', name: 'Typo', perfLevel: 'Low' })
+  } catch (err) {
+    message = err instanceof Error ? err.message : String(err)
+  }
+  truthy(/perfLevel/.test(message), `a mis-cased tier must fail loudly, got: ${message}`)
+  equal(registry.ids(), [], 'nothing registered')
+})
+
+/*
+ * Execution order — step 6, second workstream's first half.
+ *
+ * The order projects run in is a request the composition makes (`priority`), and until now it was
+ * an accident: `activeIds()` sorts, so the applied set came back alphabetically by id and a rename
+ * could change when a project ran with nothing recording that it had.
+ */
+await test('the applied set runs in priority order, ties broken by registration order', async () => {
+  const order = []
+  /** @param {string} id @param {number} priority */
+  const probe = (id, priority) => ({ id, name: id, priority, apply: () => order.push(id) })
+
+  // The record lists them in one order, the registry registers them in another, and neither is the
+  // canonical order: only the sort can produce the expected sequence.
+  const storage = createStorage()
+  storage.map.set(
+    LOCAL_STORAGE_KEY,
+    JSON.stringify({ v: 1, initialized: true, touched: true, settings: {}, enabled: ['late', 'early', 'middle'] }),
+  )
+  const harness = await boot({ withStorage: storage })
+  harness.registry.register(probe('late', 200))
+  harness.registry.register(probe('early', 10))
+  harness.registry.register(probe('middle', 100))
+  await harness.runtime.start()
+
+  equal(order.join(','), 'early,middle,late', 'lower priority runs first')
+  equal(harness.runtime.outOfOrderId(), undefined, 'and the session order is the canonical one')
+
+  // Same priority: registration order decides, so the sequence is reproducible rather than
+  // dependent on which id sorts first alphabetically.
+  const tied = []
+  const second = await boot()
+  second.registry.register({ id: 'zulu', name: 'Zulu', priority: 100, apply: () => tied.push('zulu') })
+  second.registry.register({ id: 'alpha', name: 'Alpha', priority: 100, apply: () => tied.push('alpha') })
+  await second.runtime.enable('zulu')
+  await second.runtime.enable('alpha')
+  equal(tied.join(','), 'zulu,alpha', 'equal priorities keep registration order, not alphabetical')
+})
+
+await test('a dependency runs before whatever requires it, whatever the numbers say', async () => {
+  const order = []
+  const harness = await boot()
+  harness.registry.register({
+    id: 'dependent',
+    name: 'Dependent',
+    priority: 1,
+    requires: ['base'],
+    apply: () => order.push('dependent'),
+  })
+  harness.registry.register({ id: 'base', name: 'Base', priority: 999, apply: () => order.push('base') })
+
+  await harness.runtime.enable('dependent')
+  equal(order.join(','), 'base,dependent', 'the dependency wins over priority, because order is correctness here')
+})
+
+await test('a click does not re-order running projects, and says so', async () => {
+  const harness = await boot()
+  harness.registry.register({ id: 'late-arrival', name: 'Early Bird', priority: 10 })
+  harness.registry.register({ id: 'settled', name: 'Settled', priority: 200 })
+
+  await harness.runtime.enable('settled')
+  equal(harness.runtime.outOfOrderId(), undefined, 'a lone project is in canonical order')
+
+  // The new project declares higher precedence, and is applied LAST: re-applying the running one
+  // to reorder it would make the interface flicker, which is the trade this test pins.
+  await harness.runtime.enable('late-arrival')
+  equal(harness.runtime.outOfOrderId(), 'settled', 'the project now running too early is named')
+  const markup = harness.render()
+  contains(markup, 'running ahead of a higher-priority project')
+
+  // The next load applies the canonical order, so the notice is about this session only.
+  equal(
+    harness.registry.canonicalOrder(['settled', 'late-arrival']).join(','),
+    'late-arrival,settled',
+    'the canonical order puts the lower priority first',
+  )
+})
+
+await test('priority is validated, and the card shows it only where it means something', async () => {
+  const registry = new Registry()
+  for (const [label, priority] of [
+    ['a string', 'high'],
+    ['a fraction', 1.5],
+    ['NaN', Number.NaN],
+  ]) {
+    let threw = false
+    try {
+      registry.register({ id: 'bad-priority', name: 'Bad', priority })
+    } catch {
+      threw = true
+    }
+    truthy(threw, `priority ${label} must be refused`)
+  }
+  equal(registry.ids(), [], 'nothing registered')
+  equal(new Registry().canonicalOrder(['x']).length, 1, 'an unregistered id still sorts (defensively)')
+
+  // Default, and the badge rule: a skin never shows it, an enhancement does.
+  const harness = await boot()
+  harness.registry.register({ id: 'plain', name: 'Plain Enhancement' })
+  equal(harness.registry.get('plain')?.priority, 100, 'the default priority is 100')
+  await harness.runtime.enable('plain')
+  const markup = harness.render()
+  /*
+   * Asserted per card rather than by counting badges in the page: the registry is shared across
+   * boots, so every enhancement an earlier test registered is still in this render. Counting would
+   * make this test depend on the ones above it.
+   */
+  const cardOf = (id) => new RegExp(`data-project="${id}"[\\s\\S]*?</li>`).exec(markup)?.[0] ?? ''
+  const enhancementCard = cardOf('plain')
+  const skinCard = cardOf('liquid-glass')
+  truthy(enhancementCard.length > 0, 'the enhancement card rendered')
+  truthy(skinCard.length > 0, 'the skin card rendered')
+  contains(enhancementCard, 'Priority 100')
+  excludes(skinCard, 'Priority', 'the skin carries no priority badge — it is alone by policy and never sorted')
 })
 
 // ── retired: the sound-reminders suite ───────────────────────────────────────

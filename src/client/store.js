@@ -15,6 +15,8 @@
  * @property {'skin'|'enhancement'} type
  * @property {'global'|'layout'|'component'} scope
  * @property {readonly string[]} supports
+ * @property {'low'|'medium'|'high'} perfLevel the tier this project was designed for
+ * @property {number} priority execution order among composable projects; lower runs first
  * @property {string | undefined} preview
  * @property {string | undefined} previewLabel
  * @property {boolean} enabled
@@ -45,7 +47,8 @@
 /**
  * @typedef {object} UiProjectsSnapshot
  * @property {UiProjectCardModel[]} projects
- * @property {string[]} conflicts
+ * @property {string | undefined} outOfOrderId
+ * @property {'low'|'medium'|'high'|undefined} perfLevel the tier in force for the page
  * @property {string} locale
  * @property {'settings'|'local'} storageKind
  * @property {number} revision
@@ -139,6 +142,8 @@ export function createStore(input) {
       type: project.type,
       scope: project.scope,
       supports: project.supports,
+      perfLevel: project.perfLevel,
+      priority: project.priority,
       preview: project.preview,
       previewLabel: project.previewLabel,
       enabled: registry.isEnabled(project.id),
@@ -147,7 +152,25 @@ export function createStore(input) {
       removable: project.defaultEnabled === true,
       controls: resolveControls(project, runtime, ctx),
     })),
-    conflicts: registry.listByType('skin').filter((project) => registry.isEnabled(project.id)).map((project) => project.id),
+    /*
+     * `conflicts` used to sit here — the active skin ids — and nothing ever read it: the panel
+     * derives the "will replace X" line from the project list it already has. Deleted rather than
+     * kept, because a second, silently unread notion of "conflict" is exactly what makes the real
+     * one hard to trust.
+     */
+    /**
+     * The project whose apply position the next load will change, or undefined when the order in
+     * force already matches priority order. Reported rather than acted on: a click does not
+     * re-order live projects, so the panel says what will move instead of moving it and flickering.
+     */
+    outOfOrderId: typeof runtime.outOfOrderId === 'function' ? runtime.outOfOrderId() : undefined,
+    /**
+     * The tier in force for the whole page — the heaviest active demand, capped by the device.
+     *
+     * Reported rather than used: the stylesheet reads `data-ui-perf` off the body, so this exists
+     * for the panel's own copy and for tests. `undefined` means nothing is applied.
+     */
+    perfLevel: typeof runtime.perfLevel === 'function' ? runtime.perfLevel() : undefined,
     locale: locale(),
     storageKind: runtime.persist.kind,
     revision: registry.getVersion() + extraRevision(),
