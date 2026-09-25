@@ -118,9 +118,29 @@ record should say when they made it.
 
 What is recorded is `{ version, items }`, inside the project's own settings record — no new
 namespace, and one write rather than two, so the stamp cannot disagree with the ticks it validates.
-That version stamp is the part with teeth: **shipping a new version invalidates the confirmation**,
-because the thing that was verified has changed. The old record is reported rather than deleted —
-"confirmed for 1.0.0, needs confirming again" tells a reader something an empty checkbox cannot.
+
+That record is a claim about a **pair**: this version, and this list. A confirmation is therefore
+current only while both are the ones it was made against, and the card has three things to say:
+
+| state | when | what the reader is told |
+|---|---|---|
+| **current** | same version, every declared item ticked | "confirmed for 3.0.0" |
+| **stale** | a different version | "confirmed for 1.0.0; this version needs confirming again" |
+| **incomplete** | same version, an item missing from the record | "confirmed for 3.0.0, but the checklist changed since" |
+
+Two states were not enough, and the third was not theoretical: a real settings document was found
+holding `{version: '3.0.0', items: {}}` — a confirmation with nothing ticked in it — and the
+version-only rule reported it as confirmed. The two failures also have different causes, and a
+message that names the wrong one is worse than no message: a new version invalidates the claim
+because it is about different code, a changed checklist because it is about a different list.
+
+**Removing** an item from a checklist does *not* invalidate a confirmation, and that is deliberate:
+everything still declared was read and holds, so the claim is intact. `storedChecks` keeps only the
+items that are declared now and were ticked, which is what makes that true — and what makes the
+subset test and the equality test the same test. The old record is reported rather than deleted:
+"confirmed for 1.0.0, needs confirming again" tells a reader something an empty checkbox cannot, and
+an out-of-date record still seeds the boxes it can, because a tick means "this was read" and only the
+claim expires.
 
 **Withdrawing** removes that key outright rather than emptying it, leaves the project's other options
 alone, and takes the ticks with it: a fully ticked checklist standing beside no record is a reading

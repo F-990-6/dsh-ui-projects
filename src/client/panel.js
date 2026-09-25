@@ -183,7 +183,16 @@ function UiProjectsSection(props) {
  */
 function Checklist(props) {
   const { R, t, project, pending, onConfirm, onClear } = props
-  const stored = project.checksCurrent ? project.checks : undefined
+  /*
+   * Seeded from the record whenever there IS one, not only while the record is still current.
+   *
+   * The boxes are the READING and the record is the CLAIM, and the two go out of date for different
+   * reasons: a new version, or an item added to the checklist, invalidates the claim — not the fact
+   * that somebody read these items. Seeding only from a current record threw that reading away, and it
+   * made re-confirming cost five clicks after the one item that changed. The record still reports
+   * itself as stale or incomplete; a tick means "this was read", nothing more.
+   */
+  const stored = project.checks
   const hasRecord = project.checks !== undefined
   const [ticked, setTicked] = React.useState(() => ({ ...(stored?.items ?? {}) }))
   const all = project.testItems.length > 0 && project.testItems.every((item) => ticked[item.id] === true)
@@ -271,13 +280,18 @@ function Checklist(props) {
       : R.createElement(
           'p',
           {
-            className: project.checksCurrent ? 'uip-description' : 'uip-hint',
+            className: project.checksState === 'current' ? 'uip-description' : 'uip-hint',
             // The confirmation's STATE, for the same reason as the button's hook: the sentence
-            // around it is translated, the state is not.
-            'data-uip-checks': project.checksCurrent ? 'current' : 'stale',
+            // around it is translated, the state is not. Three values, because `stale` and
+            // `incomplete` are different findings and the sentence has to say which one it is.
+            'data-uip-checks': project.checksState,
             'data-uip-checks-version': project.checks.version,
           },
-          project.checksCurrent ? t.tests.passed(project.checks.version) : t.tests.stale(project.checks.version),
+          project.checksState === 'current'
+            ? t.tests.passed(project.checks.version)
+            : project.checksState === 'stale'
+              ? t.tests.stale(project.checks.version)
+              : t.tests.incomplete(project.checks.version),
         ),
     R.createElement('div', { className: 'uip-checks' }, rows),
   )

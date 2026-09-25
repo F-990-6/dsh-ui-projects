@@ -21,7 +21,8 @@
  * @property {ReadonlyArray<{ id: string, label: string }>} testItems the manual checklist, if any
  * @property {{ version: string, items: Record<string, boolean> } | undefined} checks
  *   the stored confirmation, or undefined when none was ever recorded
- * @property {boolean} checksCurrent whether that confirmation was made against THIS version
+ * @property {'current' | 'stale' | 'incomplete' | undefined} checksState what that confirmation is
+ *   worth against the version AND the checklist declared now; undefined when there is no record
  * @property {string | undefined} preview
  * @property {string | undefined} previewLabel
  * @property {boolean} enabled
@@ -135,18 +136,39 @@ function storedChecks(project, runtime) {
 }
 
 /**
- * Whether a confirmation was made against the version now registered.
+ * What the stored confirmation is worth against the checklist declared right now.
  *
- * A project that ships a new version has changed the very thing the checklist verified, so an old
- * confirmation is not merely stale — it is a claim about code that no longer exists. It is reported
- * rather than deleted, because "confirmed for 3.0.0, needs re-confirming" is more useful to a
- * reader than an empty checkbox they cannot explain.
+ * THREE ANSWERS RATHER THAN ONE BOOLEAN, because the two ways a confirmation goes out of date have
+ * different causes and the reader is owed the right one. A new version invalidates the claim because
+ * it is a claim about different code; a changed checklist invalidates it because it is a claim about
+ * a different list. Reporting the second as the first describes a version change that never happened.
+ *
+ * The old rule compared the version and stopped there, so a record made before an item was added —
+ * or a record with no items in it at all, which was found in a real settings document — kept the card
+ * saying "confirmed for 3.0.0" while the thing being claimed had never been read.
+ *
+ * The two conditions are not alternatives, and the subset test IS the equality test here: `storedChecks`
+ * keeps only items that are declared now AND were ticked, so the kept set is a subset of the declared
+ * set by construction, and requiring every declared item to be present makes it equal. A count-based
+ * check would be weaker rather than simpler: `testItems` does not refuse duplicate ids (recorded as a
+ * known issue in the changelog), and `[a, a]` against `{a: true}` is one tick standing for two
+ * declarations.
  * @param {import('./registry.js').UiProjectDefinition} project
  * @param {import('./runtime.js').UiProjectRuntime} runtime
- * @returns {boolean}
+ * @returns {'current' | 'stale' | 'incomplete' | undefined} undefined when nothing was ever recorded
  */
-function isChecksCurrent(project, runtime) {
-  return storedChecks(project, runtime)?.version === project.version
+function checksStateOf(project, runtime) {
+  const stored = storedChecks(project, runtime)
+  if (stored === undefined) return undefined
+  if (stored.version !== project.version) return 'stale'
+  /*
+   * A project that declares no items at all answers `current` here — `every` on an empty list is true
+   * — and that is deliberately left alone: the panel renders no disclosure for such a project, so no
+   * button can write the record this would be reading, and the only way to that state is a settings
+   * document edited by hand. Refusing it would mean inventing a fourth answer for a case no surface
+   * can display.
+   */
+  return project.testItems.every((item) => stored.items[item.id] === true) ? 'current' : 'incomplete'
 }
 
 /**
@@ -194,7 +216,7 @@ export function createStore(input) {
       regions: project.modifies,
       testItems: project.testItems,
       checks: storedChecks(project, runtime),
-      checksCurrent: isChecksCurrent(project, runtime),
+      checksState: checksStateOf(project, runtime),
       preview: project.preview,
       previewLabel: project.previewLabel,
       enabled: registry.isEnabled(project.id),

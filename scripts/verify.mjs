@@ -3684,6 +3684,186 @@ await test('a checklist is declared, validated, and rendered as a disclosure', a
   contains(cardOf('liquid-glass'), 'data-uip-action="confirm-checks"', 'with the same hook')
 })
 
+await test('a confirmation is worth exactly what the version and the checklist are worth', async () => {
+  /*
+   * THE CURRENCY RULE, and every way it can be wrong.
+   *
+   * The record is a claim about a PAIR: this version, and this list. The rule used to compare the
+   * version and stop, so three things went unnoticed — an item added without a version bump, an item
+   * removed, and a record with no items at all in it. The last one was found in a real settings
+   * document (`{version: '3.0.0', items: {}}`): the card said "confirmed for 3.0.0" while nothing had
+   * been read, and nothing about the interface looked wrong.
+   */
+  const harness = await boot()
+  const base = { id: 'checkable', name: 'Checkable', version: '1.0.0' }
+  const definition = (over) => ({ ...base, ...over })
+  harness.registry.register(
+    definition({ testItems: [{ id: 'one', label: 'One' }, { id: 'two', label: 'Two' }, { id: 'three', label: 'Three' }] }),
+  )
+  await harness.runtime.enable('checkable')
+  const state = () => harness.store.snapshot().projects.find((p) => p.id === 'checkable')?.checksState
+  const record = () => harness.store.snapshot().projects.find((p) => p.id === 'checkable')?.checks
+  /**
+   * Write a record directly, the way a hand-edited document or an older build would.
+   *
+   * `enable` first, because re-registering the project — which every step below does, to change the
+   * checklist — leaves it un-applied, and `contextFor` answers undefined for a project that is not
+   * applied. Enabling again is idempotent and re-persists the same settings, so it cannot disturb the
+   * record under test.
+   */
+  const write = async (checks) => {
+    await harness.runtime.enable('checkable')
+    const context = harness.runtime.contextFor('checkable')
+    if (context === undefined) {
+      throw new Error(
+        `no context for "checkable": registered=${harness.registry.get('checkable') !== undefined} ` +
+          `enabled=${harness.registry.isEnabled('checkable')} ids=${harness.registry.ids().join(',')}`,
+      )
+    }
+    await context.writeSetting('checks', checks)
+  }
+
+  equal(state(), undefined, 'no record, no state — not "incomplete", absent')
+
+  // 1. The baseline the other cases are measured against.
+  await write({ version: '1.0.0', items: { one: true, two: true, three: true } })
+  equal(state(), 'current', 'every declared item ticked, same version')
+
+  // 2. A new version: the claim is about different code.
+  harness.registry.register(
+    definition({ version: '1.1.0', testItems: [{ id: 'one', label: 'One' }, { id: 'two', label: 'Two' }, { id: 'three', label: 'Three' }] }),
+  )
+  equal(state(), 'stale', 'a new version invalidates it')
+
+  // 3. An item ADDED without a version bump: the claim is about a different list. The record is
+  //    rewritten at 1.1.0 first, so the ONLY difference left is the added item — otherwise the
+  //    version mismatch from step 2 would answer for it and this case would prove nothing.
+  const threeItems = [
+    { id: 'one', label: 'One' },
+    { id: 'two', label: 'Two' },
+    { id: 'three', label: 'Three' },
+  ]
+  await write({ version: '1.1.0', items: { one: true, two: true, three: true } })
+  equal(state(), 'current', 'the 1.1.0 record is current against the 1.1.0 checklist')
+  harness.registry.register(definition({ version: '1.1.0', testItems: [...threeItems, { id: 'four', label: 'Four' }] }))
+  equal(state(), 'incomplete', 'an item added without a version bump invalidates it too')
+
+  // 4. The reverse — an item REMOVED — must NOT invalidate it, and both halves of that are asserted:
+  //    the state stays current, and the removed item does not survive into the snapshot's items
+  //    either. `storedChecks`'s filter is what makes the first true, so a later "optimisation" that
+  //    kept every key would fail here rather than quietly change the meaning of a confirmation.
+  harness.registry.register(definition({ version: '1.1.0', testItems: [threeItems[0], threeItems[1]] }))
+  await write({ version: '1.1.0', items: { one: true, two: true, three: true, ghost: true } })
+  equal(state(), 'current', 'an item removed from the checklist keeps it valid: it was read, and it holds')
+  equal(
+    JSON.stringify(record()?.items),
+    '{"one":true,"two":true}',
+    'and neither the removed item nor a key that was never declared reaches the snapshot',
+  )
+
+  // 5. A record with no items in it — the shape found on a real machine.
+  await write({ version: '1.1.0', items: {} })
+  equal(state(), 'incomplete', 'a record with nothing ticked in it is not a confirmation')
+
+  // 6. Partially ticked: one true, the rest missing or false.
+  await write({ version: '1.1.0', items: { one: true, two: false } })
+  equal(state(), 'incomplete', 'a partial record is not a confirmation')
+
+  // 8. The state reaches the panel, with the right sentence for each of the three. The four-item
+  //    checklist is restored first, because step 4 shrank it on purpose.
+  harness.registry.register(definition({ version: '1.1.0', testItems: [...threeItems, { id: 'four', label: 'Four' }] }))
+  await write({ version: '1.1.0', items: { one: true, two: true, three: true, four: true } })
+  const current = harness.render()
+  contains(current, 'data-uip-checks="current"', 'the hook reports the state')
+  contains(current, 'Confirmed for v1.1.0.', 'and the sentence matches it')
+  await write({ version: '9.9.9', items: { one: true } })
+  const stale = harness.render()
+  contains(stale, 'data-uip-checks="stale"', 'a version change reads as stale')
+  contains(stale, 'Confirmed for v9.9.9; this version needs confirming again.', 'with the version-change sentence')
+  await write({ version: '1.1.0', items: { one: true } })
+  const incomplete = harness.render()
+  contains(incomplete, 'data-uip-checks="incomplete"', 'a changed checklist reads as incomplete')
+  contains(
+    incomplete,
+    'Confirmed for v1.1.0, but the checklist changed since; confirm it again.',
+    'with the sentence that says so',
+  )
+
+  /*
+   * 9. An out-of-date record still seeds the boxes it can.
+   *
+   * The assertion names the items rather than looking for `checked` anywhere: a rendering where the
+   * wrong item was ticked, or where every item was, would satisfy the loose form. What has to hold is
+   * that the record's own keys arrive as ticks and the keys it does not have do not.
+   */
+  await write({ version: '9.9.9', items: { one: true, four: true } })
+  /*
+   * Scoped to THIS project's card, because `render()` draws every registered project and the registry
+   * is module-level and shared across the suite — the first version of this assertion counted seven
+   * checkboxes and was measuring another test's project as well.
+   */
+  const card = /data-project="checkable"[\s\S]*?<\/li>/.exec(harness.render())?.[0] ?? ''
+  const boxes = [...card.matchAll(/<input type="checkbox"([^>]*)>/g)].map((match) => match[1])
+  equal(boxes.length, 4, 'the checklist rendered every declared item')
+  const tickedIds = boxes.map((attributes) => attributes.includes('checked')).join(',')
+  equal(tickedIds, 'true,false,false,true', 'only the items the stale record carries are ticked')
+
+  // 10. The old field is gone rather than left beside the new one: two fields that describe the same
+  //     thing are two fields that can disagree.
+  excludes(JSON.stringify(harness.store.snapshot()), 'checksCurrent', 'the boolean was replaced, not joined')
+})
+
+await test('the record an instance actually had is read from the document, not from a click', async () => {
+  /*
+   * The shape found on a real machine: `{version: '3.0.0', items: {}}` for the shipped skin — a
+   * confirmation claiming a version with nothing ticked in it.
+   *
+   * Booted with the document already holding it, rather than written through a context, so this also
+   * covers the path that matters in practice: the state is computed from the settings document at
+   * boot, with nobody clicking anything.
+   *
+   * IN ITS OWN TEST because a second `boot()` inside another test moves the module-level registry
+   * handle, and every read through the older harness then consults the newer registry: the first
+   * version of this lived in the test above and its `enable`/`isEnabled` disagreed for that reason,
+   * which is the kind of cross-talk this suite should not be relying on.
+   */
+  const harness = await boot({
+    withSettingsScope: true,
+    scopeRecord: {
+      v: 1,
+      initialized: true,
+      enabled: [],
+      settings: { 'liquid-glass': { checks: { version: '3.0.0', items: {} } } },
+      touched: true,
+    },
+  })
+  const project = harness.store.snapshot().projects.find((p) => p.id === 'liquid-glass')
+  equal(project?.checksState, 'incomplete', 'the record reads as incomplete, not as confirmed')
+
+  /*
+   * The exact sentence, not a fragment: the whole point of the third state is that the reader is told
+   * the checklist moved rather than the version, so the assertion reads the paragraph back and
+   * compares it in full. A `contains` would pass on a sentence that merely shared a phrase, and would
+   * say nothing useful when it failed.
+   */
+  const sentence = /<p[^>]*data-uip-checks[^>]*>([^<]*)<\/p>/.exec(harness.render())?.[1]
+  equal(
+    sentence,
+    'Confirmed for v3.0.0, but the checklist changed since; confirm it again.',
+    'and the panel says the checklist moved, not the version',
+  )
+  /*
+   * The Chinese copy is checked through `strings`, not through a render: the harness mounts no locale
+   * service, so every harness renders English. Reading the table directly is locale-independent, and
+   * the parity test already guarantees both languages carry the key.
+   */
+  equal(
+    strings('zh').tests.incomplete('3.0.0'),
+    '已针对 v3.0.0 确认过，但清单此后有变动；请重新确认。',
+    'with the Chinese sentence saying the same thing',
+  )
+})
+
 await test('confirming records the version, and a new version invalidates it', async () => {
   const harness = await boot()
   const definition = (version) => ({
@@ -3722,12 +3902,12 @@ await test('confirming records the version, and a new version invalidates it', a
   stopWatching()
   truthy(notified > 0, 'the store is notified after a settings write, so the card can redraw')
   const confirmed = harness.store.snapshot().projects.find((p) => p.id === 'confirmable')
-  equal(confirmed?.checksCurrent, true, 'the confirmation is current for the registered version')
+  equal(confirmed?.checksState, 'current', 'the confirmation is current for the registered version')
 
   // The project ships a new version. The confirmation is now about code that no longer exists.
   harness.registry.register(definition('1.1.0'))
   const after = harness.store.snapshot().projects.find((p) => p.id === 'confirmable')
-  equal(after?.checksCurrent, false, 'a new version invalidates the confirmation')
+  equal(after?.checksState, 'stale', 'a new version invalidates the confirmation')
   equal(after?.checks?.version, '1.0.0', 'and the old one is still reported, not deleted')
   contains(harness.render(), 'needs confirming again', 'which the card says in words')
 

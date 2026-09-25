@@ -25,6 +25,73 @@ Verification vocabulary used below:
 
 ---
 
+## Round 29 — a confirmation is worth what its version AND its checklist are worth
+
+**Status: done. `suite` 605 assertions / 0 failing, `host` green. Snapshot 44.** The browser suite was
+not re-run, by agreement: nothing here is reachable through the interface, and its assertions read the
+checklist hook as an opaque value they compare start-to-end.
+
+The currency rule compared the version and stopped. Three things went unnoticed, and one of them was
+not theoretical — a real settings document was found holding:
+
+```yaml
+settings: { liquid-glass: { checks: { version: 3.0.0, items: {} } } }
+```
+
+a confirmation with nothing ticked in it, which the card reported as "confirmed for 3.0.0". The other
+two: an item added to a checklist without a version bump (the claim silently covers a list it never
+saw), and an item removed (which was already handled — see below).
+
+**Changed**
+
+- **The record is a claim about a PAIR.** `checksStateOf` answers `current` only when the version
+  matches AND every declared item is ticked; `stale` when the version differs; `incomplete` when the
+  checklist does. The old boolean could not express the difference, and a message that names the wrong
+  cause is worse than no message.
+- **`checksCurrent: boolean` is replaced by `checksState`** rather than joined by it. Two fields
+  describing one thing are two fields that can disagree, and the suite asserts the old name is gone.
+- **A third sentence**, in both languages: "confirmed for v3.0.0, but the checklist changed since;
+  confirm it again." — because the existing sentence asserts a version change that did not happen.
+- **The subset test IS the equality test**, and that is why nothing counts. `storedChecks` keeps only
+  items that are declared now and were ticked, so the kept set is a subset of the declared set by
+  construction; requiring every declared item makes it equal. A count-based check would be weaker: a
+  project may declare the same item id twice, and `[a, a]` against `{a: true}` is one tick standing
+  for two declarations.
+
+**AN ITEM REMOVED DOES NOT INVALIDATE THE CONFIRMATION, and that is the interesting half.** Everything
+still declared was read and holds, so the claim is intact. What makes that true is `storedChecks`'s
+filter, so the test asserts both directions: the state stays `current`, AND the removed key never
+reaches the snapshot's items. A future "optimisation" that kept every key would fail there rather than
+quietly changing what a confirmation means.
+
+**Behaviour change, recorded for readers rather than only for the reviewer who approved it:** the
+checklist's tick boxes are now seeded from the record **whenever one exists**, not only while it is
+current. The boxes are the reading and the record is the claim; a new version or a changed checklist
+invalidates the claim, not the fact that somebody read these items. The visible consequences are that
+an out-of-date record shows what was read before, and that the confirm button can already be enabled
+when the panel opens — the same reading, one click from being re-recorded.
+
+**Known issue, recorded rather than fixed here.** `registry.js` validates a test item's id shape and
+its label, but not that ids are UNIQUE, so a project can declare the same item twice: the card renders
+two identical rows sharing one tick. Orthogonal to this round — it belongs to registry validation —
+and it is the reason the currency rule is per-item rather than count-based.
+
+**Verification:** `suite` 605 / 0 (+21), `host` green, `derive --check` unchanged. A sabotage run that
+reverted the rule to "version only" failed the added-item assertion and the seeded-document assertion,
+and was then restored. **Stated exactly:** the `items: {}` and partially-ticked cases live in the same
+test after the added-item one, and this suite's `equal` throws, so they did not individually report a
+failure — they exercise the same expression the sabotage broke, and the observed-record case (assertion
+7) did fire, which is the shape found on a real machine.
+
+**Three harness traps this round cost time on, recorded so they cost less next time.** A second
+`boot()` inside a test moves the module-level registry handle, after which the older harness's
+`enable` and `isEnabled` disagree — the seeded-document case is its own test because of it. The harness
+mounts no locale service, so every harness renders ENGLISH; copy assertions must read the translate
+table for the other language rather than the render. And `render()` draws every registered project, so
+any assertion about a card has to be scoped to that card's markup.
+
+---
+
 ## Round 28 — every translucent surface, in every mode that removes transparency
 
 **Status: done. `suite` 584 assertions / 0 failing, `host` green, `browser` 142 assertions / 0
