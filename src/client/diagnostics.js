@@ -109,6 +109,21 @@ export function collectDiagnostics(projects, runtime) {
     persistKind: runtime?.persist?.kind ?? 'no runtime',
     persistReady: runtime?.persist?.readiness ?? 'no runtime',
     persistDiverged: runtime?.persist?.diverged === true,
+    /**
+     * Which surfaces two active projects both claim, and whether either claim is a blur.
+     *
+     * The settings page shows the same thing as a hint; it is repeated here because the overlay is
+     * where a CONFIRMED nesting shows up, and the two need reading together: this says what was
+     * declared, `layers` says what is actually on screen.
+     */
+    regionConflicts:
+      runtime === undefined
+        ? 'no runtime'
+        : runtime.registry
+            .regionConflicts()
+            .map((pair) => `${pair.ids.join('+')}:${pair.regions.join(',')}${runtime.declaresFilter(pair.ids[0]) && runtime.declaresFilter(pair.ids[1]) ? ' (both blur)' : ''}`),
+    /** The measured answer: which elements really carry a filter, and which sit inside another. */
+    layers: collectLayers(runtime),
     sidebarFill: getComputedStyle(body).getPropertyValue('--dsw-specific-sidebar-fill').trim(),
     dialogFill: getComputedStyle(body).getPropertyValue('--dsw-alias-bg-layer-2').trim(),
     /* ── everything below is context; the fields above answer most questions ── */
@@ -200,6 +215,108 @@ function collectDialog() {
     bottomGap: Math.round(window.innerHeight - rect.bottom),
     maskBackground: mask === null ? null : getComputedStyle(mask).backgroundColor,
   }
+}
+
+/**
+ * The scan's cached result, keyed by the registry's revision.
+ *
+ * The overlay repaints four times a second, and a DOM scan is the most expensive thing in this
+ * file, so it must not run per repaint. Keying on the revision is what makes the cache correct
+ * rather than merely fast: the answer can only change when a project is registered, applied or
+ * removed, and all three bump that number.
+ * @type {{ revision: number, value: Record<string, unknown> } | undefined}
+ */
+let layerCache
+
+/**
+ * Which elements actually carry a `backdrop-filter`, and which of those sit inside another one.
+ *
+ * BOUNDED ON PURPOSE, and never called from the toggle path. A full-document scan means a
+ * `getComputedStyle` per node plus a forced layout, which on a real application is tens of
+ * milliseconds; the candidate set here is a dozen elements by construction.
+ *
+ * The pseudo-element is the reason this cannot be a `querySelectorAll`: the skin's frost lives on
+ * the frame's `::before`, and a pseudo-element is not an element — no selector returns it and no
+ * ancestor walk passes through it. Reading `getComputedStyle(el, '::before')` for each candidate is
+ * what makes the skin's own layer visible to the scan at all.
+ * @param {import('./runtime.js').UiProjectRuntime | undefined} runtime
+ * @returns {Record<string, unknown>}
+ */
+function collectLayers(runtime) {
+  if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return { supported: false }
+  const revision = runtime?.registry?.getVersion?.() ?? -1
+  if (layerCache !== undefined && layerCache.revision === revision) return layerCache.value
+
+  /** @type {Array<{ node: Element, label: string }>} */
+  const candidates = []
+  /** @param {Element | null | undefined} node @param {string} label */
+  const consider = (node, label) => {
+    if (node === null || node === undefined) return
+    if (candidates.some((entry) => entry.node === node)) return
+    candidates.push({ node, label })
+  }
+  consider(document.body, 'body')
+  const columns = Array.from(document.querySelectorAll('[data-ui-skin-column]'))
+  for (const column of columns) consider(column, 'column')
+  consider(columns[0]?.parentElement, 'frame')
+  consider(document.querySelector('[data-rightbar-col]'), 'rightbar')
+  consider(document.querySelector('[data-shell-overlay]'), 'overlay')
+  consider(document.querySelector('[data-composer-card]'), 'composer')
+  for (const surface of document.querySelectorAll('[role="dialog"], [role="menu"], [role="listbox"], [role="tooltip"]')) {
+    consider(surface, `role:${surface.getAttribute('role')}`)
+  }
+
+  /** @param {Element} node @returns {{ element: string, pseudo: string }} */
+  const blurOf = (node) => {
+    const read = (pseudo) => {
+      try {
+        const value = getComputedStyle(node, pseudo).backdropFilter
+        return typeof value === 'string' ? value : ''
+      } catch {
+        return ''
+      }
+    }
+    return { element: read(undefined), pseudo: read('::before') }
+  }
+  const filters = (value) => value !== '' && value !== 'none'
+
+  /** @type {Array<{ node: Element, label: string, where: string, value: string }>} */
+  const filtered = []
+  for (const entry of candidates) {
+    const blur = blurOf(entry.node)
+    if (filters(blur.element)) filtered.push({ ...entry, where: 'element', value: blur.element })
+    else if (filters(blur.pseudo)) filtered.push({ ...entry, where: '::before', value: blur.pseudo })
+  }
+
+  /*
+   * A nesting is a filtered node with another filtered node above it. The walk is capped at 12
+   * levels: deeper than any real wrapper chain, and a cap is what keeps a malformed document from
+   * turning a diagnostic into a hang.
+   */
+  const chains = []
+  for (const inner of filtered) {
+    let node = inner.node.parentElement
+    for (let depth = 0; depth < 12 && node !== null; depth += 1) {
+      const outer = filtered.find((entry) => entry.node === node)
+      if (outer !== undefined) {
+        chains.push({
+          inner: `${inner.label}${inner.where === '::before' ? '::before' : ''}`,
+          outer: `${outer.label}${outer.where === '::before' ? '::before' : ''}`,
+        })
+        break
+      }
+      node = node.parentElement
+    }
+  }
+
+  const value = {
+    supported: true,
+    scanned: candidates.length,
+    filtered: filtered.map((entry) => `${entry.label}${entry.where === '::before' ? '::before' : ''}`),
+    chains,
+  }
+  layerCache = { revision, value }
+  return value
 }
 
 /**

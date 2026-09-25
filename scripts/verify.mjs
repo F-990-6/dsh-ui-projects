@@ -25,9 +25,21 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import vm from 'node:vm'
 
+import { MARKER } from './boot-css-rules.mjs'
+
 const here = dirname(fileURLToPath(import.meta.url))
 const packageRoot = resolve(here, '..')
 const nodeRequire = createRequire(join(packageRoot, 'package.json'))
+
+/**
+ * The marker the scoper puts on the body element — IMPORTED, so this suite cannot agree with a
+ * marker that no longer exists.
+ *
+ * The assertions below are about the same string the build and the derive tool use, and the sheet
+ * they produce carries it. Spelling it out here as well would have meant three places to change and
+ * two of them to forget.
+ */
+const LIQUID_GLASS_SELECTOR = MARKER
 
 const react = nodeRequire('react')
 const server = nodeRequire('react-dom/server')
@@ -1052,6 +1064,11 @@ async function boot(options = {}) {
     registrations: host.registrations,
     registry: plugin.registry,
     runtime,
+    /**
+     * The panel's data source, so a test can assert on the snapshot the panel renders from rather
+     * than re-deriving it. Captured at boot: the module-level handle moves on with the next boot.
+     */
+    store: plugin.store,
     /** Present only with `fakeTimers`, and then the only place timers can be inspected. */
     timers,
     persistKind: runtime.persist.kind,
@@ -2539,6 +2556,36 @@ await test('the palette only re-binds tokens the shipped client actually declare
   excludes(palette.textContent, '--dsw-alias-label-secondary')
 })
 
+await test('prefers-contrast: more raises the fills and the hairlines, and keeps the palette', async () => {
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  const css = harness.allCss()
+
+  /*
+   * Both sheets must answer the query, and that count is the assertion rather than a bare
+   * `contains`: `background-image: none` and `backdrop-filter: none` already appear in the
+   * reduced-transparency and forced-colors branches, so asserting on them would pass whether or not
+   * this branch exists at all.
+   */
+  equal(
+    (css.match(/@media \(prefers-contrast: more\)/g) ?? []).length,
+    2,
+    'the palette sheet and the material sheet both answer it',
+  )
+  // Values unique to this branch: opaque fills are the lever, because the label tokens are fixed.
+  contains(css, '--dsw-alias-bg-layer-3: #fff')
+  contains(css, '--dsw-alias-bg-layer-3: #23262f')
+  // Opacity alone would leave two same-coloured opaque surfaces with no edge between them, which is
+  // the opposite of what was asked for.
+  contains(css, '--dsw-alias-border-l1: rgb(15 23 42 / 34%)')
+  contains(css, '--dsw-alias-border-l1: rgb(255 255 255 / 38%)')
+
+  const palette = harness.dom.styles().find((style) => style.textContent.includes('--dsw-alias-bg-base:'))
+  truthy(palette !== undefined, 'the palette sheet is present')
+  excludes(palette.textContent, '--dsw-alias-label-primary')
+  excludes(palette.textContent, '--dsw-alias-label-secondary')
+})
+
 await test('the palette follows the shipped dark-theme signal, never a media query', async () => {
   const harness = await boot()
   await harness.runtime.enable('liquid-glass')
@@ -2602,6 +2649,13 @@ await test('the first-paint stylesheet carries the skin, and only under its mark
   // The ambient gradient, which is the only thing the frost has to refract.
   contains(BOOT_CSS, 'radial-gradient')
   contains(BOOT_CSS, 'background-attachment')
+  /*
+   * And the contrast branch travels with it. This is the assertion the build's completeness check
+   * makes true in general; stating it here says why it matters for the first frame — a reader who
+   * asked for more contrast must not get a translucent first paint that corrects itself a moment
+   * later.
+   */
+  contains(BOOT_CSS, '@media (prefers-contrast: more)')
 
   const selectors = [...BOOT_CSS.matchAll(/([^{}]+)\{/g)]
     .map((match) => match[1].trim())
@@ -2623,6 +2677,110 @@ await test('the first-paint stylesheet carries the skin, and only under its mark
    */
   excludes(BOOT_CSS, '::before')
   excludes(BOOT_CSS, 'data-ui-skin-column')
+
+  /*
+   * THE SUPPRESSION RULES, spelled out — and this assertion exists because its absence cost a real
+   * bug. Each of these three branches removes the ambient gradient, and each has to name the themed
+   * rule too: the gradient is painted by `body[data-ds-dark-theme]`, one attribute more specific
+   * than a bare `body`, and a media query adds no specificity of its own. Written as a bare `body`
+   * the suppression won in light mode and lost in dark mode, silently.
+   *
+   * The check above — every selector carries the marker — could not see it, and neither could the
+   * build's subset check: a rule that is MISSING fails neither. Only the build's completeness
+   * direction would have, and it was blind in the same way, because its predicate skipped a
+   * comma-separated selector on sight. So this states the shape directly, for all three branches.
+   */
+  const flat = BOOT_CSS.replace(/\s+/g, ' ')
+  const bothSelectors = `${LIQUID_GLASS_SELECTOR}, ${LIQUID_GLASS_SELECTOR}[data-ds-dark-theme]{ background-image: none; }`
+  /**
+   * Every conditional block for one query, brace-balanced.
+   *
+   * ALL of them, because a query can appear more than once in the sheet: `prefers-contrast: more`
+   * carries the token rebinds in one block and the gradient suppression in another. Taking the first
+   * match asks the wrong block the right question, which is how this assertion failed against a
+   * correct sheet the first time it ran.
+   */
+  const branchBlocks = (/** @type {string} */ branch) => {
+    const blocks = []
+    let from = 0
+    for (;;) {
+      const start = flat.indexOf(`@media (${branch}){`, from)
+      if (start === -1) return blocks
+      let depth = 0
+      let end = flat.length
+      for (let index = start; index < flat.length; index += 1) {
+        if (flat[index] === '{') depth += 1
+        else if (flat[index] === '}') {
+          depth -= 1
+          if (depth === 0) {
+            end = index + 1
+            break
+          }
+        }
+      }
+      blocks.push(flat.slice(start, end))
+      from = end
+    }
+  }
+  for (const branch of ['prefers-contrast: more', 'forced-colors: active', 'prefers-reduced-transparency: reduce']) {
+    /*
+     * Searched WITHIN the branch, not across the sheet. A sheet-wide `contains` is satisfied by any
+     * one of the three, so sabotaging a single branch left the other two answering for it and the
+     * check passed — found by breaking one branch on purpose and watching nothing happen.
+     */
+    const blocks = branchBlocks(branch)
+    truthy(blocks.length > 0, `the ${branch} branch reached the first-paint sheet`)
+    truthy(
+      blocks.some((block) => block.includes(bothSelectors)),
+      `and its gradient suppression outranks the themed rule (${branch}) — in ${
+        blocks.length
+      } block(s): ${blocks.map((block) => block.slice(0, 120)).join(' | ')}`,
+    )
+  }
+  equal(
+    [...BOOT_CSS.matchAll(/background-image: none/g)].length,
+    3,
+    'exactly the three suppression branches remove the gradient',
+  )
+})
+
+/*
+ * The predicate that decides what the first-paint sheet contains, held to CSS's own reading of a
+ * selector rather than to a convenient approximation.
+ *
+ * Every case below is a bug that was actually present, not a hypothetical:
+ *
+ *   - `body, body[data-ds-dark-theme]` — a comma list, skipped on sight by both copies of the
+ *     predicate, which is how three suppression rules left the sheet with nothing failing.
+ *   - `body[marker] [role='dialog']` — a descendant, accepted as a body-level rule because the
+ *     remainder was trimmed before its first character was inspected, so the space that IS the
+ *     combinator had been removed.
+ *   - `:where(body[marker] [role='dialog'], …)` — one selector containing commas, which a naive
+ *     split tears into fragments that classify as body-level and are not.
+ *   - `body[marker], .lg-glass` — genuinely mixed, and reported as such instead of being guessed at.
+ */
+await test('the first-paint predicate reads selectors the way CSS does', async () => {
+  const { classifyPrelude } = await import(
+    pathToFileURL(join(packageRoot, 'scripts', 'boot-css-rules.mjs')).href
+  )
+  const M = LIQUID_GLASS_SELECTOR
+  const cases = [
+    [M, 'body'],
+    [`${M}[data-ds-dark-theme]`, 'body'],
+    [`${M}, ${M}[data-ds-dark-theme]`, 'body'],
+    [`${M}[data-ui-perf='low']`, 'body'],
+    [`${M} .lg-glass`, 'other'],
+    [`${M} [role='dialog']`, 'other'],
+    [`${M}[data-ui-perf='low'] :where(:has(> [data-ui-skin-column]))::before`, 'other'],
+    [`${M}, ${M}[data-ui-perf='low'] :where([role='dialog'], [role='menu'])`, 'mixed'],
+    [`:where(${M} [role='dialog'], ${M} [role='menu'])`, 'other'],
+    [`${M}, .lg-glass`, 'mixed'],
+    ['.lg-glass', 'other'],
+    ['', 'other'],
+  ]
+  for (const [selector, expected] of cases) {
+    equal(classifyPrelude(selector), expected, `classifyPrelude(${JSON.stringify(selector)})`)
+  }
 })
 
 /*
@@ -2826,6 +2984,239 @@ await test('priority is validated, and the card shows it only where it means som
   truthy(skinCard.length > 0, 'the skin card rendered')
   contains(enhancementCard, 'Priority 100')
   excludes(skinCard, 'Priority', 'the skin carries no priority badge — it is alone by policy and never sorted')
+})
+
+/*
+ * Regions and conflicts — step 6, unit B/2.
+ *
+ * Two enhancements that are active together and claim the same surface may fight over it. The
+ * warning is advisory by construction: they may also compose perfectly, and nothing here may block
+ * an enable. Skins are out of scope by design — one is alone by policy, and its footprint is broad
+ * enough that including it would make every enhancement "conflict" with it.
+ */
+await test('shared regions are detected between enhancements, and only advisory', async () => {
+  const harness = await boot()
+  harness.registry.register({ id: 'tint', name: 'Tint', modifies: ['composer', 'tokens'] })
+  harness.registry.register({ id: 'pad', name: 'Pad', modifies: ['composer'] })
+  harness.registry.register({ id: 'elsewhere', name: 'Elsewhere', modifies: ['sidebar'] })
+
+  equal(harness.registry.regionConflicts().length, 0, 'nothing is applied, so nothing conflicts')
+
+  await harness.runtime.enable('tint')
+  await harness.runtime.enable('pad')
+  const pairs = harness.registry.regionConflicts()
+  equal(pairs.length, 1, 'one pair shares a region')
+  equal(pairs[0].ids.join('+'), 'tint+pad', 'and it names both projects, in registration order')
+  equal(pairs[0].regions.join(','), 'composer', 'and the region they share')
+  equal(harness.registry.isEnabled('tint'), true, 'a conflict never blocks an enable')
+  equal(harness.registry.isEnabled('pad'), true, 'for either side')
+
+  await harness.runtime.enable('elsewhere')
+  equal(harness.registry.regionConflicts().length, 1, 'a disjoint region adds no warning')
+
+  const snapshot = harness.store.snapshot()
+  equal(snapshot.regionConflicts.length, 1, 'the store reports the same pair')
+  equal(snapshot.regionConflicts[0].names.join('+'), 'Tint+Pad', 'with names resolved for display')
+})
+
+await test('a conflict with a skin is not reported, because a skin is alone by policy', async () => {
+  const harness = await boot()
+  harness.registry.register({ id: 'shares-with-skin', name: 'Shares', modifies: ['tokens', 'background'] })
+  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('shares-with-skin')
+  equal(harness.registry.isEnabled('liquid-glass'), true, 'the skin is on')
+  equal(
+    harness.registry.regionConflicts().length,
+    0,
+    'and the overlap with it is not a warning — a broad skin would make every enhancement noisy',
+  )
+})
+
+await test('a nesting needs two blurs, and is read from the CSS rather than declared', async () => {
+  const { declaresBackdropFilter, filteredSelectors } = plugin.__internals.cssFilter
+
+  // `none` is a rule that REMOVES a blur — the skin's own `@supports not` fallback. Counting it as
+  // "this project blurs" would report a nesting between rules that can never both be live.
+  equal(declaresBackdropFilter('.a{backdrop-filter:none}'), false, 'none is not a blur')
+  equal(declaresBackdropFilter('.a{backdrop-filter:blur(4px)}'), true, 'a blur is a blur')
+  equal(declaresBackdropFilter('.a{-webkit-backdrop-filter:blur(4px)}'), true, 'the prefixed form counts')
+  equal(declaresBackdropFilter('/* .a{backdrop-filter:blur(4px)} */'), false, 'a commented-out rule is not a rule')
+  equal(declaresBackdropFilter('@media (min-width:1px){.a{backdrop-filter:blur(1px)}}'), true, 'including inside a conditional')
+  equal(filteredSelectors('.a,.b{backdrop-filter:blur(1px)}').map((entry) => entry.selector).join(','), '.a,.b', 'every selector in a list')
+  equal(
+    filteredSelectors('@supports not (backdrop-filter:blur(1px)){.a{backdrop-filter:blur(9px)}}')[0].condition,
+    '@supports not (backdrop-filter:blur(1px))',
+    'and the condition it sits under, which decides whether it can be live at all',
+  )
+
+  const harness = await boot()
+  harness.registry.register({
+    id: 'blur-a',
+    name: 'Blur A',
+    modifies: ['dialogs'],
+    apply: (ctx) => ctx.insertCss('.blur-a{backdrop-filter:blur(6px)}'),
+  })
+  harness.registry.register({
+    id: 'blur-b',
+    name: 'Blur B',
+    modifies: ['dialogs'],
+    apply: (ctx) => ctx.insertCss('.blur-b{backdrop-filter:blur(4px)}'),
+  })
+  await harness.runtime.enable('blur-a')
+  equal(harness.runtime.declaresFilter('blur-a'), true, 'a project that filters is seen to filter')
+  await harness.runtime.enable('blur-b')
+  const pair = harness.store.snapshot().regionConflicts[0]
+  equal(pair.nested, true, 'two blurs on one region escalate the warning')
+
+  // One blur alone has nothing to nest inside, so it must not escalate.
+  await harness.runtime.disable('blur-b')
+  const lonely = await boot()
+  lonely.registry.register({
+    id: 'blur-only',
+    name: 'Blur Only',
+    modifies: ['dialogs'],
+    apply: (ctx) => ctx.insertCss('.blur-only{backdrop-filter:blur(6px)}'),
+  })
+  lonely.registry.register({ id: 'plain-sharer', name: 'Plain Sharer', modifies: ['dialogs'] })
+  await lonely.runtime.enable('blur-only')
+  await lonely.runtime.enable('plain-sharer')
+  equal(lonely.store.snapshot().regionConflicts[0].nested, false, 'one blur and one non-blur cannot nest')
+})
+
+await test('an unknown region is refused, and the warnings reach the panel', async () => {
+  const registry = new Registry()
+  let message = ''
+  try {
+    registry.register({ id: 'typo-region', name: 'Typo', modifies: ['composr'] })
+  } catch (err) {
+    message = err instanceof Error ? err.message : String(err)
+  }
+  truthy(/composr/.test(message), `a misspelled region must fail loudly, got: ${message}`)
+  equal(registry.ids(), [], 'nothing registered')
+
+  const harness = await boot()
+  harness.registry.register({ id: 'warn-a', name: 'Warn A', modifies: ['rightbar'] })
+  harness.registry.register({ id: 'warn-b', name: 'Warn B', modifies: ['rightbar'] })
+  await harness.runtime.enable('warn-a')
+  await harness.runtime.enable('warn-b')
+  const markup = harness.render()
+  contains(markup, 'may conflict', 'the section says what is shared')
+  contains(markup, 'right panel', 'naming the region in the reader\'s language')
+  const cardOf = (id) => new RegExp(`data-project="${id}"[\\s\\S]*?</li>`).exec(markup)?.[0] ?? ''
+  contains(cardOf('warn-a'), 'Shares the right panel with Warn B')
+  contains(cardOf('warn-b'), 'Shares the right panel with Warn A')
+  excludes(cardOf('liquid-glass'), 'Shares', 'a project in no conflict gets no line')
+})
+
+/*
+ * The verification checklist — step 6, final workstream.
+ *
+ * A project declares what a human should check; the panel renders it as a disclosure; confirming it
+ * records the version it was confirmed against. The version stamp is the part with teeth: a project
+ * that ships a new version has changed the thing the checklist verified, so the old confirmation is
+ * a claim about code that no longer exists.
+ */
+await test('a checklist is declared, validated, and rendered as a disclosure', async () => {
+  const registry = new Registry()
+  for (const [label, testItems] of [
+    ['an item with no id', [{ label: 'Looks right' }]],
+    ['an item with an unusable id', [{ id: 'Not An Id', label: 'Looks right' }]],
+    ['an item with no label', [{ id: 'looks-right' }]],
+  ]) {
+    let threw = false
+    try {
+      registry.register({ id: 'bad-items', name: 'Bad', testItems })
+    } catch {
+      threw = true
+    }
+    truthy(threw, `${label} must be refused: a checklist that cannot record is silent by construction`)
+  }
+  equal(registry.ids(), [], 'nothing registered')
+  equal(new Registry().get('missing'), undefined, 'and an unknown id answers undefined')
+
+  const harness = await boot()
+  harness.registry.register({
+    id: 'checkable',
+    name: 'Checkable',
+    version: '2.1.0',
+    testItems: [
+      { id: 'first', label: 'The first thing holds' },
+      { id: 'second', label: 'The second thing holds' },
+    ],
+  })
+  // Something with no items, so the negative case has a subject — the shipped skin declares its own
+  // checklist, and asserting the absence on it would have been asserting the feature away.
+  harness.registry.register({ id: 'no-items', name: 'No Items' })
+  const markup = harness.render()
+  const cardOf = (id) => new RegExp(`data-project="${id}"[\\s\\S]*?</li>`).exec(markup)?.[0] ?? ''
+  contains(cardOf('checkable'), '<details', 'the checklist is a native disclosure')
+  contains(cardOf('checkable'), '<summary', 'with a summary the platform makes keyboard-operable')
+  contains(cardOf('checkable'), 'Verification checklist (2)')
+  contains(cardOf('checkable'), 'The first thing holds')
+  contains(cardOf('checkable'), 'Mark as passed')
+  /*
+   * The hooks the browser suite drives the checklist through. They exist so that suite never has to
+   * match localized copy — it did, and on a Chinese interface the English label it looked for was
+   * absent, which read as the checklist failing rather than as a test that only spoke one language.
+   * Asserted here so a rename cannot silently unhook every browser assertion at once.
+   */
+  contains(cardOf('checkable'), 'data-uip-action="confirm-checks"', "the confirm button's stable hook")
+  excludes(cardOf('no-items'), '<details', 'a project with no items gets no empty disclosure')
+  contains(cardOf('liquid-glass'), 'Verification checklist', 'and the shipped skin declares a real one')
+  contains(cardOf('liquid-glass'), 'data-uip-action="confirm-checks"', 'with the same hook')
+})
+
+await test('confirming records the version, and a new version invalidates it', async () => {
+  const harness = await boot()
+  const definition = (version) => ({
+    id: 'confirmable',
+    name: 'Confirmable',
+    version,
+    testItems: [{ id: 'one', label: 'One' }],
+  })
+  harness.registry.register(definition('1.0.0'))
+  await harness.runtime.enable('confirmable')
+
+  // Nothing recorded yet: the card must not claim a confirmation nobody made.
+  equal(harness.store.snapshot().projects.find((p) => p.id === 'confirmable')?.checks, undefined, 'nothing stored yet')
+
+  await harness.store.confirmChecks('confirmable', ['one'])
+  const stored = harness.runtime.settingsFor('confirmable')?.checks
+  equal(stored?.version, '1.0.0', 'the version travels inside the record, so one write carries both')
+  equal(stored?.items?.one, true, 'and the ticked item with it')
+  /*
+   * And the panel was told, which is the half that has no other mechanism behind it.
+   *
+   * A setting is not a registry change, so the store's snapshot — taken when the registry last
+   * changed — would keep the OLD record, and the confirmation would never appear on the card
+   * without some unrelated action. Asserted by subscribing rather than by rendering, because
+   * `render()` takes a fresh snapshot and would pass either way; that is exactly how this went
+   * unnoticed when it was written.
+   */
+  let notified = 0
+  const stopWatching = harness.store.subscribe(() => {
+    notified += 1
+  })
+  await harness.store.confirmChecks('confirmable', ['one'])
+  stopWatching()
+  truthy(notified > 0, 'the store is notified after a settings write, so the card can redraw')
+  const confirmed = harness.store.snapshot().projects.find((p) => p.id === 'confirmable')
+  equal(confirmed?.checksCurrent, true, 'the confirmation is current for the registered version')
+
+  // The project ships a new version. The confirmation is now about code that no longer exists.
+  harness.registry.register(definition('1.1.0'))
+  const after = harness.store.snapshot().projects.find((p) => p.id === 'confirmable')
+  equal(after?.checksCurrent, false, 'a new version invalidates the confirmation')
+  equal(after?.checks?.version, '1.0.0', 'and the old one is still reported, not deleted')
+  contains(harness.render(), 'needs confirming again', 'which the card says in words')
+
+  // An unknown item id cannot be smuggled into the record.
+  await harness.store.confirmChecks('confirmable', ['one', 'not-declared'])
+  equal(
+    JSON.stringify(harness.runtime.settingsFor('confirmable')?.checks?.items),
+    '{"one":true}',
+    'only declared items are recorded',
+  )
 })
 
 // ── retired: the sound-reminders suite ───────────────────────────────────────

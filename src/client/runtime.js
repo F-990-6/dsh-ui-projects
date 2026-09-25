@@ -20,6 +20,7 @@
  */
 
 import { scopeCss } from './scope-css.js'
+import { declaresBackdropFilter } from './css-filter.js'
 import { combineLevels, createFrameProbe, deviceLevel, minLevel, readSignals } from './perf.js'
 
 /**
@@ -138,6 +139,15 @@ export class UiProjectRuntime {
      * @type {string[]}
      */
     this.appliedOrder = []
+    /**
+     * The scoped CSS each applied project inserted, kept for analysis.
+     *
+     * Kept because the text is the ONLY complete record of what a project declared. The frost lives
+     * on a `::before` pseudo-element, which no `querySelectorAll` can return and no selector can
+     * match, so a DOM-only view of "who installs a blur" would miss the skin's own layer entirely.
+     * @type {Map<string, string[]>}
+     */
+    this.insertedCss = new Map()
     /** @type {HTMLElement | undefined} */
     this.root = undefined
     this.disposed = false
@@ -159,6 +169,20 @@ export class UiProjectRuntime {
     const project = this.registry.get(id)
     if (project === undefined) return undefined
     return this.#context(id, project, [])
+  }
+
+  /**
+   * A project's stored options, whether or not it is currently applied.
+   *
+   * `contextFor` hands out a read/write context only for an ACTIVE project, which is right for a
+   * control that changes the material — there is nothing to change while it is off. A recorded
+   * verification is different: it is a fact about a past run, and a card should be able to say
+   * "confirmed for 3.0.0" while the project is switched off.
+   * @param {string} id
+   * @returns {Record<string, unknown> | undefined}
+   */
+  settingsFor(id) {
+    return this.settings.get(id)
   }
 
   /** @returns {HTMLElement} the element carrying the UI project markers (the document element). */
@@ -374,6 +398,7 @@ export class UiProjectRuntime {
   #release(id) {
     const owned = this.disposers.get(id)
     this.disposers.delete(id)
+    this.insertedCss.delete(id)
     if (owned === undefined) return
     releaseAll(owned)
     const project = this.registry.get(id)
@@ -616,7 +641,11 @@ export class UiProjectRuntime {
         if (typeof css !== 'string' || css.length === 0) return
         // Scoped before insertion: a project stylesheet is inert without its own
         // marker, so ordering between apply and marker writes cannot matter.
-        const dispose = this.insertCss(id, scopeCss(marker, css))
+        const scoped = scopeCss(marker, css)
+        const kept = this.insertedCss.get(id)
+        if (kept === undefined) this.insertedCss.set(id, [scoped])
+        else kept.push(scoped)
+        const dispose = this.insertCss(id, scoped)
         owned.push(dispose)
       },
       /**
@@ -649,6 +678,20 @@ export class UiProjectRuntime {
         else next[key] = value
         this.settings.set(id, next)
         await this.#write({ ...this.persist.read(), settings: this.#allSettings() })
+        /*
+         * Tell the registry, so the panel re-reads.
+         *
+         * The store renders from a snapshot taken when the registry last changed, and a setting is
+         * NOT a registry change — so without this the card kept whatever it had when it was last
+         * drawn. It went unnoticed because the only control that writes a setting was the retired
+         * opacity slider, whose value the browser's own input element keeps in step; a checklist
+         * confirmation has nothing to keep it in step, so it would simply never appear.
+         *
+         * Called even when the persistence FAILED, and deliberately: the in-memory value has already
+         * changed, and that value is what the panel renders from. A durable write that fails is a
+         * separate problem, reported by its own path.
+         */
+        this.registry.notify()
       },
     }
   }
@@ -809,6 +852,22 @@ export class UiProjectRuntime {
       observer?.disconnect()
       stopRetry()
     }
+  }
+
+  /**
+   * Whether a project's own CSS installs a `backdrop-filter`.
+   *
+   * Read from the retained text rather than the DOM, for the reason that map exists: the skin's
+   * layer is a pseudo-element and therefore invisible to any query. Used to escalate a region
+   * overlap into a nesting warning — two projects that both blur the same region can end up with
+   * one filtered element inside another, which is expensive and changes what each layer samples.
+   * @param {string} id
+   * @returns {boolean}
+   */
+  declaresFilter(id) {
+    const sheets = this.insertedCss.get(id)
+    if (sheets === undefined) return false
+    return sheets.some((css) => declaresBackdropFilter(css))
   }
 
   /** @param {() => Promise<void>} task */

@@ -25,6 +25,17 @@ import { createRequire } from 'node:module'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+/*
+ * The first-paint predicate is IMPORTED, not restated — and that is a fix, not tidiness.
+ *
+ * This file and `tools/derive-boot-css.mjs` each used to hold a copy, with a comment claiming a
+ * disagreement would fail loudly. It would have, for every disagreement except the one that mattered:
+ * both copies skipped a comma-separated selector on sight, so when three suppression blocks had to be
+ * written as `body, body[data-ds-dark-theme]` to outrank the themed rule, both dropped them, both
+ * agreed, and the sheet lost rules that decide the first frame. Two copies of a rule catch only the
+ * mistakes one of them does not make.
+ */
+import { classifyPrelude, mixedSelectorError, MARKER } from './boot-css-rules.mjs'
 import { scopeCss } from '../src/client/scope-css.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -46,7 +57,7 @@ const bootCssSource = join(packageRoot, 'src', 'host', 'boot.css')
 const outBootCss = join(packageRoot, 'lib', 'boot-css.js')
 
 /** The marker the client scoper stamps on every project rule. Must match `runtime.js`. */
-const LIQUID_GLASS_MARKER = 'body[data-ui-project-liquid-glass="on"]'
+const LIQUID_GLASS_MARKER = MARKER
 
 /** The skin stylesheets the first-paint subset may draw from, in `apply` order. */
 const SKIN_STYLESHEETS = ['tokens.css', 'glass.css']
@@ -74,6 +85,7 @@ const ENTRY_FILE = 'index.js'
 const MODULE_ORDER = [
   'project-constants.js',
   'scope-css.js',
+  'css-filter.js',
   'perf.js',
   'registry.js',
   'persist.js',
@@ -415,7 +427,7 @@ function leafRules(css, context = '') {
       out.push(...leafRules(segment.body, `${context}${normalizeCss(prelude)} | `))
       continue
     }
-    out.push({ context, text: normalizeCss(`${prelude}{${segment.body}}`) })
+    out.push({ context, selector: prelude, text: normalizeCss(`${prelude}{${segment.body}}`) })
   }
   return out
 }
@@ -454,6 +466,8 @@ async function writeBootCss() {
   }
   const rules = leafRules(payload)
   if (rules.length === 0) throw new Error(`[build] ${bootCssSource} declares no rules`)
+  /** @type {Set<string>} */
+  const declared = new Set(rules.map(ruleKey))
   const drifted = rules.filter((rule) => !emitted.has(ruleKey(rule)))
   if (drifted.length > 0) {
     throw new Error(
@@ -461,7 +475,42 @@ async function writeBootCss() {
         drifted.map((rule) => `[build]   ${rule.context}${rule.text.slice(0, 110)}…`).join('\n') +
         '\n[build] The first-paint sheet must say exactly what the skin says. Change the value in' +
         ' projects/liquid-glass/tokens.css or glass.css, then re-derive src/host/boot.css from' +
-        ' `node scripts/emitted-css.mjs`.',
+        ' `node tools/derive-boot-css.mjs`.',
+    )
+  }
+  /*
+   * AND THE OTHER DIRECTION, which is the half that was missing.
+   *
+   * The subset check alone cannot see the failure that matters most in practice: add a body-level
+   * rule to the skin — a new token, a new conditional branch — and forget to re-derive, and the
+   * build passes while the first frame silently lacks it. Subset says "boot.css claims nothing the
+   * skin does not"; completeness says "boot.css claims everything the skin has". Together they make
+   * boot.css exactly the skin's body-level rules, which is what its header promises.
+   */
+  /** @type {Array<{ context: string, text: string }>} */
+  const missing = []
+  for (const file of SKIN_STYLESHEETS) {
+    const scoped = scopeCss(LIQUID_GLASS_MARKER, await readFile(join(skinDir, file), 'utf8'))
+    for (const rule of leafRules(scoped)) {
+      const kind = classifyPrelude(rule.selector)
+      /*
+       * A rule that mixes body-level and other selectors is refused rather than skipped, and this is
+       * the third place the same silence could have hidden: `classifyPrelude` reports `mixed`
+       * instead of guessing, and a caller that treated "not body" as "nothing to check" would drop
+       * the body half from the sheet while the completeness check reported success. The point of
+       * this file is that a rule is either in the sheet or loudly not allowed to be.
+       */
+      if (kind === 'mixed') throw mixedSelectorError(rule.selector, `skin rule in ${file}`)
+      if (kind !== 'body') continue
+      if (!declared.has(ruleKey(rule))) missing.push(rule)
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `[build] src/host/boot.css is missing ${missing.length} body-level rule(s) the skin declares — the` +
+        ' first frame would paint without them:\n' +
+        missing.map((rule) => `[build]   ${rule.context}${rule.text.slice(0, 110)}…`).join('\n') +
+        '\n[build] Re-derive it: `node tools/derive-boot-css.mjs`.',
     )
   }
   const module = `/**

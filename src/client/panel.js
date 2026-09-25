@@ -81,6 +81,19 @@ function UiProjectsSection(props) {
           (project) => project.enabled && rankOf(project.perfLevel) > rankOf(snapshot.perfLevel),
         )
 
+  /*
+   * Active enhancements claiming the same surface. Advisory, and worded that way: two projects can
+   * touch one region and still compose, so this states the overlap and lets the reader judge. It
+   * only appears when there is something to say — a hint that is always present is not read.
+   */
+  const regionConflicts = snapshot.regionConflicts ?? []
+  const conflictText =
+    regionConflicts.length === 0
+      ? null
+      : regionConflicts
+          .map((pair) => (pair.nested ? t.regionNested(pair.names, pair.regions) : t.regionShared(pair.names, pair.regions)))
+          .join(' ')
+
   const children = [
     React_.createElement(
       'div',
@@ -116,6 +129,7 @@ function UiProjectsSection(props) {
           t.perfDemoted(demoted.map((project) => project.name).join(', '), t.perf[snapshot.perfLevel]),
         )
       : null,
+    conflictText === null ? null : React_.createElement('p', { className: 'uip-hint', key: 'regionhint' }, conflictText),
     failure === undefined ? null : React_.createElement('p', { className: 'uip-error', key: 'failure' }, failure),
     snapshot.projects.length === 0
       ? React_.createElement(
@@ -136,8 +150,10 @@ function UiProjectsSection(props) {
               pending: pending[project.id] === true,
               activeNames,
               outOfOrder: snapshot.outOfOrderId === project.id,
+              conflictsHere: regionConflicts.filter((pair) => pair.ids.includes(project.id)),
               onToggle: () => run(project.id, store.toggle(project.id)),
               onReset: () => run(project.id, store.resetOne(project.id)),
+              onConfirmChecks: (itemIds) => run(project.id, store.confirmChecks(project.id, itemIds)),
             }),
           ),
         ),
@@ -147,11 +163,99 @@ function UiProjectsSection(props) {
 }
 
 /**
+ * The manual verification checklist for one project.
+ *
+ * A real component rather than another `createX` helper, because it owns state: the boxes ticked but
+ * not yet confirmed. `createCard` is a plain function called inside the section's render, so hooks
+ * there would be attributed to the parent and break the moment the project list changed length. A
+ * component gets its own hook scope.
+ *
+ * The open/closed state is the platform's, not ours: a native `<details>` needs no hook, arrives
+ * with keyboard support, and is announced as a disclosure. The same reasoning as using a real
+ * `input[type=range]` for the project controls instead of rebuilding one.
+ *
+ * The checkboxes are the READING and the button is the ASSERTION. Confirming is deliberately not an
+ * automatic consequence of ticking the last box: "I looked at all of these" is a claim a person
+ * makes, and the record should say who made it and against which version.
+ * @param {object} props
+ * @returns {any}
+ */
+function Checklist(props) {
+  const { R, t, project, pending, onConfirm } = props
+  const stored = project.checksCurrent ? project.checks : undefined
+  const [ticked, setTicked] = React.useState(() => ({ ...(stored?.items ?? {}) }))
+  const all = project.testItems.length > 0 && project.testItems.every((item) => ticked[item.id] === true)
+
+  const rows = project.testItems.map((item) =>
+    R.createElement(
+      'label',
+      { className: 'uip-check', key: item.id },
+      R.createElement('input', {
+        type: 'checkbox',
+        checked: ticked[item.id] === true,
+        disabled: pending,
+        onChange: (event) => setTicked((current) => ({ ...current, [item.id]: event.target.checked })),
+      }),
+      R.createElement('span', null, item.label),
+    ),
+  )
+  rows.push(
+    R.createElement(
+      'div',
+      { className: 'uip-actions', key: 'confirm' },
+      R.createElement(
+        'button',
+        {
+          type: 'button',
+          className: 'uip-button',
+          /*
+           * A stable hook, because this button's identity is not its label.
+           *
+           * The label is localized, and the browser suite looked for the English one: on a Chinese
+           * interface the button was never found, the assertion read `null`, and the failure looked
+           * like the checklist refusing to work rather than a test that only spoke one language.
+           * Assertions belong on state; copy belongs to whoever is reading the screen.
+           */
+          'data-uip-action': 'confirm-checks',
+          disabled: !all || pending,
+          onClick: () => {
+            const itemIds = project.testItems.filter((item) => ticked[item.id] === true).map((item) => item.id)
+            onConfirm(itemIds)
+          },
+        },
+        t.tests.markPassed,
+      ),
+    ),
+  )
+
+  return R.createElement(
+    'details',
+    { className: 'uip-tests', key: 'tests', 'data-project': project.id },
+    R.createElement('summary', { className: 'uip-testsSummary' }, t.tests.summary(project.testItems.length)),
+    project.checks === undefined
+      ? null
+      : R.createElement(
+          'p',
+          {
+            className: project.checksCurrent ? 'uip-description' : 'uip-hint',
+            // The confirmation's STATE, for the same reason as the button's hook: the sentence
+            // around it is translated, the state is not.
+            'data-uip-checks': project.checksCurrent ? 'current' : 'stale',
+            'data-uip-checks-version': project.checks.version,
+          },
+          project.checksCurrent ? t.tests.passed(project.checks.version) : t.tests.stale(project.checks.version),
+        ),
+    R.createElement('div', { className: 'uip-checks' }, rows),
+  )
+}
+
+/**
  * One project card. Everything shown here comes from the project definition.
  * @param {object} input
  * @returns {any}
- */function createCard(input) {
-  const { React: R, project, t, pending, activeNames, outOfOrder, onToggle, onReset } = input
+ */
+function createCard(input) {
+  const { React: R, project, t, pending, activeNames, outOfOrder, conflictsHere, onToggle, onReset, onConfirmChecks } = input
   const name = project.name
 
   const badges = [
@@ -217,6 +321,21 @@ function UiProjectsSection(props) {
   if (outOfOrder === true) {
     body.push(R.createElement('p', { className: 'uip-hint', key: 'order' }, t.orderHint(name)))
   }
+  /*
+   * This project's own share of a region conflict, on its card: the section hint says what is
+   * shared, this says which one is mine, which is the part a reader checking one project needs.
+   */
+  for (const pair of conflictsHere) {
+    const other = pair.names.find((entry) => entry !== name) ?? pair.names[0]
+    const regions = pair.regions.map((region) => t.regions?.[region] ?? region).join(', ')
+    body.push(
+      R.createElement(
+        'p',
+        { className: 'uip-hint', key: `region-${other}` },
+        pair.nested ? t.regionNestedHere(other, regions) : t.regionSharedHere(other, regions),
+      ),
+    )
+  }
   if (project.error !== undefined) {
     body.push(
       R.createElement(
@@ -228,6 +347,18 @@ function UiProjectsSection(props) {
   }
   for (const control of project.controls ?? []) {
     body.push(createControl({ R, control, t, pending }))
+  }
+  if (project.testItems.length > 0) {
+    body.push(
+      R.createElement(Checklist, {
+        key: 'checklist',
+        R,
+        t,
+        project,
+        pending,
+        onConfirm: (itemIds) => onConfirmChecks(project.id, itemIds),
+      }),
+    )
   }
   body.push(
     R.createElement(

@@ -17,6 +17,11 @@
  * @property {readonly string[]} supports
  * @property {'low'|'medium'|'high'} perfLevel the tier this project was designed for
  * @property {number} priority execution order among composable projects; lower runs first
+ * @property {readonly string[]} regions the surfaces this project declares it changes
+ * @property {ReadonlyArray<{ id: string, label: string }>} testItems the manual checklist, if any
+ * @property {{ version: string, items: Record<string, boolean> } | undefined} checks
+ *   the stored confirmation, or undefined when none was ever recorded
+ * @property {boolean} checksCurrent whether that confirmation was made against THIS version
  * @property {string | undefined} preview
  * @property {string | undefined} previewLabel
  * @property {boolean} enabled
@@ -47,6 +52,7 @@
 /**
  * @typedef {object} UiProjectsSnapshot
  * @property {UiProjectCardModel[]} projects
+ * @property {Array<{ ids: string[], names: string[], regions: string[], nested: boolean }>} regionConflicts
  * @property {string | undefined} outOfOrderId
  * @property {'low'|'medium'|'high'|undefined} perfLevel the tier in force for the page
  * @property {string} locale
@@ -105,6 +111,45 @@ function resolveControls(project, runtime, ctx) {
 }
 
 /**
+ * The stored verification for one project, normalized.
+ *
+ * The version travels INSIDE the record rather than beside it, which is a small departure from the
+ * obvious two-key shape and buys one thing worth having: the stamp and the ticks it validates are
+ * written in a single operation, so there is no window in which a reader sees a new version's stamp
+ * over an old version's ticks. There is also only one key to keep in step.
+ * @param {import('./registry.js').UiProjectDefinition} project
+ * @param {import('./runtime.js').UiProjectRuntime} runtime
+ * @returns {{ version: string, items: Record<string, boolean> } | undefined}
+ */
+function storedChecks(project, runtime) {
+  const stored = typeof runtime.settingsFor === 'function' ? runtime.settingsFor(project.id)?.checks : undefined
+  if (stored === null || typeof stored !== 'object') return undefined
+  const items = stored.items
+  if (items === null || typeof items !== 'object') return undefined
+  /** @type {Record<string, boolean>} */
+  const kept = {}
+  for (const item of project.testItems) {
+    if (items[item.id] === true) kept[item.id] = true
+  }
+  return { version: typeof stored.version === 'string' ? stored.version : '', items: kept }
+}
+
+/**
+ * Whether a confirmation was made against the version now registered.
+ *
+ * A project that ships a new version has changed the very thing the checklist verified, so an old
+ * confirmation is not merely stale — it is a claim about code that no longer exists. It is reported
+ * rather than deleted, because "confirmed for 3.0.0, needs re-confirming" is more useful to a
+ * reader than an empty checkbox they cannot explain.
+ * @param {import('./registry.js').UiProjectDefinition} project
+ * @param {import('./runtime.js').UiProjectRuntime} runtime
+ * @returns {boolean}
+ */
+function isChecksCurrent(project, runtime) {
+  return storedChecks(project, runtime)?.version === project.version
+}
+
+/**
  * @typedef {object} UiProjectsStore
  * @property {() => number} getVersion
  * @property {(listener: () => void) => () => void} subscribe
@@ -114,6 +159,7 @@ function resolveControls(project, runtime, ctx) {
  * @property {(id: string) => Promise<void>} toggle
  * @property {(id: string) => Promise<void>} resetOne
  * @property {() => Promise<void>} resetAll
+ * @property {(id: string, itemIds: string[]) => Promise<void>} confirmChecks
  * @property {import('./persist.js').PersistAdapter['kind']} storageKind
  */
 
@@ -144,6 +190,10 @@ export function createStore(input) {
       supports: project.supports,
       perfLevel: project.perfLevel,
       priority: project.priority,
+      regions: project.modifies,
+      testItems: project.testItems,
+      checks: storedChecks(project, runtime),
+      checksCurrent: isChecksCurrent(project, runtime),
       preview: project.preview,
       previewLabel: project.previewLabel,
       enabled: registry.isEnabled(project.id),
@@ -158,6 +208,21 @@ export function createStore(input) {
      * kept, because a second, silently unread notion of "conflict" is exactly what makes the real
      * one hard to trust.
      */
+    /**
+     * Active enhancements that claim the same surface, with names resolved for display.
+     *
+     * `nested` is the escalated form: a nesting needs a filtered element INSIDE another filtered
+     * element, so it takes both projects to install a blur — one alone has nothing to nest in. The
+     * flag is computed from the retained CSS rather than declared, because a manifest saying "I may
+     * blur" is a promise while the stylesheet is the fact.
+     */
+    regionConflicts: registry.regionConflicts().map((pair) => ({
+      ids: pair.ids,
+      names: pair.ids.map((id) => registry.get(id)?.name ?? id),
+      regions: pair.regions,
+      nested:
+        typeof runtime.declaresFilter === 'function' && pair.ids.every((id) => runtime.declaresFilter(id) === true),
+    })),
     /**
      * The project whose apply position the next load will change, or undefined when the order in
      * force already matches priority order. Reported rather than acted on: a click does not
@@ -187,6 +252,26 @@ export function createStore(input) {
     toggle: (id) => runtime.toggle(id),
     resetOne: (id) => runtime.resetOne(id),
     resetAll: () => runtime.resetAll(),
+    /**
+     * Record a verification: these items, for the version currently registered.
+     *
+     * Written through the project's own context, so it lands in the same per-project settings record
+     * every other option uses and needs no new storage. Requires the project to be applied, which is
+     * not a limitation but the point — a checklist is confirmed by looking at the running thing.
+     * @param {string} id
+     * @param {string[]} itemIds
+     */
+    confirmChecks: async (id, itemIds) => {
+      const project = registry.get(id)
+      const context = typeof runtime.contextFor === 'function' ? runtime.contextFor(id) : undefined
+      if (project === undefined || context === undefined) return
+      /** @type {Record<string, boolean>} */
+      const items = {}
+      for (const itemId of itemIds) {
+        if (project.testItems.some((item) => item.id === itemId)) items[itemId] = true
+      }
+      await context.writeSetting?.('checks', { version: project.version, items })
+    },
     storageKind: runtime.persist.kind,
   }
 }

@@ -158,3 +158,50 @@ body[data-ds-dark-theme] {
     --dsw-specific-sidebar-fill: #161921;
   }
 }
+
+/*
+ * A request for MORE contrast — and it is not the same request as `reduced-transparency`, nor the
+ * same as `forced-colors`.
+ *
+ *   `forced-colors` hands the palette to the platform; the skin steps back entirely there.
+ *   `reduced-transparency` is about seeing through things; the fills go opaque and the blur goes.
+ *   `prefers-contrast: more` keeps this palette and asks for more separation WITHIN it — which for
+ *   a glass surface means removing the two things that eat contrast: a translucent fill, and a
+ *   hairline too faint to say where a surface ends.
+ *
+ * The text colours are NOT touched, and cannot be: the label tokens are never redefined by this
+ * project, because the design system validated every foreground/background pair it ships. Raising
+ * the background instead is what raises the ratio — and it is the only lever here that does not
+ * invent a new colour relationship.
+ */
+@media (prefers-contrast: more) {
+  :root {
+    --dsw-alias-bg-base: #fff;
+    --dsw-alias-bg-layer-1: #fff;
+    --dsw-alias-bg-layer-2: #fff;
+    --dsw-specific-sidebar-fill: #fafafe;
+    /* The floating tier was already near-opaque; "more" takes it the rest of the way. Elevation
+       survives because it was never carried by translucency alone — the shadow does that. */
+    --dsw-alias-bg-layer-3: #fff;
+    --dsw-alias-bg-overlay: #fff;
+    /* On an opaque fill, a 12% hairline is the faintest line on the page and the only thing
+       separating two surfaces of the same colour. */
+    --dsw-alias-border-l1: rgb(15 23 42 / 34%);
+    --dsw-alias-border-l2: rgb(15 23 42 / 46%);
+    --dsw-alias-border-l3: rgb(15 23 42 / 28%);
+  }
+
+  body[data-ds-dark-theme] {
+    --dsw-alias-bg-base: #14161c;
+    --dsw-alias-bg-layer-1: #1e212a;
+    --dsw-alias-bg-layer-2: #262a35;
+    --dsw-specific-sidebar-fill: #161921;
+    --dsw-alias-bg-layer-3: #23262f;
+    --dsw-alias-bg-overlay: #23262f;
+    /* Dark surfaces separate by luminance, not by a dark line, so the hairlines get brighter
+       rather than darker. */
+    --dsw-alias-border-l1: rgb(255 255 255 / 38%);
+    --dsw-alias-border-l2: rgb(255 255 255 / 50%);
+    --dsw-alias-border-l3: rgb(255 255 255 / 32%);
+  }
+}

@@ -79,6 +79,20 @@ module.exports = {
    * which is the only thing that can actually measure it.
    */
   perfLevel: PERF_HIGH,
+  /*
+   * What a person should look at before calling this skin verified.
+   *
+   * These are the three failures this project actually shipped and had reported back, in the order
+   * they hurt: text that could not be read over the glass, a settings dialog that collapsed into the
+   * left column, and a first frame that arrived in the default look before switching. A checklist
+   * that repeats the specification is decoration; one that repeats the incident history is worth
+   * ticking.
+   */
+  testItems: [
+    { id: 'text-readable', label: 'Text over the glass is comfortable to read, in light and dark' },
+    { id: 'settings-centred', label: 'Settings opens centred over the whole window, not inside a column' },
+    { id: 'no-first-frame-flash', label: 'Reopening dsh shows the skin on the first frame, with no flash' },
+  ],
   preview: PREVIEW,
   previewLabel: 'Liquid Glass frosted layers over a blue gradient',
 

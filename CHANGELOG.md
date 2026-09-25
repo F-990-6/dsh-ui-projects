@@ -25,6 +25,299 @@ Verification vocabulary used below:
 
 ---
 
+## Round 25 — the browser suite runs green, and what it had really been measuring
+
+**Status: done. `suite` 499 assertions / 0 failing, `host` green, `browser` 99 assertions / 0
+failing — the first fully green run of the browser suite. `settings.yaml` byte-identical before and
+after. Snapshot 38.**
+
+The browser suite had never once been run to completion. Running it turned up a real bug in the skin,
+a real bug in the build tooling, and six assertions that were describing the harness rather than the
+product. The distinction is the point of this round: a failing check is not evidence about the skin
+until that check is known to be able to pass, and three of these could not.
+
+**A real skin bug, in three branches at once.** The gradient suppressions were written as
+`body { background-image: none }`, while the gradient itself is painted by
+`body[data-ds-dark-theme] { background-image: … }` — one attribute more specific. A media query adds
+no specificity of its own, so the suppression won in light mode (where the gradient rule is a plain
+`body` that comes earlier) and lost in dark mode, silently. `prefers-contrast: more`,
+`forced-colors: active` and `prefers-reduced-transparency: reduce` were all affected: the readers who
+had asked for the decoration to stop were the only ones still getting it. Fixed by naming both
+selectors in all three branches — no `!important`, no specificity fight, just the selector the themed
+rule actually uses.
+
+It was found only because the contrast check now measures BOTH themes. It used to measure whichever
+theme the machine happened to be in, which is how a dark-mode-only failure survives a light-mode run.
+
+**A real bug in the tooling, and the reason nothing caught it.** `tools/derive-boot-css.mjs` skipped
+any prelude containing a comma, so writing the suppression as `body, body[data-ds-dark-theme]` — the
+only form that works — removed all three rules from the first-paint sheet (11 blocks → 8) with
+nothing failing: the build's subset check cannot see a rule that is missing, and its completeness
+check used a *second copy* of the same predicate, blind in the same place. Two copies of a rule catch
+only the mistakes one of them does not make.
+
+Two more defects were in that predicate and are now impossible: the remainder after the marker was
+trimmed before its first character was inspected, so `body[marker] [role='menu']` — a descendant, the
+space being the combinator — was accepted as a body-level rule; and `:where(a, b, c)` is ONE selector
+containing commas, which a naive split tears into fragments that classify as anything.
+
+The predicate now lives in one place, `scripts/boot-css-rules.mjs`, imported by both the build and
+the tool. It answers `body` / `other` / `mixed`, and `mixed` throws at both call sites rather than
+being mistaken for `other`: a sheet that quietly omits half a rule looks complete and is not.
+
+**Six assertions that were measuring the harness.**
+
+1. **The command line.** The page URL was `argv[2]`, so `--no-write` alone became the "page URL",
+   Chrome launched, every navigation failed, and the suite reported **fifteen skin failures** that
+   were one bad argument. The URL is now identified by its shape (`http(s)://`), and a missing one
+   exits 2 with usage *before* Chrome starts.
+2. **The first frame.** The proof was "the shell's boot page is still in place". The served HTML is
+   `<div id="root"></div>` with nothing inside it, and the boot element is created by the RENDERER's
+   bundle — a different request, untouched by the block — so the assertion was false on every run,
+   including the runs where the skin assertions behind it never executed. It now asserts what the
+   block can actually establish: zero `style[id^="dsh-ui-projects"]` and zero `[data-ui-skin-column]`,
+   which this client bundle and nothing else creates.
+3. **The tier.** `equal(tier, 'high')` was written into the check, so a four-core machine would have
+   failed a correct page. The expectation is now derived from the reported core count, and the frost
+   is asserted against the radius of whichever tier was resolved — which also means the attribute and
+   the stylesheet cannot drift apart.
+4. **The checklist.** The confirm button was found by its English label on a Chinese interface: the
+   button was absent, the assertion read `null`, and it looked like the checklist refusing to render.
+   The component now publishes `data-uip-action="confirm-checks"` and
+   `data-uip-checks[-version]`, the browser assertions read state instead of copy, and `suite` asserts
+   the hooks exist so a rename cannot silently unhook every browser assertion at once.
+5. **The contrast branch.** Two problems. The expected fill was the light one while the page was
+   dark. And the branch assertion searched the whole sheet, so breaking one branch left the other two
+   answering for it — found by sabotaging one branch on purpose and watching nothing happen. It now
+   runs both themes, checks the theme held before trusting any number, searches each branch's own
+   block, and allows a stated tolerance for the instrument's own resolution (the single darkest and
+   lightest pixel of an 8-bit PNG, whose extremes are antialiased glyph edges).
+6. **The accent.** `equal(--lg-accent, '#4d6bfe')` — but `#4d6bfe` is the SHELL's brand colour
+   (`--dsw-alias-brand-primary`, confirmed in the deployed bundle) while `--lg-accent` is the skin's
+   own, `#007aff`. The check measured one token and expected another. Both halves are now asserted:
+   the skin's token reaches the page, and the shipped brand colour is unchanged — a skin is a
+   material, not a re-brand.
+
+**The toggle cascade, explained.** `setSkin` clicked a switch that was still `disabled` from the
+previous write — the marker clears as soon as the change is applied, while the settings write is
+still in flight — and a click on a disabled button is dropped without a trace. The first diagnostic
+read the switch's state thirty seconds later, by which time it looked perfectly healthy, which is how
+a run was spent on an explanation the instrument could not have confirmed either way. The click now
+waits for the control to accept input and reports how long it waited. **This was never a product
+bug**: a panel that refuses input while it persists the previous one is behaving correctly.
+
+**Negative results, kept because they eliminate hypotheses.** "The pending flag is stuck" — disproven:
+the switch was disabled at click time and enabled 150 ms later. "Blocking the combo URL kills the
+application" — disproven: this plugin's bundle is its own request, `/plugins/??dsh-ui-projects/client.js`.
+"`#staleBootPage()` is dead code" — disproven: the renderer bundle does contain `dsh-boot`.
+
+**One side effect that cannot be attributed.** `ui-theme.preference` is `dark`; earlier in the session
+it was `light`. The dark phase drives the same `data-ds-dark-theme` attribute the shipped theme plugin
+persists, so a suite run is a plausible cause — but the interface was also in use by hand, and the
+change cannot be traced to either. Recorded rather than explained away. Related: `mtime` on
+`settings.yaml` is not evidence of anything, because the host rewrites the file with identical
+content; only the hash distinguishes a rewrite from a change.
+
+**Verification:** `suite` 499 / 0 (+21 assertions: the predicate table, the per-branch sheet shape,
+the checklist hooks), `host` green, `browser` 99 / 0 in a real Chrome over CDP, `derive --check`
+agreeing with the file on disk. Two sabotages were run to prove the new assertions bite: removing the
+descendant check from the predicate, and rewriting one suppression branch back to a bare `body`. Both
+failed the intended assertion and nothing else — and the first attempt at the second one proved the
+opposite, because the sheet-wide search was still satisfied by the two branches left intact.
+`settings.yaml` was byte-identical after the run (same sha256), with `--no-write` holding the
+checklist confirmation out of it.
+
+---
+
+## Round 24 — a write the browser suite can refuse, and a notification that was missing
+
+**Status: done. `suite` 478 assertions / 0 failing, `host` green. Both browser checks still await a
+debug port.**
+
+**A real bug, found by writing a check rather than by reading code.** The browser check for Round 23
+waits for the card to say "Confirmed for v…" after the button is clicked. Reasoning about whether
+that text would ever appear turned up the answer: it would not.
+
+`writeSetting` updates the runtime's settings map and then persists — but it never told the registry,
+and the panel renders from a snapshot taken when the registry last changed. A setting is not a
+registry change, so the card kept whatever it had when it was last drawn. Nothing caught this because
+the only control that writes a setting was the retired opacity slider, whose value the browser's own
+input element keeps in step; a confirmation has nothing to keep it in step, so it would simply never
+appear. Fixed with one line (`registry.notify()`), and the fix notifies even when persistence FAILS,
+because the in-memory value is what the panel draws and it has already changed by then.
+
+The regression test asserts the notification on the subscription rather than on a render, and that
+distinction is the whole point: `render()` takes a fresh snapshot and would pass either way, which is
+precisely how the gap survived Round 23. Verified by sabotage — removing the line makes the new
+assertion fail, restoring it makes the suite green with the file byte-identical.
+
+**`--no-write`.** Round 23's browser check records a real confirmation in the settings document of
+whatever instance it is pointed at, overwriting a hand-made one and accumulating on every re-run. The
+flag refuses that write in flight.
+
+The approach worth recording is what made it possible: the write path is **HTTP**, not a websocket —
+every api call is `POST /api/<service>/<operation>`, so the operation is in the URL and the payload is
+in the body, and CDP's `Fetch` domain can pause and refuse exactly one of them. Two consequences
+follow from that. The refusal is narrowed to mutations whose payload carries `checks`, because the
+rest of the suite depends on real persistence — a skin toggle that did not survive a reload would fail
+the test that checks it. And the run asserts that something WAS refused: a URL pattern that matched
+nothing would leave the test passing while quietly writing.
+
+Both modes now assert the confirmation appears (the in-memory half), and they differ in what the
+reload shows — which is a stronger pair of checks than either mode alone: one proves the durable path
+works, the other proves the flag works.
+
+**Verification:** `suite` (+1 assertion, the notification, with a sabotage run proving it bites),
+`host` unchanged, `browser-verify.mjs` syntax-checked. Neither browser check has been run.
+
+---
+
+## Round 23 — step 6, unit D: the verification checklist
+
+**Status: done. `suite` 477 assertions / 0 failing, `host` green. The browser check is written and
+**not yet run**; it is on the suspended list. Step 6 is complete with this round.**
+
+**Changed**
+
+- `testItems: [{ id, label }]` on a project definition, validated like every other list: an item
+  without an id cannot be stored, an item without a label is a checkbox nobody can read, and both
+  would have surfaced as a control that silently does nothing.
+- The panel renders it as a native `<details>` with the boxes inside and a **Mark as passed** button
+  that refuses until every box is ticked.
+- Confirming writes `{ version, items }` into the project's own settings record, through the same
+  per-project storage every other option uses — no new namespace, no schema change.
+- The shipped skin declares three items, drawn from the failures it actually had reported back:
+  readable text, a centred settings dialog, and no first-frame flash.
+
+**Three decisions worth recording**
+
+1. **The version travels INSIDE the confirmation record**, rather than as a second key beside it.
+   The shape the plan sketched (`checks = {itemId: true}` plus a `checksVersion`) would take two
+   writes, leaving a window where a reader sees a new version's stamp over an old version's ticks.
+   One key cannot disagree with itself, and there is one thing to keep in step instead of two.
+2. **An invalidated confirmation is reported, not deleted.** Shipping a new version means the thing
+   the checklist verified has changed, so the old confirmation is a claim about code that no longer
+   exists — but "confirmed for 1.0.0, needs confirming again" tells a reader something an empty
+   checkbox cannot.
+3. **Confirming requires the project to be applied.** `contextFor` hands out a read/write context
+   only for an active project, and that is not a limitation here but the point: a checklist is
+   confirmed by looking at the running thing. Reading a confirmation is different from making one,
+   so `runtime.settingsFor(id)` was added: a card can say "confirmed for 3.0.0" while the project is
+   switched off.
+
+**A test that had to be fixed rather than a feature.** The negative assertion — that a project with
+no items renders no disclosure — was written against the shipped skin, and stopped being true the
+moment the skin declared its own checklist. The assertion was right about the rule and wrong about
+its subject, so the test now registers a project with no items and keeps both halves.
+
+**Verification:** `suite` (+20 assertions: validation of three malformed item shapes, the rendered
+disclosure and its copy, the absent disclosure for a project without items, the recorded
+`{version, items}` shape, invalidation across a version change with the old record still reported,
+and that an undeclared item id cannot be smuggled into the record). `host` unchanged. The new
+browser check drives the checklist as a person does — open it, tick every box, watch the button
+become available, click it, reload, and find the confirmation still there — and it is executable
+because the shipped skin now has a checklist to drive. **It writes to the durable settings
+document**, so a run leaves a confirmation recorded against the current version; that is honest (a
+test did look at it) but it is a real change to the profile the suite points at.
+
+---
+
+## Round 22 — step 6, unit C: more contrast, and a two-way first-paint guard
+
+**Status: done. `suite` 457 assertions / 0 failing, `host` green. The browser check is written and
+**not yet run**; it is on the suspended list.**
+
+**Changed**
+
+- `tokens.css` gains `@media (prefers-contrast: more)`: every page fill goes opaque, the floating
+  tier follows, and the hairlines get real weight (light `12% → 34%`, dark `12% → 38%`).
+- `glass.css` answers the same query: the ambient gradient goes, and so does the blur.
+- `boot.css` re-derived — 9 blocks → 11, 7039 B → 8033 B. The new branch is body-level, so the
+  first frame has to carry it too.
+- **`build.mjs` now checks the first-paint sheet in BOTH directions.**
+
+**Three things worth recording**
+
+1. **`prefers-contrast` is not `forced-colors`, and not `reduced-transparency`.** Forced-colors
+   hands the palette to the platform and the skin steps back entirely. Reduced-transparency is
+   about seeing through things. This one keeps the palette and asks for more separation *within*
+   it — which for a glass surface means removing the two things that eat contrast: a translucent
+   fill, and a hairline too faint to say where one surface ends and the next begins. The text
+   colours are not touched, and cannot be: this project never redefines a label token, because the
+   design system validated every pair it ships. Raising the background is the only lever that
+   raises the ratio without inventing a new colour relationship.
+2. **The blur is dropped here, and the reason is not punishment.** With opaque fills there is
+   nothing behind the glass left to refract, so keeping a full-viewport `backdrop-filter` would cost
+   the GPU for no visible effect. The layer becomes redundant, not forbidden.
+3. **THE GUARD WAS ONE-DIRECTIONAL, AND NOW IS NOT.** Round 17's check proved `boot.css` ⊆ the
+   skin's emitted CSS. It could not see the failure that matters most in practice: add a body-level
+   rule to the skin, forget to re-derive, and the build passes while the first frame silently lacks
+   it. Verified by doing exactly that — the new contrast branch made the build fail with *"missing
+   3 body-level rule(s) the skin declares"* before `boot.css` was re-derived, and pass after. Subset
+   says "boot.css claims nothing the skin does not"; completeness says "boot.css claims everything
+   the skin has". Together they make it exactly the skin's body-level rules, which is what the
+   file's header has claimed since it was written.
+
+**Verification:** `suite` (+9 assertions: both sheets answering the query — asserted as a COUNT of
+two, because `background-image: none` and `backdrop-filter: none` already appear in the other
+branches and would have made a bare `contains` pass whether or not this branch existed — plus the
+values unique to it, the label tokens still untouched, and the branch present in the first-paint
+sheet). `host` unchanged. The new browser check presents `prefers-contrast: more` through
+`Emulation.setEmulatedMedia` and asserts both halves: the deterministic one (fill opaque, gradient
+gone, hairline heavier, skin still applied) and the measured one (the painted text spread did not
+narrow). It restores the emulation in a `finally`, which is load-bearing rather than tidy: under
+this query the skin drops its frost, so leaving it on would make the tier check that follows
+measure a blur that is deliberately absent.
+
+---
+
+## Round 21 — step 6, unit B/2: regions, conflicts and blur nesting
+
+**Status: done. `suite` 440 assertions / 0 failing, `host` green. No browser check: the two-project
+case needs a second shipped project, and inventing one to satisfy a test would be inventing data.**
+
+**Changed**
+
+- `PROJECT_REGIONS`: eight names — `sidebar`, `center`, `rightbar`, `overlay`, `composer`, `dialogs`,
+  `tokens`, `background` — each documented with the DOM hook it refers to. A vocabulary rather than
+  free text, because it is only useful if two projects can be compared: `['composer']` and
+  `['input area']` describe one thing and would never collide.
+- `modifies` on a project definition, validated against the vocabulary. A misspelling would
+  otherwise silently never conflict with anything, so the project would look checked when it was not.
+- `registry.regionConflicts()`: pairs of active enhancements whose regions overlap.
+- `runtime` retains the scoped CSS each project inserted, and answers `declaresFilter(id)`.
+- `src/client/css-filter.js`: pure string analysis — `declaresBackdropFilter`, `filteredSelectors`.
+  Its own module because two places need the answer (the settings page escalates a conflict to a
+  nesting warning; the diagnostics overlay looks for a real chain of layers) and the settings page
+  must not depend on a debug instrument.
+- `diagnostics.js` gains a bounded DOM scan behind the debug switch: the candidate set is the
+  layout frame, its columns, the right column, the overlay layer, the composer card and the
+  ARIA-role surfaces; each is read for a `backdrop-filter` on itself **and on its `::before`**, then
+  walked up twelve levels to find a filtered ancestor. Cached by the registry's revision, because the
+  overlay repaints four times a second and the scan is the most expensive thing in the file.
+
+**THREE DECISIONS WORTH RECORDING**
+
+1. **Skins do not participate in conflict warnings.** The specification asks for the warning
+   between enhancements; a skin is alone by policy. The shipped skin declares a broad footprint, so
+   including it would make every enhancement conflict with it — and a warning that is always present
+   is wallpaper. Its declaration still feeds the nesting analysis.
+2. **A nesting takes BOTH projects to blur**, not "at least one" as the plan said. A nesting means a
+   filtered element inside another filtered element; one filter alone has nothing to nest in. The
+   approved wording would have reported a risk that cannot exist, so it is corrected here.
+3. **The blur is read from CSS text, not from the DOM.** The skin's frost lives on a `::before`
+   pseudo-element: `querySelectorAll` cannot return it and an ancestor walk cannot pass through it,
+   so a DOM-only answer would miss the one layer this package knows most about. The DOM scan
+   confirms what the text predicts; the two are reported side by side.
+
+**Verification:** `suite` (+28 assertions: detection between enhancements, the skin exclusion, the
+advisory-only guarantee, region validation, `declaresBackdropFilter` against real stylesheet text
+including `none`, a commented-out rule and a conditional, the two-blur escalation and its
+one-blur negative, and both panel surfaces rendering the region names in the reader's language).
+`host` unchanged.
+
+---
+
 ## Round 20 — step 6, unit B/1: execution order
 
 **Status: done. `suite` 412 assertions / 0 failing, `host` green. No browser check: this is

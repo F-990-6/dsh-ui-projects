@@ -343,7 +343,16 @@ body .cm-root {
  * exactly what someone asking for less transparency is asking to be rid of. The system
  * background colour stays. */
 @media (prefers-reduced-transparency: reduce) {
-  body {
+  /*
+   * BOTH selectors, and the second one is the whole point. The themed gradient is painted by
+   * `body[data-ds-dark-theme]`, which is one attribute more specific than a bare `body` — and a
+   * media query adds no specificity of its own. `body { background-image: none }` therefore won in
+   * light mode (where the gradient is painted by a plain `body` rule that comes earlier) and lost
+   * in dark mode, silently: the suppression looked correct in every light-mode check and left a
+   * moving wash of colour behind the text for exactly the person who had asked for it to stop.
+   */
+  body,
+  body[data-ds-dark-theme] {
     background-image: none;
   }
 
@@ -357,7 +366,10 @@ body .cm-root {
 /* The platform owns the palette in forced-colors mode, so the skin steps back entirely —
    gradient included: a decorative tint is precisely what that mode exists to remove. */
 @media (forced-colors: active) {
-  body {
+  /* The same two selectors as the other suppression blocks, for the same reason: the themed
+     gradient is the more specific rule, so a bare `body` would leave it painted in dark mode. */
+  body,
+  body[data-ds-dark-theme] {
     background-image: none;
   }
 
@@ -395,6 +407,30 @@ body[data-ui-perf='low'] :where(:has(> [data-ui-skin-column]))::before,
 body[data-ui-perf='low'] :where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
   backdrop-filter: blur(var(--lg-glass-blur-low)) saturate(var(--lg-glass-saturate));
   -webkit-backdrop-filter: blur(var(--lg-glass-blur-low)) saturate(var(--lg-glass-saturate));
+}
+
+/* A request for MORE contrast. `tokens.css` has already taken every fill to opaque, which is what
+   raises the text ratio; two things follow from that here.
+
+   The ambient gradient goes: it is a decorative wash of colour behind the text, and a coloured
+   backdrop is exactly what a contrast request is asking to be rid of — the same reasoning as
+   `forced-colors`, reached from a different direction.
+
+   The blur goes too, and this one is worth stating: with opaque fills there is nothing behind the
+   glass left to refract, so keeping the filter would cost a full-viewport `backdrop-filter` for no
+   visible effect at all. Removing it is not "punishing" the user for asking for contrast; it is
+   the layer becoming redundant. */
+@media (prefers-contrast: more) {
+  body,
+  body[data-ds-dark-theme] {
+    background-image: none;
+  }
+
+  :where(:has(> [data-ui-skin-column]))::before,
+  :where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 /* ── narrow viewports ─────────────────────────────────────────────────────── */

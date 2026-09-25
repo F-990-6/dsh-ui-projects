@@ -69,6 +69,7 @@ src/client/
                                   touching a project's own DOM.
   diagnostics.js                  the self-diagnosis overlay; a temporary instrument, off by default
   scope-css.js                    rewrites a project's CSS so it can only apply while active
+  css-filter.js                   whether a stylesheet installs a blur, and which selectors carry it
   perf.js                         what the device can afford: signals, tiers, the frame probe
   store.js                        what the settings page reads
   panel.js                        the Settings › UI page, rendered from the registry alone
@@ -94,11 +95,60 @@ src/client/
   supports: ['light', 'dark', 'mobile'],
   perfLevel: 'high',             // 'low' | 'medium' | 'high' — what it was designed for
   priority: 100,                 // execution order among composable projects; lower runs first
+  modifies: ['composer'],        // surfaces it changes, from the fixed region vocabulary
+  testItems: [                   // what a person should check before calling it verified
+    { id: 'text-readable', label: 'Text over the glass is comfortable to read' },
+  ],
   preview: 'radial-gradient(…)', // a CSS background, or an image path
   apply(ctx) { … },              // runs while active
   cleanup(ctx) { … },            // optional extra teardown; must be idempotent
 }
 ```
+
+### Verifying a project by hand
+
+Some things a test cannot judge and a person can: whether text over the glass is comfortable to
+read, whether the settings dialog is centred, whether the first frame flashes. A project declares
+those as `testItems`, and its card grows a disclosure with one checkbox each and a **Mark as passed**
+button.
+
+The button refuses until every box is ticked, and confirming is deliberately not an automatic
+consequence of ticking the last one: "I looked at all of these" is a claim a person makes, and the
+record should say when they made it.
+
+What is recorded is `{ version, items }`, inside the project's own settings record — no new
+namespace, and one write rather than two, so the stamp cannot disagree with the ticks it validates.
+That version stamp is the part with teeth: **shipping a new version invalidates the confirmation**,
+because the thing that was verified has changed. The old record is reported rather than deleted —
+"confirmed for 1.0.0, needs confirming again" tells a reader something an empty checkbox cannot.
+
+Confirming requires the project to be applied, which is the point rather than a limitation: a
+checklist is confirmed by looking at the running thing. *Reading* a confirmation does not, so a card
+can say "confirmed for 3.0.0" while the project is switched off.
+
+The shipped skin declares three items, and they are the three failures this project actually had
+reported back — unreadable text, a settings dialog collapsed into a column, and a first frame in the
+default look. A checklist that repeats the specification is decoration; one that repeats the
+incident history is worth ticking.
+
+Reading a checklist is safe; **ticking one writes**. A browser run records a confirmation against
+the current version, which overwrites whatever was confirmed by hand and accumulates on every
+re-run. `--no-write` refuses that one write in flight:
+
+```powershell
+# a normal run: records a real confirmation in the settings document
+node scripts/browser-verify.mjs "http://127.0.0.1:3081/?token=…"
+
+# a run that leaves no trace: the confirmation still appears, and provably does not survive a reload
+node scripts/browser-verify.mjs "http://127.0.0.1:3081/?token=…" --no-write
+```
+
+It refuses only the mutations that carry `checks`, so the rest of the suite keeps its real
+persistence — a skin toggle that did not survive a reload would fail the test that checks it. Both
+modes assert the confirmation appears (the plugin updates its settings in memory before it persists,
+and the store is notified, so the card redraws either way); they differ in what happens after the
+reload, and `--no-write` also asserts that a request was actually refused — a pattern that matched
+nothing would otherwise leave it passing while quietly writing.
 
 ### The effect tier
 
@@ -151,6 +201,42 @@ The order is a **request**, and two things outrank it:
 
 Before this existed the order was alphabetical by id — an accident of `activeIds()` sorting — so
 renaming a project silently changed when it ran and nothing recorded that it had.
+
+### Regions, and what a conflict warning means
+
+A project may declare which surfaces it changes, in `modifies`. The vocabulary is fixed, and each
+name is tied to a DOM hook so a declaration can be checked rather than argued about:
+
+| region | what it is |
+|---|---|
+| `sidebar`, `center` | columns of the layout frame, marked `data-ui-skin-column` by the runtime |
+| `rightbar` | the right column, `data-rightbar-col` |
+| `overlay` | the frame's own overlay layer, `data-shell-overlay` — a container *above* the columns, which is why frosting it differs from frosting one |
+| `composer` | the input area, `data-composer-*` |
+| `dialogs` | floating surfaces by WAI-ARIA role: dialog, menu, listbox, tooltip |
+| `tokens` | the `--dsw-alias-*` design-token layer every component reads |
+| `background` | the page background on `body` |
+
+Two names the specification's example list suggests are deliberately absent: `navbar`, because this
+shell is a three-column frame with no navigation bar, and `settings`, because the settings surface
+*is* a dialog and `dialogs` already covers it.
+
+When two **active enhancements** claim the same region the settings page says so — once at the top
+of the section, and once on each card naming the other project. The warning is **advisory**: two
+projects may touch one region and still compose perfectly (one sets a colour, the other a radius),
+so nothing blocks an enable.
+
+**Skins are excluded from this check.** A skin declares a broad footprint — the shipped one touches
+tokens, the background, the composer and dialogs — so including skins would make every enhancement
+"conflict" with the skin, and a warning that is always present is not read. Skins are made mutually
+exclusive by policy instead; that is the mechanism for skin-versus-skin.
+
+Two projects that both claim a region **and both install a `backdrop-filter`** escalate to a
+nesting warning, because a filtered element inside another filtered element is expensive and
+changes what each layer samples. The blur is read from the CSS each project inserted, not from a
+declaration — a manifest saying "I may blur" is a promise, while the stylesheet is the fact. That
+also makes the analysis complete in a way a DOM query cannot be: the skin's own frost lives on a
+`::before` **pseudo-element**, and no selector returns one.
 
 ### Policy
 
@@ -284,6 +370,12 @@ Two rules keep the result readable, and both are asserted by the suite:
 - **Degradation is honest.** Without `backdrop-filter`, and under
   `prefers-reduced-transparency`, every fill returns to opaque and the blur is dropped:
   the layout, hierarchy and edges survive, the transparency does not.
+- **A contrast request is answered, not resisted.** Under `prefers-contrast: more` the fills go
+  opaque, the hairlines get real weight, and the decorative gradient and the now-redundant blur go
+  with them. That is a different request from `forced-colors`, which hands the palette to the
+  platform, and from `prefers-reduced-transparency`, which is about seeing through things. The text
+  colours are never redefined in any of the three: the design system validated every pair it ships,
+  so the background is the only lever that can raise the ratio without inventing a relationship.
 
 ### First paint
 
@@ -473,6 +565,21 @@ declarations a first paint can use — and skips descendant rules like `body[mar
 need DOM a first frame does not have. Editing the file by hand is how the first frame starts to
 disagree with every later one.
 
+The build then checks the result **in both directions**, and both are fatal: every rule in
+`boot.css` must exist in the skin's emitted CSS (it may not invent anything), and every body-level
+rule the skin declares must exist in `boot.css` (it may not be missing anything). One direction
+alone would have missed the likelier mistake — a new body-level rule in the skin and no
+re-derivation — and would have shipped a first frame quietly without it.
+
+What counts as a body-level selector is decided in **one** place, `scripts/boot-css-rules.mjs`, which
+both the tool above and `scripts/build.mjs` import. They each used to hold a copy; the copies agreed
+with each other and were both wrong, and the sheet silently lost rules that decide the first frame.
+The predicate answers three ways, not two — `body`, `other`, and `mixed` for a selector list that is
+partly body-level — and `mixed` is fatal rather than skipped, because a sheet that omits half a rule
+looks complete and is not. It also distinguishes a compound from a descendant: the space in
+`body[marker] [role='menu']` is a combinator, so that rule is not body-level, while
+`body[marker][data-ds-dark-theme]` is.
+
 ### Verifying against a running dsh
 
 `npm test` normally runs the freshly built bundle. Point it at a served bundle to check
@@ -501,15 +608,31 @@ own `WebSocket`; no dependency) against a running instance:
 node scripts/browser-verify.mjs "http://127.0.0.1:3081/?token=…" --shot glass.png
 ```
 
+Pass `--no-write` to keep it from recording a checklist confirmation in the settings document it
+points at — see the checklist section above for what each mode asserts.
+
 It opens Settings › UI in the live DOM, clicks the real switch, and asserts against
 **computed styles and rendered pixels**: the shipped tokens change value, shipped regions
 measurably gain `backdrop-filter`, the state survives a reload, the console stays clean,
 a mobile viewport gets the reduced blur with no overflow, and — measuring the actual
 screenshot pixels — text over the glass stays readable. Turning the switch off must
-restore the *exact* set of blurred surfaces and the original token values. It also drives
-the real Appearance control into dark mode, checks the fill becomes translucent
-blue-black rather than the light one, and re-measures contrast there (`--shot` writes
-`glass.png` and `glass-dark.png`).
+restore the *exact* set of blurred surfaces and the original token values. It also checks the
+dark palette, the `prefers-contrast: more` branch in BOTH themes, the reduced tier on a device
+forced to be weak, the checklist's confirmation, and the first frame with this bundle blocked
+(`--shot` writes `glass.png` and `glass-dark.png`).
+
+Dark mode is entered the way a skin actually sees it: by setting `data-ds-dark-theme` on `body`,
+which is the whole interface between the shipped theme feature and a skin. Driving the Appearance
+control instead made the phase depend on which Settings section the dialog remembered — but note
+what the attribute is: it is also the signal the shipped theme plugin persists its preference from,
+so a run against an instance whose stored preference is `light` can leave that preference `dark`.
+The suite restores the attribute it changed; the durable preference belongs to the shell, not to
+this plugin, and it is recorded in the changelog rather than assumed away.
+
+The suite is also identified by its arguments rather than their order: the page URL is found by its
+`http(s)://` shape, so `--no-write` cannot be mistaken for the URL. It could: passing the flag alone
+once turned every navigation into a failure and reported fifteen skin failures that were one bad
+argument. A missing URL now exits 2 with usage before Chrome is started.
 
 The contrast check measures the **darkest-to-lightest pixel spread** inside each text box.
 That is a deliberately coarse instrument: it cannot prove a 4.5:1 ratio, but on a

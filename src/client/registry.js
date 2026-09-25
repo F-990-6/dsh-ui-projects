@@ -22,6 +22,7 @@ import {
   PROJECT_TYPES,
   PERF_MEDIUM,
   PROJECT_PERF_LEVELS,
+  PROJECT_REGIONS,
   DEFAULT_PRIORITY,
   rankOf,
 } from './project-constants.js'
@@ -71,6 +72,12 @@ const ID_PATTERN = /^[a-z][a-z0-9-]{1,47}$/
  *   before whatever requires it regardless of the numbers.
  * @property {string[]} [requires] Ids that must be active too; the runtime keeps
  *   them consistent and refuses to enable a project whose dependency is missing.
+ * @property {string[]} [modifies] Surfaces this project changes, from `PROJECT_REGIONS`. Used to
+ *   warn when two projects that can be active together claim the same one — advisory only, because
+ *   two projects may touch the same region compatibly, and the warning must not become noise.
+ * @property {Array<{ id: string, label: string }>} [testItems] What a human should check before
+ *   calling this project verified. Rendered as a checklist on the card; a confirmation is recorded
+ *   against the project's `version`, so shipping a new version asks to be confirmed again.
  */
 
 /**
@@ -277,6 +284,31 @@ export class UiProjectRegistry {
   }
 
   /**
+   * Pairs of ACTIVE enhancements whose declared regions overlap.
+   *
+   * Skins are excluded, and that is the whole reason the warning is worth showing. A skin declares
+   * a broad footprint — the shipped one touches tokens, the background, the composer and dialogs —
+   * so including skins would make every enhancement conflict with the skin and turn the warning
+   * into wallpaper. The specification asks for exactly this scope: warn when several enhancements
+   * are active together. Skins are made mutually exclusive by policy instead.
+   *
+   * Advisory by construction: two projects may touch the same region and still compose perfectly
+   * (one sets a colour, another a radius). Nothing here blocks an enable, and nothing should.
+   * @returns {Array<{ ids: [string, string], regions: string[] }>}
+   */
+  regionConflicts() {
+    const active = this.listByType(TYPE_ENHANCEMENT).filter((project) => this.active.has(project.id))
+    const out = []
+    for (let left = 0; left < active.length; left += 1) {
+      for (let right = left + 1; right < active.length; right += 1) {
+        const shared = active[left].modifies.filter((region) => active[right].modifies.includes(region))
+        if (shared.length > 0) out.push({ ids: [active[left].id, active[right].id], regions: shared })
+      }
+    }
+    return out
+  }
+
+  /**
    * Subscribe to registry changes (registration, activation, errors).
    * @param {() => void} listener
    * @returns {() => void} disposer
@@ -361,6 +393,39 @@ export function normalize(definition) {
       `[dsh-ui-projects] UI project "${id}" has a non-integer priority "${String(priority)}": expected a whole number, lower runs first`,
     )
   }
+  /*
+   * Regions are validated against the vocabulary for the same reason tiers are: a misspelling
+   * (`composer` typed `composr`) would silently never conflict with anything, and the project would
+   * look like it had been checked when it had not.
+   */
+  const modifies = Array.isArray(definition.modifies) ? definition.modifies.slice() : []
+  const unknownRegion = modifies.find((region) => !PROJECT_REGIONS.includes(region))
+  if (unknownRegion !== undefined) {
+    throw new TypeError(
+      `[dsh-ui-projects] UI project "${id}" declares an unknown region "${String(unknownRegion)}": expected any of ${PROJECT_REGIONS.join(', ')}`,
+    )
+  }
+  /*
+   * Test items are validated rather than passed through, and for a sharper reason than the other
+   * lists: a malformed entry here is not a missing feature, it is a checklist that cannot record
+   * anything. An item without an id cannot be stored, and an item without a label is a checkbox
+   * nobody can read — both would surface as a control that silently does nothing, which is the
+   * failure this package has spent the most time removing.
+   */
+  const testItems = Array.isArray(definition.testItems) ? definition.testItems : []
+  const items = testItems.map((entry) => {
+    const itemId = entry?.id
+    const label = entry?.label
+    if (typeof itemId !== 'string' || !ID_PATTERN.test(itemId)) {
+      throw new TypeError(
+        `[dsh-ui-projects] UI project "${id}" has a test item with an invalid id ${String(itemId)}: expected lowercase letters, digits and dashes`,
+      )
+    }
+    if (typeof label !== 'string' || label.length === 0) {
+      throw new TypeError(`[dsh-ui-projects] UI project "${id}" test item "${itemId}" needs a label`)
+    }
+    return Object.freeze({ id: itemId, label })
+  })
   return Object.freeze({
     id,
     name,
@@ -372,6 +437,8 @@ export function normalize(definition) {
     supports: Object.freeze(Array.isArray(definition.supports) ? definition.supports.slice() : []),
     perfLevel,
     priority,
+    modifies: Object.freeze(modifies),
+    testItems: Object.freeze(items),
     preview: typeof definition.preview === 'string' ? definition.preview : undefined,
     previewLabel: typeof definition.previewLabel === 'string' ? definition.previewLabel : undefined,
     apply: typeof definition.apply === 'function' ? definition.apply : undefined,

@@ -424,6 +424,57 @@
   border-radius: 999px;
 }
 
+/* ── verification checklist ───────────────────────────────────────────────── */
+
+/*
+ * A native `<details>`, so the disclosure, the keyboard handling and the announcement come from the
+ * platform. Everything here is presentation: the summary reads as a quiet row until it is opened,
+ * and the boxes line up as a list rather than as so many loose controls.
+ */
+.uip-tests {
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  padding-top: 8px;
+}
+
+.uip-testsSummary {
+  cursor: pointer;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.uip-testsSummary:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 2px;
+}
+
+.uip-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0 0 2px;
+}
+
+.uip-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.uip-check input {
+  margin: 3px 0 0;
+  accent-color: var(--dsw-alias-brand-primary);
+}
+
+.uip-check input:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 2px;
+}
+
 /* ── the card adapts to its CONTAINER, not to the window ──────────────────── */
 
 /*

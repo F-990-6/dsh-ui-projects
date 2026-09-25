@@ -43,6 +43,50 @@ export const DEFAULT_PRIORITY = 100
 export const PROJECT_FEATURES = [FEATURE_LIGHT, FEATURE_DARK, FEATURE_MOBILE]
 
 /**
+ * The surfaces a project may declare it changes, in `modifies`.
+ *
+ * A vocabulary rather than free text, because it is only useful if two projects can be compared:
+ * `['composer']` and `['input area']` describe the same thing and would never collide. Every entry
+ * below names the DOM hook it actually refers to, so a declaration can be checked against the DOM
+ * rather than argued about.
+ *
+ *   sidebar     a column of the layout frame — marked `data-ui-skin-column` by the runtime
+ *   center      the main column, same marking
+ *   rightbar    the right column, `data-rightbar-col`
+ *   overlay     the frame's own overlay layer, `data-shell-overlay` — a container ABOVE the
+ *               columns, which is why frosting it has consequences a column does not
+ *   composer    the input area, `data-composer-*`
+ *   dialogs     floating surfaces by WAI-ARIA role: dialog, menu, listbox, tooltip
+ *   tokens      the `--dsw-alias-*` design-token layer every component reads
+ *   background  the page background on `body`
+ *
+ * Two names the specification's example list suggests are deliberately absent. `navbar`: this shell
+ * is a three-column frame and has no navigation bar. `settings`: the settings surface is a `dialog`
+ * and is already covered by `dialogs`. Declaring a region that cannot be pointed at would make
+ * every `modifies` list slightly less meaningful.
+ */
+export const REGION_SIDEBAR = 'sidebar'
+export const REGION_CENTER = 'center'
+export const REGION_RIGHTBAR = 'rightbar'
+export const REGION_OVERLAY = 'overlay'
+export const REGION_COMPOSER = 'composer'
+export const REGION_DIALOGS = 'dialogs'
+export const REGION_TOKENS = 'tokens'
+export const REGION_BACKGROUND = 'background'
+
+/** Every value `modifies` may contain. */
+export const PROJECT_REGIONS = [
+  REGION_SIDEBAR,
+  REGION_CENTER,
+  REGION_RIGHTBAR,
+  REGION_OVERLAY,
+  REGION_COMPOSER,
+  REGION_DIALOGS,
+  REGION_TOKENS,
+  REGION_BACKGROUND,
+]
+
+/**
  * Rendering-budget tiers a project may declare in `perfLevel`, cheapest first.
  *
  * A tier is a DECLARATION, not a measurement: it is the heaviest effect the project was designed

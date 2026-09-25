@@ -35,6 +35,7 @@ const { collectDiagnostics, mountDiagnostics } = require('./diagnostics.js')
 const { strings } = require('./locale.js')
 const { scopeCss } = require('./scope-css.js')
 const perf = require('./perf.js')
+const cssFilter = require('./css-filter.js')
 const coreCss = require('./styles/core.css')
 
 /** The settings slot this plugin occupies. */
@@ -290,6 +291,8 @@ module.exports = {
      * demand and a device combine — would otherwise be unreachable from a test.
      */
     perf,
+    /** Whether a stylesheet installs a blur, and where — pure string work over project CSS. */
+    cssFilter,
     /**
      * The storage key and namespace, so a test can never spell them wrong.
      *
