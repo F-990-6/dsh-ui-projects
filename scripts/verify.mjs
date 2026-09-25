@@ -629,6 +629,88 @@ class FakeMutationObserver {
 }
 
 /**
+ * A timer stand-in that a test advances by hand.
+ *
+ * The runtime's two retry loops are driven by wall-clock time: one bridges the gap between a
+ * project being applied and the shell mounting the application, the other waits for a boot page
+ * to become stale. Neither could be tested before — and both polled forever, which no test could
+ * have noticed either way. Waiting five real seconds to watch a bounded retry give up would make
+ * this suite unbearable, so this records what was scheduled and lets a test say "the deadline
+ * passed" at the moment it means, exactly as `FakeMutationObserver.flushAll()` does for DOM
+ * changes.
+ *
+ * Handles are objects rather than numbers so the runtime's `handle?.unref?.()` is a real call
+ * here too, and so a `clearInterval` can be matched against what it actually created.
+ */
+class FakeTimers {
+  constructor() {
+    /** @type {Map<number, { callback: () => void, ms: number }>} */
+    this.intervals = new Map()
+    /** @type {Map<number, { callback: () => void, ms: number }>} */
+    this.timeouts = new Map()
+    this.nextId = 1
+  }
+
+  /** @param {() => void} callback @param {number} ms */
+  setInterval(callback, ms) {
+    const id = this.nextId++
+    this.intervals.set(id, { callback, ms })
+    return { id, unref() {} }
+  }
+
+  /** @param {any} handle */
+  clearInterval(handle) {
+    if (handle !== undefined && handle !== null) this.intervals.delete(handle.id)
+  }
+
+  /** @param {() => void} callback @param {number} ms */
+  setTimeout(callback, ms) {
+    const id = this.nextId++
+    this.timeouts.set(id, { callback, ms })
+    return { id, unref() {} }
+  }
+
+  /** @param {any} handle */
+  clearTimeout(handle) {
+    if (handle !== undefined && handle !== null) this.timeouts.delete(handle.id)
+  }
+
+  /** Running intervals. Zero is the number these tests exist to assert. */
+  get pendingIntervals() {
+    return this.intervals.size
+  }
+
+  /** Armed deadlines. */
+  get pendingTimeouts() {
+    return this.timeouts.size
+  }
+
+  /**
+   * The periods of the intervals still running.
+   *
+   * A bare count cannot tell "the marking retry stopped" from "some other loop took its place";
+   * the period can, and it is what a reader would check by hand.
+   */
+  get runningPeriods() {
+    return [...this.intervals.values()].map((entry) => entry.ms)
+  }
+
+  /** Run every running interval once, skipping any that a callback cleared. */
+  tickIntervals() {
+    for (const [id, entry] of [...this.intervals.entries()]) {
+      if (this.intervals.has(id)) entry.callback()
+    }
+  }
+
+  /** Run every armed deadline once and clear it, as a real timer does when it fires. */
+  fireTimeouts() {
+    const pending = [...this.timeouts.values()]
+    this.timeouts.clear()
+    for (const entry of pending) entry.callback()
+  }
+}
+
+/**
  * A `getComputedStyle` that answers the one question this package asks of it.
  *
  * The runtime identifies the application frame by asking the DOM what it is — a grid
@@ -792,7 +874,7 @@ let activeCleanup
  *
  * Each boot tears down the previous one first, so tests neither leak effects into
  * one another nor double-dispose them.
- * @param {{ withStorage?: boolean | ReturnType<typeof createStorage>, withSettingsScope?: boolean, withTheme?: boolean }} [options]
+ * @param {{ withStorage?: boolean | ReturnType<typeof createStorage>, withSettingsScope?: boolean, withTheme?: boolean, detachedFrame?: boolean, viewportWidth?: number, viewportHeight?: number, fakeTimers?: boolean }} [options]
  */
 async function boot(options = {}) {
   // Tear down BEFORE the sandbox globals move: a previous instance's disposers
@@ -848,10 +930,22 @@ async function boot(options = {}) {
   // The bundle retries the frame lookup on a timer, because the shell has not mounted the
   // application when a project is first applied. A sandbox without timers would make that
   // retry impossible to exercise — and would licence a plugin that hangs on a real page.
-  sandbox.setInterval = setInterval
-  sandbox.clearInterval = clearInterval
-  sandbox.setTimeout = setTimeout
-  sandbox.clearTimeout = clearTimeout
+  // With `fakeTimers` the same retry becomes observable instead of merely assumed: the test
+  // decides when the interval ticks and when the deadline passes.
+  const timers = options.fakeTimers === true ? new FakeTimers() : undefined
+  if (timers === undefined) {
+    sandbox.setInterval = setInterval
+    sandbox.clearInterval = clearInterval
+    sandbox.setTimeout = setTimeout
+    sandbox.clearTimeout = clearTimeout
+  } else {
+    sandbox.setInterval = (/** @type {() => void} */ callback, /** @type {number} */ ms) =>
+      timers.setInterval(callback, ms)
+    sandbox.clearInterval = (/** @type {any} */ handle) => timers.clearInterval(handle)
+    sandbox.setTimeout = (/** @type {() => void} */ callback, /** @type {number} */ ms) =>
+      timers.setTimeout(callback, ms)
+    sandbox.clearTimeout = (/** @type {any} */ handle) => timers.clearTimeout(handle)
+  }
   // The runtime also marks on DOM changes, which is what catches the shell mounting the
   // application. Without a MutationObserver in the sandbox that path is silently untested.
   FakeMutationObserver.reset()
@@ -886,6 +980,8 @@ async function boot(options = {}) {
     registrations: host.registrations,
     registry: plugin.registry,
     runtime,
+    /** Present only with `fakeTimers`, and then the only place timers can be inspected. */
+    timers,
     persistKind: runtime.persist.kind,
     /** The settings namespace this plugin wrote, as the fake host sees it. */
     settingsSection: () => host.namespaces.get('ui-projects'),
@@ -1763,6 +1859,105 @@ await test('marking the columns survives the application not being mounted yet',
 })
 
 /*
+ * The retry that bridges "the project was applied" and "the shell mounted the application" used
+ * to run for the life of the session — four times a second, for every active project, whether or
+ * not there was anything left to find. No test could see that: the loop was driven by wall-clock
+ * time, so the only way to observe it was to load a real page and watch. That is why the loop is
+ * now driven by the sandbox's timers in these two tests, and why the two halves of the contract
+ * are asserted separately — the interval must stop, and the observer must not.
+ */
+await test('the column-marking retry stops once it succeeds, and the observer repairs a re-render', async () => {
+  const harness = await boot({ detachedFrame: true, fakeTimers: true })
+  await harness.runtime.enable('liquid-glass')
+
+  const marked = () =>
+    harness.dom.document.body.querySelectorAll('div').filter((el) => el.hasAttribute('data-ui-skin-column'))
+  equal(marked().length, 0, 'nothing is marked while there is no frame')
+  equal(
+    harness.timers.runningPeriods.join(','),
+    '500,250',
+    'two loops run: the boot-page watch from plugin load, and the marking retry from enable',
+  )
+
+  // The shell mounts the application: the mutation the observer waits for.
+  harness.dom.mountFrame()
+  FakeMutationObserver.flushAll()
+
+  equal(marked().length, 3, 'the columns are marked as soon as the frame appears')
+  equal(
+    harness.timers.runningPeriods.join(','),
+    '500',
+    'and ONLY the boot-page watch is left — the 250ms poll is gone for the rest of the session',
+  )
+  equal(harness.timers.pendingTimeouts, 1, 'the marking deadline went with it; one deadline remains')
+
+  /*
+   * A re-render replaces the frame's children with new elements that carry no attribute. This is
+   * the report the observer exists for (marking seen working, then absent, with no toggle in
+   * between), and it has to keep working with no timer running at all.
+   */
+  const frame = harness.dom.frame()
+  for (const child of [...frame.children]) frame.removeChild(child)
+  const replacement = [createElement('div'), createElement('div'), createElement('div')]
+  for (const column of replacement) frame.appendChild(column)
+  FakeMutationObserver.flushAll()
+
+  equal(marked().length, 3, 'the new columns are marked too')
+  equal(
+    replacement.filter((column) => column.hasAttribute('data-ui-skin-column')).length,
+    3,
+    'the attributes sit on the NEW elements, not left behind on detached ones',
+  )
+  equal(
+    harness.timers.runningPeriods.join(','),
+    '500',
+    "and that repair needed no timer at all: it is the observer's job",
+  )
+
+  await harness.runtime.disable('liquid-glass')
+  equal(marked().length, 0, 'a disable still unmarks them')
+})
+
+await test('a retry that never succeeds stops at its deadline, and leaves the observer connected', async () => {
+  const harness = await boot({ detachedFrame: true, fakeTimers: true })
+  await harness.runtime.enable('liquid-glass')
+
+  equal(
+    harness.timers.runningPeriods.join(','),
+    '500,250',
+    'both bounded loops are running: the boot-page watch and the marking retry',
+  )
+
+  // Five seconds pass and no frame ever appears.
+  harness.timers.tickIntervals()
+  harness.timers.tickIntervals()
+  harness.timers.fireTimeouts()
+
+  equal(
+    harness.timers.pendingIntervals,
+    0,
+    'both deadlines clear their intervals, so NEITHER loop can poll forever',
+  )
+  const state = harness.runtime.markingState.get('liquid-glass')
+  equal(state.timedOut, true, 'giving up is recorded where the diagnostics overlay reads it')
+  truthy(/stopped retrying/.test(String(state.note)), `the note carries the reason (${String(state.note)})`)
+  // `ctx.fail()` would deactivate the project while its stylesheet stayed inserted, so the
+  // deadline deliberately does not call it. The registry must therefore still say "on".
+  equal(
+    harness.runtime.registry.isEnabled('liquid-glass'),
+    true,
+    'and the project is NOT deactivated — a timer giving up is not the project failing',
+  )
+
+  // The frame turns up after the deadline: the observer was left connected on purpose.
+  harness.dom.mountFrame()
+  FakeMutationObserver.flushAll()
+  const marked = harness.dom.document.body.querySelectorAll('div').filter((el) => el.hasAttribute('data-ui-skin-column'))
+  equal(marked.length, 3, 'a frame that arrives late is still marked')
+  equal(harness.timers.pendingIntervals, 0, 'and still without restarting the poll')
+})
+
+/*
  * RETIRED — "the emitted selectors actually match the elements they are meant to hide".
  *
  * That test built the cost-meter's dock row (`.cm-root`) and the composer's stats marker in
@@ -1781,6 +1976,13 @@ await test('marking the columns survives the application not being mounted yet',
  *
  * So the rows are visible again while Liquid Glass is on. Nothing else about the skin depends
  * on them, and the two elements belong to `dsh-cost-meter` rather than to dsh.
+ *
+ * CORRECTION — that last paragraph described the state on the day it was written and stopped
+ * being true shortly afterwards. The user asked for the hiding back, so the rule returned as an
+ * explicit exception with its own rule and comment, which is exactly the form this note asked
+ * for: see "the composer stat rows are hidden, and without moving the composer" below, which
+ * pins the current rule (`visibility: hidden`). Read that test for what the skin does NOW; read
+ * this note for why the original rule was withdrawn.
  *
  * If the hiding is wanted back it should return as an explicit, separately-reviewed exception
  * with its own rule and comment — not folded quietly into a skin's stylesheet, and not

@@ -2,9 +2,9 @@
  * Self-diagnosis overlay — a temporary instrument, not a feature.
  *
  * The skin can fail in ways a screenshot cannot distinguish: the sheet is inserted but the
- * column marking never ran, the ambient layer landed in the wrong parent, `apply` threw and
- * was rolled back, or the browser is running a stale bundle entirely. Reasoning about which
- * one from the outside wasted several rounds, so this prints the facts instead.
+ * column marking never ran, `apply` threw and was rolled back, the settings dialog is being
+ * laid out against the wrong box, or the browser is running a stale bundle entirely. Reasoning
+ * about which one from the outside wasted several rounds, so this prints the facts instead.
  *
  * Enable it once and it stays on across reloads:
  *
@@ -32,9 +32,9 @@ function debugEnabled() {
  * Everything needed to tell the failure modes apart.
  *
  * Each field answers one question that has actually cost a round: is the marker on the body
- * (`apply` finished), did the columns get marked (the DOM half ran), where did the ambient
- * layer land (its parent decides whether it distorts the shell's measurement), and is the
- * page taller than the window (the "second screen" the user could scroll to).
+ * (`apply` finished), did the columns get marked (the DOM half ran), is the settings dialog
+ * being laid out against the box it thinks it has, and is the page taller than the window
+ * (the "second screen" the user could scroll to).
  * @param {import('./registry.js').UiProjectDefinition[]} projects
  * @returns {Record<string, unknown>}
  */
@@ -42,7 +42,6 @@ export function collectDiagnostics(projects, runtime) {
   if (typeof document === 'undefined') return { stage: 'no document' }
   const body = document.body
   const root = document.documentElement
-  const ambient = document.querySelectorAll('.ds-ambient')
   const marked = document.querySelectorAll('[data-ui-skin-column]')
   /** @type {string[]} */
   const sheets = []
@@ -60,7 +59,7 @@ export function collectDiagnostics(projects, runtime) {
      * does not match the newest one you built, the page is running stale code and nothing else in
      * this panel means anything.
      */
-    run: 'r11-widths',
+    run: 'r12-poll-cleanup',
     /**
      * The widths that decide whether the sidebar is a column or a rail.
      *
@@ -99,13 +98,25 @@ export function collectDiagnostics(projects, runtime) {
     sidebarFill: getComputedStyle(body).getPropertyValue('--dsw-specific-sidebar-fill').trim(),
     dialogFill: getComputedStyle(body).getPropertyValue('--dsw-alias-bg-layer-2').trim(),
     /* ── everything below is context; the fields above answer most questions ── */
-    build: 'columns+clip+lift',
     /**
-     * What the retry loop behind `markColumns` actually saw. This is the field that turns a
+     * Which capabilities this build carries, by name. The second staleness marker, after `run`:
+     * `clip` used to be in this list, and the `overflow: clip` rules it stood for were deleted
+     * because forcing geometry on a layout column is how this skin broke the first two times.
+     * A label that outlives its feature is the same defect as a class name that outlives a
+     * rebuild, so it is corrected rather than left to mislead the next reader.
+     */
+    build: 'columns+lift+visibility',
+    /**
+     * What the bounded retry behind `markColumns` actually saw. This is the field that turns a
      * silent failure into a readable one: `frame: null` means the lookup never found the grid,
      * a non-empty `sizes` with `columns: 0` means it found the grid but rejected every child,
      * and `note: 'marked'` with `marked: 0` on the page would mean something REMOVED the
      * attributes afterwards.
+     *
+     * `timedOut` is the newer one. The retry now stops polling after five seconds instead of
+     * running for the life of the session, so a give-up has to be distinguishable from a page
+     * where marking simply worked. It is NOT a verdict on the skin: a timed-out project stays
+     * enabled, its observer stays connected, and a frame that appears later is still marked.
      */
     marking: runtime?.markingState === undefined ? 'no runtime' : Object.fromEntries(runtime.markingState),
     /** The frame's own background token — transparent in this build, opaque in the old one. */
@@ -124,9 +135,6 @@ export function collectDiagnostics(projects, runtime) {
     errored: projects.filter((project) => project.status === 'error').map((project) => [project.id, project.error]),
     columnsMarked: marked.length,
     columnClasses: Array.from(marked).map((el) => String(el.className).slice(0, 24)),
-    ambientCount: ambient.length,
-    ambientParent: ambient.length > 0 ? describeNode(ambient[0].parentElement) : null,
-    ambientGrandparent: ambient.length > 0 ? describeNode(ambient[0].parentElement?.parentElement) : null,
     // The "second screen" check.
     pageHeight: body.scrollHeight,
     viewportHeight: window.innerHeight,
@@ -178,21 +186,6 @@ function collectDialog() {
     bottomGap: Math.round(window.innerHeight - rect.bottom),
     maskBackground: mask === null ? null : getComputedStyle(mask).backgroundColor,
   }
-}
-
-/**
- * @param {Element | null | undefined} node
- * @returns {string | null}
- */
-function describeNode(node) {
-  if (node === null || node === undefined) return null
-  const tag = node.tagName.toLowerCase()
-  const cls = String(node.className || '').split(' ')[0].slice(0, 24)
-  const attrs = Array.from(node.attributes)
-    .map((attribute) => attribute.name)
-    .filter((name) => name.startsWith('data-'))
-    .join(',')
-  return `${tag}${cls === '' ? '' : `.${cls}`}${attrs === '' ? '' : `[${attrs}]`}`
 }
 
 /**

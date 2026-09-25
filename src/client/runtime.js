@@ -47,6 +47,29 @@ const TYPE_SKIN = 'skin'
 const ROOT_MARKER = 'data-ui-projects'
 
 /**
+ * How long the two retry loops below may poll before they give up.
+ *
+ * Both wait for something nobody can report to the plugin: the shell mounting the application,
+ * a grid that exists but has not been laid out yet, a boot page that only becomes stale once
+ * the app is standing beside it. A `MutationObserver` catches every DOM change — but NOT a
+ * change in layout. A stylesheet applying, a font finishing, a transition ending: each makes an
+ * element measurable while mutating nothing, and all of them happen in the first moments after
+ * a project is enabled.
+ *
+ * So the intervals are kept, with a deadline. Past it the interval is cleared and the observer
+ * stays connected — the observer is the half that has to keep working for the life of the
+ * project (a re-render can replace the marked columns), and the interval is the half that would
+ * otherwise poll forever. Five seconds is generous for a window measured in hundreds of
+ * milliseconds: a frame that has not appeared by then is not waiting on layout, it is on a page
+ * that has no frame at all.
+ */
+const RETRY_BUDGET_MS = 5000
+/** The column-marking bridge. Slow enough to be invisible, fast enough to beat a paint. */
+const RETRY_INTERVAL_MS = 250
+/** The boot-page bridge. Boot is over in well under this, or there is no boot page to remove. */
+const BOOT_RETRY_INTERVAL_MS = 500
+
+/**
  * @typedef {object} RuntimeDeps
  * @property {import('./registry.js').UiProjectRegistry} registry
  * @property {import('./persist.js').PersistAdapter} persist
@@ -316,11 +339,12 @@ export class UiProjectRuntime {
          * `#root` is empty and there is no frame to find. A one-shot lookup therefore failed
          * silently, and the skin lost its frost entirely while every other part of it worked.
          *
-         * A missing decoration must never delay anything, so the retry is a timer that gives
-         * up and stays quiet rather than blocking the plugin. Every attempt is recorded in
-         * `markingState` so the diagnostics overlay can report what it actually saw — the
-         * first version of this retry failed for reasons invisible from the outside, and
-         * reasoning about them cost a round.
+         * A missing decoration must never delay anything, so neither way in blocks the plugin —
+         * and the retry is now BOUNDED. It runs until the columns are marked or `RETRY_BUDGET_MS`
+         * has passed, whichever comes first, and is then cleared. Every attempt is recorded in
+         * `markingState`, an expired deadline included, so the diagnostics overlay can report what
+         * it actually saw. The first version of this retry failed for reasons invisible from the
+         * outside, and reasoning about them cost a round.
          */
         let cancelled = false
         let marked = /** @type {Element[]} */ ([])
@@ -328,12 +352,13 @@ export class UiProjectRuntime {
         this.markingState.set(id, state)
 
         /**
-         * One attempt, which keeps running for as long as the project is active.
+         * One attempt. Driven by the observer for as long as the project is active, and by the
+         * interval only until that interval is cleared.
          *
          * The set of columns is recomputed every time and only WRITTEN when it differs from what is
          * already marked — so a repeated attempt on an unchanged frame costs a grid lookup and
          * nothing else, while a re-render that replaces the columns is caught and repaired. Writing
-         * unconditionally would mean touching the DOM four times a second forever.
+         * unconditionally would mean touching the DOM on every observed mutation.
          * @returns {boolean} whether the columns are marked now
          */
         const attempt = () => {
@@ -390,19 +415,66 @@ export class UiProjectRuntime {
          * The interval is the backstop for the case the observer cannot see: the frame is
          * present but has not been laid out yet, so it exists with zero-area children and
          * starts satisfying the filter a paint or two later, with no DOM mutation to observe.
+         * An observer watches nodes; layout changes without any node changing.
          *
-         * NEITHER of them stops after the first success, and that is the fix for a real report:
-         * marking was observed working once (`columnClasses: ["pI_x6G_sidebarCol",
-         * "pI_x6G_centerCol"]` on one probe) and absent later (`columnsMarked: 0` on another), with
-         * no toggle in between. The shell re-renders — opening the right panel, collapsing the
-         * sidebar, changing a session — and a re-render can replace the frame's children with NEW
-         * elements that carry no attribute. A one-shot marking is therefore not a marking; it is a
-         * marking that happens to be correct until the next render.
+         * THE OBSERVER NEVER STOPS, and that is the fix for a real report: marking was observed
+         * working once (`columnClasses: ["pI_x6G_sidebarCol", "pI_x6G_centerCol"]` on one probe)
+         * and absent later (`columnsMarked: 0` on another), with no toggle in between. The shell
+         * re-renders — opening the right panel, collapsing the sidebar, changing a session — and a
+         * re-render replaces the frame's children with NEW elements that carry no attribute. A
+         * one-shot marking is therefore not a marking; it is a marking that happens to be correct
+         * until the next render. Repairing that is the observer's job, and it costs nothing while
+         * the DOM is still: an event-driven observer that never fires does no work.
+         *
+         * THE INTERVAL STOPS. It used to run forever, four times a second, for the life of every
+         * active project — and its one useful window is the first moments after activation. So it
+         * is cleared as soon as the columns are marked, whichever way in did the marking, and
+         * unconditionally once `RETRY_BUDGET_MS` has passed. The observer stays connected past
+         * that deadline: giving up on the timer is not giving up on the project, and a frame that
+         * appears later is still marked.
+         *
+         * Deliberately NOT re-armed by a later failed attempt. An attempt driven by the observer
+         * runs after a mutation, and reading a rect forces layout, so the newly inserted columns
+         * are already measurable; a repeat of the loading-time zero-area case is not something
+         * this timer would be waiting for, and re-arming it would rebuild the forever-poll.
          */
+        /** @type {ReturnType<typeof setInterval> | undefined} */
+        let retry
+        /** @type {ReturnType<typeof setTimeout> | undefined} */
+        let deadline
+
+        /** Stop the interval and the deadline that bounds it. Safe to call repeatedly. */
+        const stopRetry = () => {
+          if (retry !== undefined) {
+            clearInterval(retry)
+            retry = undefined
+          }
+          if (deadline !== undefined) {
+            clearTimeout(deadline)
+            deadline = undefined
+          }
+        }
+
+        /**
+         * Mark if possible, and end the retry window if that worked.
+         *
+         * Both ways in go through this, and it has to be both. In the field the OBSERVER is the
+         * one that usually does the marking — the shell mounts the application and that is a
+         * mutation — so a retry cleared only by the interval's own attempt would keep ticking
+         * away behind a page that had been correctly marked the whole time. The test that drives
+         * both paths is what found that.
+         * @returns {boolean} whether the columns are marked now
+         */
+        const attemptAndSettle = () => {
+          if (!attempt()) return false
+          stopRetry()
+          return true
+        }
+
         const observer =
           typeof MutationObserver === 'function'
             ? new MutationObserver(() => {
-                attempt()
+                attemptAndSettle()
               })
             : undefined
         observer?.observe(typeof document === 'undefined' ? {} : document.documentElement, {
@@ -410,26 +482,42 @@ export class UiProjectRuntime {
           subtree: true,
         })
 
-        const timer =
-          typeof setInterval === 'function'
-            ? (() => {
-                const handle = setInterval(attempt, 250)
-                // `unref` so a waiting retry cannot hold a Node process open. See the same note
-                // in `watchBootPage`.
-                handle?.unref?.()
-                return handle
-              })()
-            : undefined
+        const startRetry = () => {
+          if (retry !== undefined || typeof setInterval !== 'function') return
+          const handle = setInterval(() => {
+            if (cancelled) {
+              stopRetry()
+              return
+            }
+            // Marked: the bridge has done its job and the observer takes it from here.
+            attemptAndSettle()
+          }, RETRY_INTERVAL_MS)
+          // `unref` so a waiting retry cannot hold a Node process open. See the same note
+          // in `watchBootPage`.
+          handle?.unref?.()
+          retry = handle
+          if (typeof setTimeout !== 'function') return
+          const limit = setTimeout(() => {
+            stopRetry()
+            state.note = `${state.note} — stopped retrying after ${RETRY_BUDGET_MS}ms`
+            state.timedOut = true
+          }, RETRY_BUDGET_MS)
+          limit?.unref?.()
+          deadline = limit
+        }
 
         // A first synchronous try covers the common case where the app mounted before the
-        // project was enabled (toggling the switch on a running application).
-        attempt()
-        if (observer === undefined && timer === undefined) state.note = 'no observer and no timer in this host'
+        // project was enabled (toggling the switch on a running application) — and because it
+        // runs first, the common case never creates a timer at all.
+        if (!attemptAndSettle()) startRetry()
+        if (observer === undefined && typeof setInterval !== 'function') {
+          state.note = 'no observer and no timer in this host'
+        }
 
         const disposer = () => {
           cancelled = true
           observer?.disconnect()
-          if (timer !== undefined) clearInterval(timer)
+          stopRetry()
           for (const column of marked) column.removeAttribute?.(attr)
           marked = []
           this.markingState.set(id, { ...state, note: `${state.note} → disposed` })
@@ -570,38 +658,69 @@ export class UiProjectRuntime {
    * Retries for the same reason column marking does: at plugin-load time the boot page is the
    * only child of the container and must be left alone, and it only becomes stale once the
    * application mounts beside it — an event, not a moment the plugin can predict.
+   *
+   * The retry USED to be unbounded, and uselessly so: `attempt` returns immediately once the
+   * page has been removed, so the interval went on firing twice a second for the rest of the
+   * session, doing nothing at all. Two things bound it now. Removal tears the whole watcher down,
+   * because `removed` already makes every later attempt a no-op and there is no second page to
+   * wait for. And an interval that never does find a page — the normal case in a session with no
+   * boot page at all, where this is not an error — stops at `RETRY_BUDGET_MS`, leaving the
+   * observer connected so a page that appears later is still seen the moment it mutates.
    * @returns {() => void}
    */
   watchBootPage() {
     if (typeof document === 'undefined') return () => {}
     let stopped = false
     let removed = false
+    /** @type {MutationObserver | undefined} */
+    let observer
+    /** @type {ReturnType<typeof setInterval> | undefined} */
+    let retry
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let deadline
+
+    const stopRetry = () => {
+      if (retry !== undefined) {
+        clearInterval(retry)
+        retry = undefined
+      }
+      if (deadline !== undefined) {
+        clearTimeout(deadline)
+        deadline = undefined
+      }
+    }
+
     const attempt = () => {
       if (stopped || removed) return
       if (this.dismissBootPage()) {
         removed = true
         this.bootPageRemoved = true
+        stopped = true
+        stopRetry()
+        observer?.disconnect()
       }
     }
-    const observer =
-      typeof MutationObserver === 'function' ? new MutationObserver(attempt) : undefined
+
+    observer = typeof MutationObserver === 'function' ? new MutationObserver(attempt) : undefined
     observer?.observe(document.documentElement, { childList: true, subtree: true })
     // `unref` so this watcher never keeps a Node process alive on its own. A plugin that holds
     // the event loop open is indistinguishable from a plugin that has hung, and it made this
     // package's own test suite stop exiting — passing assertions, no way to finish.
-    const timer =
-      typeof setInterval === 'function'
-        ? (() => {
-            const handle = setInterval(attempt, 500)
-            handle?.unref?.()
-            return handle
-          })()
-        : undefined
+    if (typeof setInterval === 'function') {
+      const handle = setInterval(attempt, BOOT_RETRY_INTERVAL_MS)
+      handle?.unref?.()
+      retry = handle
+      if (typeof setTimeout === 'function') {
+        const limit = setTimeout(() => stopRetry(), RETRY_BUDGET_MS)
+        limit?.unref?.()
+        deadline = limit
+      }
+    }
     attempt()
     return () => {
       stopped = true
       observer?.disconnect()
-      if (timer !== undefined) clearInterval(timer)
+      stopRetry()
     }
   }
 

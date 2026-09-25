@@ -1,20 +1,27 @@
 /*
- * dsh base layer for the UI project system.
+ * dsh base layer for the UI project system: the Settings > UI page chrome (`.uip-*`).
  *
- * Two things live here, both owned by this plugin and removed with it:
- *   1. the two generic hooks every UI project relies on, and
- *   2. the Settings > UI page chrome (`.uip-*`).
+ * It is owned by this plugin and removed with it, and it carries no project-specific knowledge:
+ * it styles a list of cards, and the cards come from the registry. It paints with the shipped
+ * alias tokens only, so it follows the active dsh theme (light or dark) with no palette of its
+ * own.
  *
- * The page chrome carries no project-specific knowledge: it styles a list of
- * cards, and the cards come from the registry. It paints with the shipped alias
- * tokens only, so it follows the active dsh theme (light or dark) with no palette
- * of its own.
+ * TWO SEATS USED TO SIT AT THE TOP OF THIS FILE. Both are deleted, and the record of why belongs
+ * here rather than in a commit that this machine cannot make:
+ *
+ *   `html[data-ui-projects='on'] .ui-ambient-layer` — the position for a full-screen backdrop.
+ *   Its only consumer was the old Liquid Glass ambient layer, a DOM node literally built with that
+ *   class list. The skin now paints its gradient in CSS and mounts no DOM at all, which left the
+ *   seat matching nothing anywhere in the package. Deleted rather than "kept for later": a seat
+ *   nobody sits in is a selector that silently matches nothing, and silently matching nothing is
+ *   the failure this package has spent the most time chasing.
+ *
+ *   `html[data-ui-projects='on'] { }` — a marker rule with no declarations in it. The
+ *   `data-ui-projects` attribute itself is still set by the runtime and still read by diagnostics;
+ *   what is gone is an empty rule pretending to reserve it for system-wide styles that never came.
+ *
+ * The rewrite described below is the one hook here that IS load-bearing.
  */
-
-/* The marker the runtime sets while the system is mounted at all. */
-html[data-ui-projects='on'] {
-  /* Reserved for future system-wide, project-neutral hooks. */
-}
 
 /*
  * A project's stylesheet is authored with root selectors (`.lg-glass { ... }`) and
@@ -22,15 +29,6 @@ html[data-ui-projects='on'] {
  * Keeping the rewrite in one place means a project can be written as plain CSS
  * and still be impossible to leak: no marker, no effect.
  */
-
-/* Projects that inject a full-screen ambient layer ask for this seat, which sits
-   behind the application and never intercepts pointer events. */
-html[data-ui-projects='on'] .ui-ambient-layer {
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-}
 
 /* ── page layout ───────────────────────────────────────────────────────────── */
 

@@ -65,12 +65,11 @@ src/client/
   store.js                        what the settings page reads
   panel.js                        the Settings › UI page, rendered from the registry alone
   locale.js                       copy for the two shipped locales
-  styles/core.css                 the system's own hooks and the page chrome
+  styles/core.css                 the Settings › UI page chrome (`.uip-*`) and nothing else
   projects/liquid-glass/
     skin.js                       Liquid Glass: metadata, apply, cleanup
     tokens.css                    re-binds the shipped alias tokens to translucent fills
-    glass.css                     the skin's own `--lg-*` vocabulary (material, accent)
-    surfaces.css                  refraction, the edge highlight, the ambient field
+    glass.css                     the skin's own `--lg-*` vocabulary, the material, the gradient
 ```
 
 ### The shape of a UI project
@@ -113,15 +112,18 @@ removes its own CSS:
 | `fail(err)` | Report a non-fatal problem; the card shows it. |
 | `readSetting` / `writeSetting` | Project-private options, stored in this plugin's own record. |
 
-A project that needs real DOM (an ambient backdrop, say) may create it in `apply` and
-remove it in `cleanup`; Liquid Glass does exactly that for its gradient field.
+A project that needs real DOM may create it in `apply` and remove it in `cleanup`. Liquid Glass
+deliberately does NOT: the gradient its frost refracts is painted in CSS, and the one `::before`
+layer the skin does create belongs to a stylesheet the runtime scopes and removes for it. An
+earlier version mounted a DOM layer under `<body>` instead, and that is what collapsed the
+sidebar to a rail.
 
 ### What else a project can declare
 
 | member | purpose |
 |---|---|
-| `markColumns()` | Mark the application's layout columns with `data-ui-skin-column`, and return the disposer. Frost must go on the columns and never on the frame's whole-viewport overlay container — blurring that softens every column at once, including the one being read. The runtime finds the frame by asking the DOM (a grid with a multi-track template), keeps only the children that actually occupy it, and **retries**, because the shell has not mounted yet when a project is first applied. |
-| `dismissBootPage()` | Remove the shell's boot page if it is still occupying `#root` beside the application. The shipped frontend never removes it, and both are full-height children of the same container, so the page ends up about twice the viewport tall — it scrolls to a second screen and the application's own layout is measured against a box twice the size of the window. Removes nothing unless the container is genuinely oversized, so a slow boot is untouched. |
+| `markColumns()` | Mark the application's layout columns with `data-ui-skin-column`, and return the disposer. Frost must go on the columns and never on the frame's whole-viewport overlay container — blurring that softens every column at once, including the one being read. The runtime finds the frame by asking the DOM (a grid with a multi-track template), keeps only the children that actually occupy it, and **retries**, because the shell has not mounted yet when a project is first applied. That retry is **bounded**: it stops as soon as the columns are marked, and five seconds after activation at the latest. The `MutationObserver` behind it is not bounded and is never disconnected — a re-render that replaces the columns is a DOM mutation, so it is the observer, not the timer, that keeps the marking correct for the life of the project. A retry that gives up does not call `fail()`: the project stays enabled and a frame that appears later is still marked. |
+| `dismissBootPage()` | Remove the shell's boot page if it is still occupying `#root` beside the application. The shipped frontend never removes it, and both are full-height children of the same container, so the page ends up about twice the viewport tall — it scrolls to a second screen and the application's own layout is measured against a box twice the size of the window. Removes nothing unless the container is genuinely oversized, so a slow boot is untouched. `watchBootPage()` drives it with the same bounded retry, and tears the whole watcher down once the page is gone. |
 | `controls` (on the definition) | Controls the settings card renders: `{ id, type: 'slider', labelKey, min, max, step, defaultValue, storageKey }`. Each control is self-describing, so neither the settings page nor the store needs any vocabulary of its own — a project declares a slider and gets one. **Liquid Glass declares none**: its material has one fixed look, described below. |
 
 #### Two rules about `:where()`, learned the hard way
@@ -132,7 +134,7 @@ Selectors in a project stylesheet are scoped to the project's marker. Whether to
 - **Use `:where()` to avoid a fight.** `:where()` has zero specificity, so a component that wants
   its own `backdrop-filter` still wins. The frost on columns and dialogs is written this way.
 - **Do not use `:where()` to win one.** The cost-meter plugin declares `.cm-root{display:block}` —
-  specificity `(0,1,0)` — so `:where(.cm-root){display:none}` at `(0,0,0)` loses, and the rule is
+  specificity `(0,1,0)` — so `:where(.cm-root){visibility:hidden}` at `(0,0,0)` loses, and the rule is
   silently dead. Anything that must beat the shipped styles is written with the marker in the
   selector so it carries real specificity.
 

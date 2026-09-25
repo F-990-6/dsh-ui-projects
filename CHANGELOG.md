@@ -25,6 +25,49 @@ Verification vocabulary used below:
 
 ---
 
+## Round 16 — three dead things removed, and two forever-polls bounded
+
+**Status: done. `suite` 319 assertions / 0 failing, `host` loads. Not yet observed in a browser.**
+
+Three leftovers from earlier rounds, taken one at a time with a snapshot between each
+(`20-runtime-poll-cleanup`, `21-core-css-deadcode-cleanup`, `22-diagnostics-cleanup`).
+
+1. **Both retry loops ran forever.** `markColumns` polled every 250ms and `watchBootPage` every
+   500ms for the life of the session, for every active project, whether or not there was anything
+   left to find — and in the boot page's case the callback had already become a no-op, so it was a
+   no-op twice a second indefinitely. Neither loop had ever been tested: they are driven by
+   wall-clock time, and every existing test reaches the DOM path through `FakeMutationObserver`
+   instead. Both intervals now stop, on success and unconditionally `RETRY_BUDGET_MS` (5s) after
+   activation, while both observers stay connected — a re-render that replaces the marked columns
+   is a DOM mutation, and only the observer can see it.
+   The deadline deliberately does **not** call `ctx.fail()`: that routes to `registry.markError()`,
+   which calls `#clearActive(id)` and would present the project as off while its stylesheet stayed
+   inserted. A give-up is recorded in `markingState.timedOut` instead, and the project stays
+   enabled.
+2. **`html[data-ui-projects='on'] .ui-ambient-layer`** — the seat for a full-screen backdrop, whose
+   only consumer was the pre-v3 Liquid Glass DOM layer. Its rule is deleted, as is the empty
+   `html[data-ui-projects='on'] { }` marker rule beneath it, with the record of both moved into
+   `core.css`'s header. The verify harness's `.ds-ambient` probe and its eight `=== 0` assertions
+   are deliberately KEPT: they are the guard that no project mounts that layer again.
+3. **Three diagnostics fields** — `ambientCount` / `ambientParent` / `ambientGrandparent`, the
+   `.ds-ambient` query that fed them, and `describeNode()` which became unreachable once they went.
+   All had reported constants since the ambient layer was deleted, and nothing outside the debug
+   overlay consumed them. `run` was bumped to `r12-poll-cleanup` and the stale `clip` dropped from
+   `build`, since a staleness marker that no longer changes is worse than none.
+
+**Verification:** `suite` and `host`. The suite gained a `FakeTimers` and two tests — the first
+tests that drive these loops at all — and one of them **failed on its first run and found a real
+defect in this round's own work**: the observer path marked the columns without clearing the
+interval, because only the interval's own callback had been wired to stop it. In the field the
+observer is the path that usually marks first, so the poll would have kept ticking behind a
+correctly marked page.
+
+**Negative result worth keeping:** "clear the retry when the attempt succeeds" was implemented in
+one place and read as correct. It was wrong in the only path that matters, and only a test that
+drives both ways in separately could say so.
+
+---
+
 ## Round 15 — RESOLVED: one centring mechanism, not two
 
 **Status: CLOSED. Confirmed by the user in their browser.** The settings dialog is centred and the
