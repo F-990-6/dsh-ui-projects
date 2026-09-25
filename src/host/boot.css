@@ -83,12 +83,20 @@ body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
     --dsw-alias-bg-base: #fff;
     --dsw-alias-bg-layer-1: #fff;
     --dsw-alias-bg-layer-2: #fff;
+    --dsw-alias-bg-layer-3: #fff;
+    --dsw-alias-bg-overlay: #fff;
+    --dsw-alias-bg-module-platform: #fff;
+    --dsw-alias-tooltip-bg: #17171a;
     --dsw-specific-sidebar-fill: #fafafe;
   }
   body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
     --dsw-alias-bg-base: #14161c;
     --dsw-alias-bg-layer-1: #1e212a;
     --dsw-alias-bg-layer-2: #262a35;
+    --dsw-alias-bg-layer-3: #23262f;
+    --dsw-alias-bg-overlay: #23262f;
+    --dsw-alias-bg-module-platform: #262a35;
+    --dsw-alias-tooltip-bg: #0c0e14;
     --dsw-specific-sidebar-fill: #161921;
   }
 }
@@ -98,12 +106,43 @@ body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
     --dsw-alias-bg-base: #fff;
     --dsw-alias-bg-layer-1: #fff;
     --dsw-alias-bg-layer-2: #fff;
+    --dsw-alias-bg-layer-3: #fff;
+    --dsw-alias-bg-overlay: #fff;
+    --dsw-alias-bg-module-platform: #fff;
+    --dsw-alias-tooltip-bg: #17171a;
     --dsw-specific-sidebar-fill: #fafafe;
   }
   body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
     --dsw-alias-bg-base: #14161c;
     --dsw-alias-bg-layer-1: #1e212a;
     --dsw-alias-bg-layer-2: #262a35;
+    --dsw-alias-bg-layer-3: #23262f;
+    --dsw-alias-bg-overlay: #23262f;
+    --dsw-alias-bg-module-platform: #262a35;
+    --dsw-alias-tooltip-bg: #0c0e14;
+    --dsw-specific-sidebar-fill: #161921;
+  }
+}
+
+@media (forced-colors: active){
+  body[data-ui-project-liquid-glass="on"]{
+    --dsw-alias-bg-base: #fff;
+    --dsw-alias-bg-layer-1: #fff;
+    --dsw-alias-bg-layer-2: #fff;
+    --dsw-alias-bg-layer-3: #fff;
+    --dsw-alias-bg-overlay: #fff;
+    --dsw-alias-bg-module-platform: #fff;
+    --dsw-alias-tooltip-bg: #17171a;
+    --dsw-specific-sidebar-fill: #fafafe;
+  }
+  body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
+    --dsw-alias-bg-base: #14161c;
+    --dsw-alias-bg-layer-1: #1e212a;
+    --dsw-alias-bg-layer-2: #262a35;
+    --dsw-alias-bg-layer-3: #23262f;
+    --dsw-alias-bg-overlay: #23262f;
+    --dsw-alias-bg-module-platform: #262a35;
+    --dsw-alias-tooltip-bg: #0c0e14;
     --dsw-specific-sidebar-fill: #161921;
   }
 }
@@ -118,6 +157,9 @@ body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
     --dsw-alias-bg-layer-3: #fff;
     --dsw-alias-bg-overlay: #fff;
 
+    --dsw-alias-bg-module-platform: #fff;
+    --dsw-alias-tooltip-bg: #17171a;
+
     --dsw-alias-border-l1: rgb(15 23 42 / 34%);
     --dsw-alias-border-l2: rgb(15 23 42 / 46%);
     --dsw-alias-border-l3: rgb(15 23 42 / 28%);
@@ -129,6 +171,8 @@ body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
     --dsw-specific-sidebar-fill: #161921;
     --dsw-alias-bg-layer-3: #23262f;
     --dsw-alias-bg-overlay: #23262f;
+    --dsw-alias-bg-module-platform: #262a35;
+    --dsw-alias-tooltip-bg: #0c0e14;
 
     --dsw-alias-border-l1: rgb(255 255 255 / 38%);
     --dsw-alias-border-l2: rgb(255 255 255 / 50%);
@@ -195,9 +239,24 @@ body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
   radial-gradient(140% 90% at 65% 115%, rgb(10 132 255 / 14%) 0%, transparent 62%);
 }
 
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))){
+  body[data-ui-project-liquid-glass="on"]{
+    --lg-glass-bg: #fff;
+  }
+  body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
+    --lg-glass-bg: #1c1c1e;
+  }
+}
+
 @media (prefers-reduced-transparency: reduce){
   body[data-ui-project-liquid-glass="on"], body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
     background-image: none;
+  }
+  body[data-ui-project-liquid-glass="on"]{
+    --lg-glass-bg: #fff;
+  }
+  body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
+    --lg-glass-bg: #1c1c1e;
   }
 }
 
@@ -205,10 +264,22 @@ body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
   body[data-ui-project-liquid-glass="on"], body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
     background-image: none;
   }
+  body[data-ui-project-liquid-glass="on"]{
+    --lg-glass-bg: #fff;
+  }
+  body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
+    --lg-glass-bg: #1c1c1e;
+  }
 }
 
 @media (prefers-contrast: more){
   body[data-ui-project-liquid-glass="on"], body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
     background-image: none;
+  }
+  body[data-ui-project-liquid-glass="on"]{
+    --lg-glass-bg: #fff;
+  }
+  body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{
+    --lg-glass-bg: #1c1c1e;
   }
 }

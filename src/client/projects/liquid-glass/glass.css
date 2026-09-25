@@ -416,16 +416,19 @@ body .cm-root {
   }
 
   /*
-   * And the composer's fill goes opaque with them, because a translucent fill is only readable
-   * while something is blurring what is behind it. `--dsw-alias-bg-base` is opaque under every one
-   * of these four queries — asserted, not assumed — so the composer follows the frame instead of
-   * becoming the one surface that stays see-through. Without `backdrop-filter` the card would
-   * otherwise show the message text scrolling under it at 42% opacity, which is the exact failure
-   * the checklist item `text-readable` exists for.
+   * And the material fill itself goes opaque, for every consumer at once.
    *
-   * The same declaration appears in all four suppression blocks. That repetition is the price of
-   * writing a component rule instead of a token override: the branch conditions are different
-   * at-rules and cannot be combined.
+   * This used to be a rule on `[data-composer-card]` — a patch, written because the token layer had
+   * nothing to say here. Raising it to the token means `.lg-glass`, the composer and anything else
+   * that reads the material follow together, and there is one place to keep right instead of one per
+   * consumer. A translucent fill is only readable while something is blurring what is behind it, so
+   * without `backdrop-filter` the composer would otherwise show the message text scrolling under it
+   * at 42% opacity — the exact failure the checklist item `text-readable` exists for.
+   *
+   * `#fff` is `--lg-glass-bg-light` with its alpha removed, and `#1c1c1e` is `--lg-glass-bg-dark`
+   * (`rgb(28 28 30 / 52%)`): the material's own opaque form. Deliberately NOT
+   * `--dsw-alias-bg-base`, which is the page's bottom layer (`#14161c` in dark) — a surface made of
+   * material should become the material's solid colour, not the page's.
    *
    * The SEAT is deliberately not treated the same way, and the reason is worth keeping. The shipped
    * rule on it ramps to `var(--dsw-alias-bg-base)` over 36px and then HOLDS that colour for the rest
@@ -435,8 +438,12 @@ body .cm-root {
    * with a hard edge where the seat ends — a visible band, not a fade. Leaving the shipped rule
    * alone is the honest option, so this skin has no opinion about the seat at all.
    */
-  [data-composer-card] {
-    background: var(--dsw-alias-bg-base);
+  :root {
+    --lg-glass-bg: #fff;
+  }
+
+  body[data-ds-dark-theme] {
+    --lg-glass-bg: #1c1c1e;
   }
 }
 
@@ -468,15 +475,28 @@ body .cm-root {
     -webkit-backdrop-filter: none;
   }
 
-  /* The composer's fill, opaque with the rest — see the note in the `@supports not` block. */
-  [data-composer-card] {
-    background: var(--dsw-alias-bg-base);
+  /* The material fill, opaque with the rest — see the note in the `@supports not` block. The two
+     values differ per theme, which is why this is a pair of rules rather than one. */
+  :root {
+    --lg-glass-bg: #fff;
   }
 
+  body[data-ds-dark-theme] {
+    --lg-glass-bg: #1c1c1e;
+  }
 }
 
 /* The platform owns the palette in forced-colors mode, so the skin steps back entirely —
-   gradient included: a decorative tint is precisely what that mode exists to remove. */
+   gradient included: a decorative tint is precisely what that mode exists to remove.
+
+   THE TOKENS ARE STILL NEEDED HERE, and that is a correction the browser suite forced. The
+   reasoning was that the platform replaces author background colours, so every translucent fill
+   would already be opaque by the time it paints. It does replace them — and it keeps the author's
+   ALPHA: a probe at `rgba(1, 2, 3, 0.52)` comes back `rgba(0, 0, 0, 0.52)`, and the settings panel
+   and the composer card each reported the alpha of their own translucent fill under this query. So
+   `tokens.css` takes the fills opaque here exactly as it does in the other two suppression blocks,
+   and this block still handles only the two paint effects the platform does NOT take over: the
+   gradient below, and the blur. */
 @media (forced-colors: active) {
   /* The same two selectors as the other suppression blocks, for the same reason: the themed
      gradient is the more specific rule, so a bare `body` would leave it painted in dark mode. */
@@ -492,11 +512,14 @@ body .cm-root {
     -webkit-backdrop-filter: none;
   }
 
-  /* The composer's fill, opaque with the rest — see the note in the `@supports not` block. */
-  [data-composer-card] {
-    background: var(--dsw-alias-bg-base);
+  /* The material fill, opaque with the rest — see the note in the `@supports not` block. */
+  :root {
+    --lg-glass-bg: #fff;
   }
 
+  body[data-ds-dark-theme] {
+    --lg-glass-bg: #1c1c1e;
+  }
 }
 
 /* ── the effect tier the device can afford ────────────────────────────────── */
@@ -554,13 +577,16 @@ body[data-ui-perf='low'] :where([role='dialog'], [role='menu'], [role='listbox']
     -webkit-backdrop-filter: none;
   }
 
-  /* The composer's fill, opaque with the rest — see the note in the `@supports not` block. Under
-     this query every fill in `tokens.css` has gone opaque, and the composer would otherwise be the
-     only translucent surface left on a page someone asked for more contrast on. */
-  [data-composer-card] {
-    background: var(--dsw-alias-bg-base);
+  /* The material fill, opaque with the rest — see the note in the `@supports not` block. Under this
+     query every fill in `tokens.css` has gone opaque, and the composer would otherwise be the only
+     translucent surface left on a page someone asked for more contrast on. */
+  :root {
+    --lg-glass-bg: #fff;
   }
 
+  body[data-ds-dark-theme] {
+    --lg-glass-bg: #1c1c1e;
+  }
 }
 
 /* ── narrow viewports ─────────────────────────────────────────────────────── */

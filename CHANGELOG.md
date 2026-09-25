@@ -25,6 +25,90 @@ Verification vocabulary used below:
 
 ---
 
+## Round 28 — every translucent surface, in every mode that removes transparency
+
+**Status: done. `suite` 584 assertions / 0 failing, `host` green, `browser` 142 assertions / 0
+failing. Snapshot 42.**
+
+Two branches raised four fills to opaque and stopped, and the fills that matter most were missing: the
+floating tier (`--dsw-alias-bg-layer-3`, which ten packages use for menus and dialogs through
+`--dsw-specific-menu`), the overlay fill, the module-platform panels twelve packages put text on, and
+tooltips. A third branch had the floating tier but not the module platform. The reader who had asked
+for less transparency kept seeing it.
+
+**The root cause was not the token list. It was that nothing could have caught it.** `@supports not`
+asserted only that `bg-base` went opaque, `prefers-reduced-transparency` had no assertion at all, and
+the browser suite emulated neither query. Written first this round, and it failed first:
+
+```
+13 surface(s) are still translucent under a mode that removes transparency:
+  @supports not ((backdrop-filter: blur(1px)) → --dsw-alias-bg-layer-3, --dsw-alias-bg-overlay,
+                                                  --dsw-alias-bg-module-platform, --dsw-alias-tooltip-bg, --lg-glass-bg
+  @media (prefers-reduced-transparency: reduce) → the same five
+  @media (prefers-contrast: more) → --dsw-alias-bg-module-platform, --dsw-alias-tooltip-bg, --lg-glass-bg
+```
+
+**Changed**
+
+- **A structural guard** (`suite`): the expected set is COMPUTED from the skin's own palette — every
+  token it declares with an alpha — and the only hand-written parts are two lists with reasons
+  attached: surfaces (must be opaque in all four modes) and tints (exempt, because a tint's alpha *is*
+  its colour, e.g. `rgb(15 23 42 / 6%)` over a white panel). A new translucent token now forces a
+  decision instead of slipping through. It checks both themes per branch, and asserts that the two
+  no-transparency branches cover the same tokens — their bodies were byte-identical, which is how one
+  omission came to exist twice.
+- **Eight surfaces taken opaque** in `@supports not` and `prefers-reduced-transparency`, three in
+  `prefers-contrast: more`, and the same eight in `forced-colors` (below). Every value is derived
+  rather than invented: `layer-3`/`overlay` re-use the contrast branch's own pair, `module-platform`
+  shares layer-2's translucency so it takes layer-2's opaque form, `tooltip-bg` is its own colour with
+  the alpha removed.
+- **The material fill moved from a component rule to the token.** `--lg-glass-bg` is taken opaque in
+  all four branches and the four `[data-composer-card] { background: … }` patches are deleted: they
+  were a component rule standing in for a token the token layer had not handled, and raising it means
+  `.lg-glass` and anything else reading the material follows too.
+- A `tokens.css` comment describing the retired opacity slider and its `--lg-material-swap`
+  multiplication is gone. That token appeared nowhere else in the source: the prose outlived the
+  mechanism and described it as though it were live.
+
+**The forced-colors correction, and the measurement that forced it.** The plan said this mode needs no
+token work because the platform replaces author background colours — which it does. The browser suite
+now measures that instead of assuming it, and the measurement said something else as well:
+
+```
+probe: { background: "rgb(0, 0, 0)", color: "rgb(255, 255, 255)" }   ← author colours replaced
+probe at rgba(1, 2, 3, 0.52): "rgba(0, 0, 0, 0.52)"                  ← author ALPHA kept
+settings panel: "rgba(0, 0, 0, 0.52)"    composer card: "rgba(0, 0, 0, 0.52)"
+```
+
+The platform replaces the colour and keeps the alpha, so a translucent fill stays translucent here
+too — the card was reporting its own 52%. The fills are therefore taken opaque in this branch as well
+and the guard's branch list grew from three to four. Two earlier attempts at this measurement were
+spent on a wrong element: the first `[role="dialog"]` in the document is not the settings panel, and
+the failure message named no element. Every message now carries the raw readings and a calibration.
+
+**A run deleted a confirmation, and the rule meant to prevent it was silently wrong.** `--no-write`
+refused writes whose payload text contained `checks`. The card's reset writes the record with the
+project's settings deleted — no `checks` anywhere — and the removal protection added to catch that
+looked for a `settings` property on the request body. The real operation is `settings/mutate` with
+`[namespace, ops]` arguments and each op shaped `{op: 'set', path: […], value: …}`, so the rule matched
+nothing and the run removed an existing record. The decision is now a pure function keyed on the path,
+checked against payloads in the real shape without a browser, and the checklist assertion compares the
+post-reload state with the state the run INHERITED rather than with `false` — on an instance that had a
+record, the old form read that record as proof this run had written one.
+
+**Also fixed in passing:** the withdrawal check clicked the card's reset while the previous action's
+write was still pending, and a disabled button drops a click without a trace — the same lesson as the
+switch, missed in code written after it was learned.
+
+**Verification:** `suite` 584 / 0, `host` green, `browser` 142 / 0 with the composer, the settings
+panel and the calibration measured in a real Chrome under both queries, `derive --check` agreeing with
+the file on disk. **Cost, recorded rather than discovered:** the first-paint sheet grew from 8216 B to
+10484 B (+2268 B, 11 → 13 blocks) and every byte is inlined into every page load, for tokens no
+first-frame element consumes. That is what a structural derive tool costs; a necessity-based one
+("only the tokens a first-frame element reads") would be a different change.
+
+---
+
 ## Round 27 — the composer gets the frame material
 
 **Status: done. `suite` 558 assertions / 0 failing, `host` green, `browser` 122 assertions / 0

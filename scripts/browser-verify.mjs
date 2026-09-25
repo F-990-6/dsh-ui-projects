@@ -754,6 +754,50 @@ try {
 
   /** How many checklist writes `--no-write` refused, so the test can prove it refused something. */
   let refusedWrites = 0
+  /**
+   * The checklist record the instance had before this run, and how many writes were refused for
+   * trying to DELETE it. Declared out here because the Fetch handler below needs both, and it runs
+   * from the first navigation onwards.
+   */
+  let checksAtStart = null
+  let protectedRemovals = 0
+  /**
+   * Why a settings write should be refused under `--no-write`, or null to let it through.
+   *
+   * Extracted as a pure function so it can be checked against real payload shapes without a browser,
+   * which matters because the first version of the removal rule was WRONG in a way no run revealed:
+   * it looked for a `settings` property at the top level of the request body, and the real
+   * operation is `settings/mutate`, whose arguments are `[namespace, ops]` with each op shaped
+   * `{op: 'set', path: [...], value: ...}`. It therefore refused nothing, and the run that was
+   * supposed to leave no trace deleted the confirmation it found.
+   * @param {{ payload: string, isWrite: boolean, checksAtStart: string | null }} input
+   * @returns {'checks' | 'removal' | null}
+   */
+  const refusalReason = ({ payload, isWrite, checksAtStart: had }) => {
+    if (!isWrite) return null
+    // The checklist write itself: the second of the two ways a record can be lost.
+    if (payload.includes('checks')) return 'checks'
+    if (had === null) return null
+    /*
+     * The removal: the plugin persists its record key by key, so the `settings` key is written on its
+     * own and, once the record is gone from memory, its value carries nothing this can match on. The
+     * path is what identifies it.
+     */
+    try {
+      const body = JSON.parse(payload)
+      const args = body?.payload ?? body
+      const [namespace, ops] = Array.isArray(args) ? args : []
+      if (namespace !== 'ui-projects' || !Array.isArray(ops)) return null
+      for (const op of ops) {
+        if (op?.op !== 'set' || !Array.isArray(op.path) || op.path[0] !== 'settings') continue
+        const value = op.value
+        if (value === null || typeof value !== 'object' || value['liquid-glass']?.checks === undefined) return 'removal'
+      }
+    } catch {
+      /* a body this cannot parse falls back to the rule above */
+    }
+    return null
+  }
   if (noWrite) {
     await session.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/settings/*', requestStage: 'Request' }] })
     page.on('Fetch.requestPaused', (params) => {
@@ -782,9 +826,14 @@ try {
        */
       try {
         const isWrite = /settings\/(mutate|replace|update)(\?|$)/.test(String(params.request.url))
-        const carriesChecks = String(params.request.postData ?? '').includes('checks')
-        if (isWrite && carriesChecks) {
-          refusedWrites += 1
+        const reason = refusalReason({
+          payload: String(params.request.postData ?? ''),
+          isWrite,
+          checksAtStart,
+        })
+        if (reason !== null) {
+          if (reason === 'removal') protectedRemovals += 1
+          else refusedWrites += 1
           void answer('Fetch.failRequest', { requestId: params.requestId, errorReason: 'Aborted' })
           return
         }
@@ -804,6 +853,47 @@ try {
   await test('the application boots and mounts', async () => {
     await navigate(pageUrl)
   })
+
+  if (noWrite) {
+    /*
+     * The refusal rule, checked against payloads in the shape the client really sends.
+     *
+     * This exists because the first version of the removal rule was silently wrong: it looked for a
+     * `settings` property on the request body, while the operation is `settings/mutate` with
+     * `[namespace, ops]` arguments. No run could reveal that — a rule that refuses nothing looks
+     * exactly like a rule whose case never came up — and it cost the instance a confirmation it had
+     * recorded. A pure function can be checked without a browser, so now it is.
+     */
+    const settingsWrite = (value) =>
+      JSON.stringify({
+        type: 'client-request',
+        rpcId: 1,
+        method: 'mutate',
+        payload: ['ui-projects', [{ op: 'set', path: ['settings'], value }]],
+      })
+    const withRecord = settingsWrite({ 'liquid-glass': { checks: { version: '3.0.0', items: {} } } })
+    const withoutRecord = settingsWrite({})
+    const enabledWrite = JSON.stringify({
+      type: 'client-request',
+      rpcId: 2,
+      method: 'mutate',
+      payload: ['ui-projects', [{ op: 'set', path: ['enabled'], value: ['liquid-glass'] }]],
+    })
+    const otherNamespace = JSON.stringify({
+      type: 'client-request',
+      rpcId: 3,
+      method: 'mutate',
+      payload: ['ui-theme', [{ op: 'set', path: ['preference'], value: 'dark' }]],
+    })
+    const reason = (payload, had = 'current') => refusalReason({ payload, isWrite: true, checksAtStart: had })
+    equal(reason(withRecord), 'checks', 'a write that carries the record is refused')
+    equal(reason(withoutRecord), 'removal', 'a write that would drop a record this run found is refused')
+    equal(reason(withoutRecord, null), null, 'and an instance with no record keeps its freedom to write settings')
+    equal(reason(enabledWrite), null, 'the enabled list is not blocked, or the reload assertions would break')
+    equal(reason(otherNamespace), null, 'another namespace is not this flag’s business')
+    equal(refusalReason({ payload: withoutRecord, isWrite: false, checksAtStart: 'current' }), null, 'reads are never refused')
+    equal(reason('not json at all'), null, 'an unparseable body falls back rather than throwing')
+  }
 
   await test('the Settings › UI section opens from the sidebar', async () => {
     const opened = await evaluate(session, OPEN_PANEL)
@@ -837,6 +927,31 @@ try {
     contains(state.label, 'Liquid Glass')
     equal(state.name, 'Liquid Glass', 'card title')
     equal(state.status, 'inactive', 'card status')
+
+    /*
+     * What the document said about the checklist BEFORE this run touched anything.
+     *
+     * A machine that has a confirmation recorded is a normal machine, not a broken one, and two things
+     * have to know about it. `--no-write` refuses the checklist write, so with a record already there
+     * the reload assertion below would otherwise read the INHERITED record and call it evidence that
+     * this run wrote one. And the withdrawal check presses the card's reset, whose write carries no
+     * `checks` at all — refusing writes that merely mention `checks` is not enough to protect a record
+     * from being deleted by a run that is supposed to leave no trace.
+     */
+    checksAtStart = await evaluate(
+      session,
+      `(() => {
+        const details = document.querySelector('details.uip-tests[data-project="liquid-glass"]')
+        const record = details === null ? null : details.querySelector('[data-uip-checks]')
+        return record === null ? null : record.getAttribute('data-uip-checks')
+      })()`,
+    )
+    if (checksAtStart !== null) {
+      process.stdout.write(
+        `         note  this instance starts with a checklist record (${checksAtStart}); ` +
+          `--no-write will hand it back unchanged\n`,
+      )
+    }
   })
 
   /** @type {any} */
@@ -1377,7 +1492,16 @@ try {
       // The refusal is the point of the flag, so it must be observed rather than assumed: a pattern
       // that matched nothing would leave this test passing while quietly writing to the document.
       truthy(refusedWrites > 0, `the settings write was refused in flight (${refusedWrites} request(s))`)
-      equal(afterReload, false, 'and nothing was recorded, so a reload shows no confirmation')
+      /*
+       * And the state after a reload is the state the run INHERITED, not "nothing".
+       *
+       * The old form asserted `false` here, which is only the right answer on a machine that had no
+       * record to begin with: an instance with a confirmation already stored came back from the
+       * reload showing it, and the assertion called that evidence that this run had written one. The
+       * flag's promise is "this run records nothing", and the honest test of that is that the
+       * document says exactly what it said at the start.
+       */
+      equal(afterReload === false ? null : afterReload, checksAtStart, 'and the document says what it said before the run')
     } else {
       // `current`, not merely present: a confirmation carried over from another version is reported
       // as stale, and that is a different outcome from the one this test is about.
@@ -1446,12 +1570,31 @@ try {
     equal(recorded.withdrawOffered, true, 'the card offers to withdraw it')
     equal(recorded.ticked, recorded.boxes, 'every item is ticked')
 
+    /*
+     * Wait for the reset control to ACCEPT input before clicking it.
+     *
+     * The panel disables its buttons while an action is pending, and this test's confirm click is
+     * still in flight when the record is already on the card — which is the case on an instance that
+     * had a confirmation before the run started, where the `waitFor` above is satisfied instantly.
+     * A click on a disabled button is dropped without a trace, and the failure it produces is a
+     * timeout three steps later. Same lesson as the switch: wait, then click.
+     */
+    await waitFor(
+      session,
+      `(() => {
+        const button = document.querySelector('li.uip-card[data-project="liquid-glass"] button[data-uip-action="reset-one"]')
+        return button !== null && !button.disabled
+      })()`,
+      'the card reset to accept input',
+    )
+
     // The reset button, found by its hook rather than by its translated label.
     const reset = await evaluate(
       session,
       `(() => {
         const button = document.querySelector('li.uip-card[data-project="liquid-glass"] button[data-uip-action="reset-one"]')
         if (button === null) return { error: 'no reset button' }
+        if (button.disabled) return { error: 'the reset button is disabled' }
         button.click()
         return { ok: true }
       })()`,
@@ -1474,6 +1617,15 @@ try {
      */
     equal(await skinIsOn(session), false, 'and the reset returned the skin to its shipped default, which is off')
     await setSkin(session, true)
+
+    // If the instance had a record to protect, the protection must have engaged — and the count is
+    // the proof, because a rule that matched nothing would look exactly like a rule that worked.
+    if (noWrite && checksAtStart !== null) {
+      truthy(
+        protectedRemovals > 0,
+        `the run refused to delete the record it found (${protectedRemovals} write(s) refused)`,
+      )
+    }
   })
 
   /*
@@ -1602,6 +1754,195 @@ try {
       // The theme is put back, including the case where this test is what changed it.
       await setTheme(originalDark)
     }
+  })
+
+  /*
+   * The two modes that ask for less transparency, measured instead of reasoned about.
+   *
+   * `prefers-reduced-transparency` is a real Chrome feature since Chrome 118 — not a Safari-only
+   * nicety — so the branch the skin has always carried can finally be exercised rather than trusted.
+   * The stylesheet guard in `verify.mjs` proves the tokens are declared; this proves they arrive.
+   *
+   * `forced-colors` is different in kind, and the distinction decides what can be asserted: the
+   * platform replaces author BACKGROUND COLOURS with system ones, so every translucent fill is
+   * opaque by the time it paints and the skin needs no token work for it. It does not force CUSTOM
+   * PROPERTY values, so reading `--dsw-alias-bg-layer-3` off the body under this query would report
+   * the skin's own declaration and prove nothing. What can be measured is the outcome on elements:
+   * the fills are opaque, and they are not the values they had a moment earlier.
+   */
+  await test('the modes that ask for less transparency get it', async () => {
+    const readState = `(() => {
+      const body = getComputedStyle(document.body)
+      /*
+       * The settings PANEL, found through the section this suite already knows how to open, rather
+       * than the first [role="dialog"] in the document. The first form measured whichever dialog
+       * happened to come first — rgba(0, 0, 0, 0.52) came back, which is neither the skin's fill nor
+       * a system colour, and read like a scrim rather than a panel. Naming the element by the panel
+       * it contains is the difference between measuring a surface and measuring whatever is first in
+       * the tree.
+       */
+      const section = document.querySelector('.uip-root')
+      const panel = section === null ? null : section.closest('[role="dialog"]')
+      const card = document.querySelector('[data-composer-card]')
+      const frost = card === null ? null : getComputedStyle(card, '::before')
+      return {
+        tokens: {
+          layer3: body.getPropertyValue('--dsw-alias-bg-layer-3').trim(),
+          overlay: body.getPropertyValue('--dsw-alias-bg-overlay').trim(),
+          module: body.getPropertyValue('--dsw-alias-bg-module-platform').trim(),
+          tooltip: body.getPropertyValue('--dsw-alias-tooltip-bg').trim(),
+          glass: body.getPropertyValue('--lg-glass-bg').trim(),
+        },
+        panelFound: panel !== null,
+        panel: panel === null ? null : getComputedStyle(panel).backgroundColor,
+        panelAdjust: panel === null ? null : getComputedStyle(panel).forcedColorAdjust,
+        card: card === null ? null : getComputedStyle(card).backgroundColor,
+        cardAdjust: card === null ? null : getComputedStyle(card).forcedColorAdjust,
+        frost: frost === null ? null : String(frost.backdropFilter || ''),
+        reducedTransparencyMatches: matchMedia('(prefers-reduced-transparency: reduce)').matches,
+        forcedColorsMatches: matchMedia('(forced-colors: active)').matches,
+      }
+    })()`
+    /** The alpha a computed colour carries, or undefined when it has none — i.e. it is opaque. */
+    const alphaOf = (value) => /rgba\([^)]*,\s*([\d.]+)\)\s*$/.exec(String(value))?.[1]
+
+    await setSkin(session, true)
+    await navigate(pageUrl)
+    await waitFor(session, "document.body.getAttribute('data-ui-project-liquid-glass') === 'on'", 'the marker')
+    await ensurePanel(session)
+    const before = await evaluate(session, readState)
+    truthy(
+      before.panelFound && before.card !== null,
+      `the surfaces to measure exist (${JSON.stringify(before)})`,
+    )
+    truthy(
+      Number(alphaOf(before.panel)) < 1,
+      `the premise: the panel fill is translucent before any query (${before.panel})`,
+    )
+
+    try {
+      // ── prefers-reduced-transparency ────────────────────────────────────────
+      await session.send('Emulation.setEmulatedMedia', {
+        features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }],
+      })
+      const reduced = await evaluate(session, readState)
+      /*
+       * The capability probe, printed rather than swallowed. If a browser or a CDP version does not
+       * know this feature the query never matches, and silently asserting nothing would turn "not
+       * tested" into "passed". The stylesheet guard still covers the branch in that case, and this
+       * says so out loud.
+       */
+      const supported = reduced.reducedTransparencyMatches === true
+      if (!supported) {
+        process.stdout.write(
+          '         note  this browser does not apply prefers-reduced-transparency; the branch is ' +
+            'covered by the stylesheet guard in verify.mjs, not by a measurement here\n',
+        )
+      } else {
+        const stillTranslucent = Object.entries(reduced.tokens)
+          .filter(([, value]) => Number(alphaOf(value)) < 1 || /rgba\(/.test(String(value)))
+          .map(([name, value]) => `${name}=${value}`)
+        equal(
+          stillTranslucent,
+          [],
+          `every surface token resolves opaque under prefers-reduced-transparency (${stillTranslucent.join(', ') || 'all opaque'})`,
+        )
+        equal(alphaOf(reduced.card), undefined, `the composer's fill is opaque (${reduced.card})`)
+        equal(alphaOf(reduced.panel), undefined, `and so is the panel's (${reduced.panel})`)
+        equal(reduced.frost, 'none', `the composer's frost is dropped (${reduced.frost})`)
+      }
+    } finally {
+      await session.send('Emulation.setEmulatedMedia', {
+        features: [{ name: 'prefers-reduced-transparency', value: 'no-preference' }],
+      })
+    }
+
+    try {
+      // ── forced-colors ───────────────────────────────────────────────────────
+      await session.send('Emulation.setEmulatedMedia', { features: [{ name: 'forced-colors', value: 'active' }] })
+      const forced = await evaluate(session, readState)
+      /*
+       * The outcome, not the cause: the skin's branch asks for the blur to go and the platform may
+       * also be forcing it, and this cannot tell the two apart. It can tell that the fills are no
+       * longer translucent and no longer what they were, which is the claim worth having.
+       *
+       * The raw readings are in every message, because the first attempt at this measured the wrong
+       * element and the failure said only "expected undefined, got 0.52" — a number that names no
+       * element. A diagnostic that cannot say WHAT it measured costs a run to interpret.
+       */
+      const raw = JSON.stringify({ forced: forced.forcedColorsMatches, panel: forced.panel, card: forced.card })
+      /*
+       * The CALIBRATION, added because the first two attempts at this measured expensive nonsense:
+       * both elements reported the same `rgba(0, 0, 0, 0.52)`, which is neither of their own fills,
+       * and a single number that describes no element cannot tell a forced palette from a wrong
+       * selector. A throwaway element with a colour nothing else uses answers the question the whole
+       * assertion rests on: does this mode replace AUTHOR background colours at all?
+       */
+      const calibration = await evaluate(
+        session,
+        `(() => {
+          const probe = document.createElement('div')
+          probe.style.backgroundColor = 'rgb(1, 2, 3)'
+          probe.style.color = 'rgb(4, 5, 6)'
+          const translucent = document.createElement('div')
+          translucent.style.backgroundColor = 'rgba(1, 2, 3, 0.52)'
+          document.body.append(probe, translucent)
+          const style = getComputedStyle(probe)
+          const half = getComputedStyle(translucent)
+          const result = {
+            background: style.backgroundColor,
+            color: style.color,
+            adjust: style.forcedColorAdjust,
+            translucentBackground: half.backgroundColor,
+          }
+          probe.remove()
+          translucent.remove()
+          return result
+        })()`,
+      )
+      const full = JSON.stringify({
+        forced: forced.forcedColorsMatches,
+        panel: forced.panel,
+        panelAdjust: forced.panelAdjust,
+        card: forced.card,
+        cardAdjust: forced.cardAdjust,
+        probe: calibration,
+      })
+      /*
+       * What the calibration establishes, and why it changed the design of this branch.
+       *
+       * The platform DOES replace author colours here — `rgb(1, 2, 3)` came back as `rgb(0, 0, 0)`
+       * and the text colour as white — which was the assumption this branch was built on. But it
+       * keeps the author's ALPHA: the same probe at `rgba(1, 2, 3, 0.52)` comes back as
+       * `rgba(0, 0, 0, 0.52)`. So a translucent fill stays translucent in this mode, and the skin
+       * cannot leave the fills to the platform after all. That was measured twice — the panel and the
+       * card both reported `rgba(0, 0, 0, 0.52)`, the card's own alpha, and the first version of this
+       * assertion had called the platform's takeover sufficient and skipped the tokens.
+       */
+      truthy(
+        calibration.background !== 'rgb(1, 2, 3)',
+        `calibration: the platform replaces author colours (${full})`,
+      )
+      contains(
+        String(calibration.translucentBackground),
+        '0.52',
+        `calibration: and keeps the author's alpha, which is why the tokens are needed here too (${full})`,
+      )
+      truthy(forced.forcedColorsMatches, `the query is in force in this browser (${full})`)
+      equal(alphaOf(forced.panel), undefined, `forced colors leaves the panel fill opaque (${full})`)
+      equal(alphaOf(forced.card), undefined, `and the composer's (${full})`)
+      equal(forced.frost, 'none', `the composer's frost is gone (${forced.frost}; ${full})`)
+      truthy(
+        forced.panel !== before.panel && forced.card !== before.card,
+        `and both fills were replaced rather than merely already opaque (panel ${before.panel} → ${forced.panel}, card ${before.card} → ${forced.card})`,
+      )    } finally {
+      await session.send('Emulation.setEmulatedMedia', { features: [{ name: 'forced-colors', value: 'none' }] })
+    }
+
+    // Put the page back the way the tests around this one expect to find it.
+    await session.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-contrast', value: 'no-preference' }] })
+    await navigate(pageUrl)
+    await ensurePanel(session)
   })
 
   /*

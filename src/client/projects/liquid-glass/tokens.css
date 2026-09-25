@@ -38,14 +38,10 @@
 /* ── light ─────────────────────────────────────────────────────────────────── */
 
 :root {
-  /* How translucent every surface below is, as a percentage: the opacity slider writes
-     this on the root element and each fill multiplies its own nominal alpha by it. One
-     control therefore moves the whole material, and a drag repaints by changing a single
-     custom property rather than re-emitting this sheet.
-   *
-   * The syntax is `rgb(255 255 255 / calc(<nominal> * var(--lg-material-swap, 1)))`:
-   * space-separated channels (required for `calc()` in an alpha slot) times a unitless
-   * multiplier the runtime derives from the slider. */
+  /* Every fill below is a literal alpha. The alpha used to be multiplied by a
+     `--lg-material-swap` custom property written by an opacity slider; both the slider and the
+     multiplication are gone, and this comment outlived them by describing a mechanism that no
+     longer existed anywhere except here. Each surface now states its own translucency outright. */
   /* The FRAME is the window, and it stays see-through: that is what puts the ambient
      field *behind* the glass, so the columns have something to show and to blur. An
      opaque frame is what made an earlier version look like a flat white panel.
@@ -127,10 +123,26 @@ body[data-ds-dark-theme] {
  * just an unreadable page, so the frame must go back to opaque here as well.
  */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  /*
+   * FIVE fills were missing here, and the omission was invisible: `suite` asserted only that
+   * `bg-base` went opaque, and no test read this block's token set. They are the surfaces a reader
+   * sees content through — the floating tier ten packages use for menus and dialogs (via
+   * `--dsw-specific-menu`), the overlay fill, the module-platform panels twelve packages put text
+   * on, tooltips, and the skin's own material fill.
+   *
+   * The values are not invented. `layer-3` and `overlay` take the pair the contrast branch already
+   * declares for them; `module-platform` shares layer-2's translucency exactly (46% / 52%), so it
+   * takes layer-2's opaque form; `tooltip-bg` is its own colour with the alpha removed
+   * (`rgb(23 23 25 / 94%)` → `#17171a`, `rgb(12 14 20 / 96%)` → `#0c0e14`).
+   */
   :root {
     --dsw-alias-bg-base: #fff;
     --dsw-alias-bg-layer-1: #fff;
     --dsw-alias-bg-layer-2: #fff;
+    --dsw-alias-bg-layer-3: #fff;
+    --dsw-alias-bg-overlay: #fff;
+    --dsw-alias-bg-module-platform: #fff;
+    --dsw-alias-tooltip-bg: #17171a;
     --dsw-specific-sidebar-fill: #fafafe;
   }
 
@@ -138,16 +150,30 @@ body[data-ds-dark-theme] {
     --dsw-alias-bg-base: #14161c;
     --dsw-alias-bg-layer-1: #1e212a;
     --dsw-alias-bg-layer-2: #262a35;
+    --dsw-alias-bg-layer-3: #23262f;
+    --dsw-alias-bg-overlay: #23262f;
+    --dsw-alias-bg-module-platform: #262a35;
+    --dsw-alias-tooltip-bg: #0c0e14;
     --dsw-specific-sidebar-fill: #161921;
   }
 }
 
-/* An OS-level request for less transparency outranks the skin's own taste. */
+/* An OS-level request for less transparency outranks the skin's own taste.
+ *
+ * The same fill set as the `@supports not` block above, deliberately and not by coincidence: the two
+ * mean the same thing to this skin — there is no blur to refract, or the reader has asked for none —
+ * and their bodies were byte-identical until this round, which is how the same four-token omission
+ * came to exist twice. `suite` now asserts that the two blocks cover the same tokens, so they cannot
+ * drift apart again. */
 @media (prefers-reduced-transparency: reduce) {
   :root {
     --dsw-alias-bg-base: #fff;
     --dsw-alias-bg-layer-1: #fff;
     --dsw-alias-bg-layer-2: #fff;
+    --dsw-alias-bg-layer-3: #fff;
+    --dsw-alias-bg-overlay: #fff;
+    --dsw-alias-bg-module-platform: #fff;
+    --dsw-alias-tooltip-bg: #17171a;
     --dsw-specific-sidebar-fill: #fafafe;
   }
 
@@ -155,6 +181,47 @@ body[data-ds-dark-theme] {
     --dsw-alias-bg-base: #14161c;
     --dsw-alias-bg-layer-1: #1e212a;
     --dsw-alias-bg-layer-2: #262a35;
+    --dsw-alias-bg-layer-3: #23262f;
+    --dsw-alias-bg-overlay: #23262f;
+    --dsw-alias-bg-module-platform: #262a35;
+    --dsw-alias-tooltip-bg: #0c0e14;
+    --dsw-specific-sidebar-fill: #161921;
+  }
+}
+
+@media (forced-colors: active) {
+  /*
+   * Same fill set as the two blocks above, and this one was a CORRECTION rather than a completion.
+   *
+   * The argument for skipping it was that forced-colors hands the palette to the platform, which
+   * replaces author background colours — and `browser-verify.mjs` now measures that it does. What the
+   * same measurement showed is that it keeps the author's ALPHA: a probe at `rgba(1, 2, 3, 0.52)`
+   * comes back `rgba(0, 0, 0, 0.52)`, and both the settings panel and the composer card reported
+   * exactly the alpha of their own translucent fill. So a see-through fill stays see-through here,
+   * and the skin has to take the fills opaque itself, exactly as it does without `backdrop-filter`.
+   *
+   * The colours are the same values as the other two blocks even though the platform will replace
+   * them: what matters is their alpha, and one palette is easier to keep honest than three.
+   */
+  :root {
+    --dsw-alias-bg-base: #fff;
+    --dsw-alias-bg-layer-1: #fff;
+    --dsw-alias-bg-layer-2: #fff;
+    --dsw-alias-bg-layer-3: #fff;
+    --dsw-alias-bg-overlay: #fff;
+    --dsw-alias-bg-module-platform: #fff;
+    --dsw-alias-tooltip-bg: #17171a;
+    --dsw-specific-sidebar-fill: #fafafe;
+  }
+
+  body[data-ds-dark-theme] {
+    --dsw-alias-bg-base: #14161c;
+    --dsw-alias-bg-layer-1: #1e212a;
+    --dsw-alias-bg-layer-2: #262a35;
+    --dsw-alias-bg-layer-3: #23262f;
+    --dsw-alias-bg-overlay: #23262f;
+    --dsw-alias-bg-module-platform: #262a35;
+    --dsw-alias-tooltip-bg: #0c0e14;
     --dsw-specific-sidebar-fill: #161921;
   }
 }
@@ -184,6 +251,14 @@ body[data-ds-dark-theme] {
        survives because it was never carried by translucency alone — the shadow does that. */
     --dsw-alias-bg-layer-3: #fff;
     --dsw-alias-bg-overlay: #fff;
+    /* Two more surfaces a contrast request has to answer for, both found by the structural guard
+       rather than by reading this block: a language-model/platform panel twelve packages put text on
+       (46% / 52%, the same translucency as layer-2, so it takes layer-2's opaque form), and tooltips,
+       which sit over arbitrary content at 94% / 96% and go the rest of the way here. The guard treats
+       every surface uniformly in all three modes on purpose: a per-mode subset is a list somebody has
+       to remember to update, which is exactly the shape of the bug this round fixes. */
+    --dsw-alias-bg-module-platform: #fff;
+    --dsw-alias-tooltip-bg: #17171a;
     /* On an opaque fill, a 12% hairline is the faintest line on the page and the only thing
        separating two surfaces of the same colour. */
     --dsw-alias-border-l1: rgb(15 23 42 / 34%);
@@ -198,6 +273,8 @@ body[data-ds-dark-theme] {
     --dsw-specific-sidebar-fill: #161921;
     --dsw-alias-bg-layer-3: #23262f;
     --dsw-alias-bg-overlay: #23262f;
+    --dsw-alias-bg-module-platform: #262a35;
+    --dsw-alias-tooltip-bg: #0c0e14;
     /* Dark surfaces separate by luminance, not by a dark line, so the hairlines get brighter
        rather than darker. */
     --dsw-alias-border-l1: rgb(255 255 255 / 38%);

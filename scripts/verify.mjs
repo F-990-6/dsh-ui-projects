@@ -2463,11 +2463,24 @@ await test('the composer is given the frame material, with the frost kept off th
       blocks.some((block) => block.includes('[data-composer-card]::before')),
       `${branch} drops the composer's frost`,
     )
-    truthy(
-      blocks.some((block) => /\[data-composer-card\]\{ background: var\(--dsw-alias-bg-base\)/.test(block)),
-      `${branch} takes the composer's fill opaque with every other one`,
-    )
   }
+
+  /*
+   * And the composer's fill is no longer patched per branch.
+   *
+   * It used to be a rule on the card in all four blocks — a component rule standing in for a token
+   * the token layer had not taken care of. The material fill now goes opaque at the token, so every
+   * consumer follows (`.lg-glass`, the composer, and whatever comes next) and the per-consumer copies
+   * are gone. The branch coverage itself is asserted once, for all surfaces, by
+   * `every translucent surface is taken opaque by the modes that remove translucency` — this states
+   * only that the patch is not creeping back.
+   */
+  excludes(css, '[data-composer-card]{ background: var(--dsw-alias-bg-base)', 'no per-branch composer patch')
+  contains(css, '--lg-glass-bg: #fff', 'the material fill is taken opaque at the token instead')
+  // The dark half, named: `#1c1c1e` is `--lg-glass-bg-dark` with its alpha removed, chosen over the
+  // page's own bottom layer (`#14161c`) because a surface made of material becomes the material's
+  // solid colour, not the page's.
+  contains(css, '--lg-glass-bg: #1c1c1e', 'and so is its dark half')
 })
 
 await test('the composer hooks and the ring token still exist in the installed client', async () => {
@@ -2797,6 +2810,298 @@ await test('prefers-contrast: more raises the fills and the hairlines, and keeps
   truthy(palette !== undefined, 'the palette sheet is present')
   excludes(palette.textContent, '--dsw-alias-label-primary')
   excludes(palette.textContent, '--dsw-alias-label-secondary')
+})
+
+await test('every translucent surface is taken opaque by the modes that remove translucency', async () => {
+  /*
+   * THE STRUCTURAL GUARD, and the reason it exists is the bug it was written after.
+   *
+   * Two branches — no `backdrop-filter` support, and an OS request for less transparency — raised
+   * four fills to opaque and stopped there: `--dsw-alias-bg-layer-3` (the fill ten packages use for
+   * menus and dialogs via `--dsw-specific-menu`), `--dsw-alias-bg-overlay`, and both
+   * `--dsw-alias-bg-module-platform` (a panel twelve packages put text on) and `--dsw-alias-tooltip-bg`
+   * were left translucent, so the reader who had asked for less transparency kept seeing it. A third
+   * branch, `prefers-contrast: more`, had the floating tier but not the module platform.
+   *
+   * The omission was not detectable before this test: `@supports not` asserted only that `bg-base`
+   * became opaque, `prefers-reduced-transparency` had no assertion at all, and the browser suite
+   * emulated neither query. A hand-written list of tokens in a test would have had the same hole as
+   * the stylesheet did. So the expected set is COMPUTED from the skin's own palette — every token the
+   * skin declares with an alpha — and the only hand-written parts are the two lists below, each entry
+   * carrying its reason.
+   *
+   * The first run of this test is expected to fail, and it is kept in the changelog as the evidence
+   * that it bites.
+   */
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  const css = harness.allCss()
+
+  const LIGHT = 'body[data-ui-project-liquid-glass="on"]{'
+  const DARK = 'body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{'
+  /** Every rule body in `text` whose selector is exactly `selector`, in source order. */
+  const rulesWith = (text, selector) => {
+    const bodies = []
+    let from = 0
+    for (;;) {
+      const at = text.indexOf(selector, from)
+      if (at === -1) return bodies
+      const end = text.indexOf('}', at)
+      if (end === -1) return bodies
+      bodies.push(text.slice(at + selector.length, end))
+      from = end
+    }
+  }
+  /** @param {string} body */
+  const parseDeclarations = (body) => {
+    /** @type {Record<string, string>} */
+    const found = {}
+    for (const match of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+)/gi)) found[match[1]] = match[2].trim()
+    return found
+  }
+  /**
+   * The declarations of the FIRST rule with this selector.
+   *
+   * For the base palette, and only for it: the base block is the first one in each sheet, while the
+   * branch blocks that follow declare the overrides this test is about. Reading all of them here
+   * would let an override mask the translucency it is supposed to fix.
+   */
+  const firstDeclarations = (text, selector) => parseDeclarations(rulesWith(text, selector)[0] ?? '')
+  /**
+   * The declarations of EVERY rule with this selector.
+   *
+   * For a branch block, and the distinction is not academic: a block carries the gradient
+   * suppression for `body, body[data-ds-dark-theme]` and then a token rule for the same selector, so
+   * reading only the first one asked the wrong rule the right question — the guard reported two
+   * holes that were already filled.
+   */
+  const allDeclarations = (text, selector) => {
+    /** @type {Record<string, string>} */
+    const merged = {}
+    for (const body of rulesWith(text, selector)) Object.assign(merged, parseDeclarations(body))
+    return merged
+  }
+
+  /**
+   * The alpha a declaration carries, or null when the value is not a colour this test can read.
+   *
+   * `null` is deliberately not `1`: an unreadable value in a branch is a failure, not a pass, and an
+   * unreadable value in the base palette is caught by the surface-family check below.
+   */
+  const alphaOf = (value) => {
+    if (value === undefined) return null
+    const text = String(value).trim()
+    const hex8 = /^#([0-9a-f]{8})$/i.exec(text)
+    if (hex8 !== null) return parseInt(hex8[1].slice(6), 16) / 255
+    if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(text)) return 1
+    const percent = /^rgba?\([^)]*\/\s*([\d.]+)%\s*\)$/i.exec(text)
+    if (percent !== null) return Number(percent[1]) / 100
+    const fraction = /^rgba?\([^)]*\/\s*([\d.]+)\s*\)$/i.exec(text)
+    if (fraction !== null) return Number(fraction[1])
+    if (/^rgba?\(/i.test(text)) return 1
+    return null
+  }
+
+  /*
+   * THE TWO LISTS. A SURFACE is something the reader sees content *through*; its alpha is a property
+   * of the material and removing it is what "less transparency" means. A TINT's alpha IS its colour —
+   * `rgb(15 23 42 / 6%)` over a white panel is a light grey — so taking it opaque would mean inventing
+   * a colour, which is the one thing this project does not do with the shipped palette.
+   */
+  const SURFACES = [
+    '--dsw-alias-bg-base', // the window itself
+    '--dsw-alias-bg-layer-1',
+    '--dsw-alias-bg-layer-2',
+    '--dsw-alias-bg-layer-3', // menus and dialogs, via --dsw-specific-menu (10 packages)
+    '--dsw-alias-bg-overlay',
+    '--dsw-alias-bg-module-platform', // panels 12 packages put text on
+    '--dsw-specific-sidebar-fill',
+    '--dsw-alias-tooltip-bg',
+    '--lg-glass-bg', // the skin's own material fill, read by .lg-glass and by the composer
+  ]
+  const TINTS = [
+    ['--dsw-alias-bg-skeleton', 'a placeholder shimmer: the alpha is the colour'],
+    ['--dsw-alias-markdown-code-block', 'a code tint painted on a surface'],
+    ['--dsw-alias-markdown-code-block-banner', 'a code tint painted on a surface'],
+    ['--dsw-alias-markdown-inline-code', 'a code tint painted on a surface'],
+    ['--dsw-alias-interactive-bg-hover', 'a hover tint: the alpha is the state'],
+    ['--dsw-alias-interactive-bg-active', 'an active tint: the alpha is the state'],
+    ['--dsw-alias-button-ghost-active-fill', 'an active tint: the alpha is the state'],
+    [
+      '--dsw-alias-button-tool-bar-fill',
+      'a control fill whose alpha encodes the state — 50% at rest, 60% on hover, same grey',
+    ],
+    ['--dsw-alias-button-tool-bar-hover', 'the hover half of that pair; opaque would erase the difference'],
+  ]
+  // A hairline is a line, not a surface. `prefers-contrast: more` answers it by making it heavier,
+  // which is the right treatment for a line and impossible for a fill.
+  const LINES = [
+    '--dsw-alias-border-l1',
+    '--dsw-alias-border-l2',
+    '--dsw-alias-border-l3',
+    '--lg-glass-border',
+    '--lg-glass-border-light',
+    '--lg-glass-border-dark',
+  ]
+  /*
+   * The theme pairs behind an alias, exempt because the alias is what the branches override.
+   *
+   * `--lg-glass-bg` is `var(--lg-glass-bg-light)` or `var(--lg-glass-bg-dark)` depending on the
+   * theme, and `.lg-glass` and the composer rule read the ALIAS. Taking the alias opaque in a branch
+   * is therefore sufficient, and re-declaring the pair as well would be a second place to keep in
+   * step — which is the shape of mistake this whole guard exists for.
+   */
+  const ALIASES = [
+    ['--lg-glass-bg-light', 'the light half of the pair behind --lg-glass-bg, which the branches override'],
+    ['--lg-glass-bg-dark', 'the dark half of the same pair'],
+  ]
+
+  // The base palette, from every sheet: the first light and dark blocks are the base ones, and the
+  // branch blocks that follow them are the overrides this test is about.
+  /** @type {Record<string, Record<string, string>>} */
+  const base = { light: {}, dark: {} }
+  for (const style of harness.dom.styles()) {
+    Object.assign(base.light, firstDeclarations(style.textContent, LIGHT))
+    Object.assign(base.dark, firstDeclarations(style.textContent, DARK))
+  }
+  truthy(Object.keys(base.light).length > 10, `the base palette was read (${Object.keys(base.light).length} tokens)`)
+
+  const translucent = Object.keys({ ...base.light, ...base.dark }).filter(
+    (token) => (alphaOf(base.light[token]) ?? 1) < 1 || (alphaOf(base.dark[token]) ?? 1) < 1,
+  )
+  truthy(translucent.length >= 10, `the palette declares translucent fills (${translucent.length})`)
+
+  const unclassified = translucent.filter(
+    (token) =>
+      !SURFACES.includes(token) &&
+      !LINES.includes(token) &&
+      !TINTS.some(([name]) => name === token) &&
+      !ALIASES.some(([name]) => name === token),
+  )
+  equal(
+    unclassified,
+    [],
+    'every translucent declaration is either a surface or an exempt entry with a reason — a new one forces a decision',
+  )
+
+  /*
+   * An unreadable value inside a surface family must not escape both lists by parsing as "not a
+   * colour" — `color-mix()` or a bare keyword would do exactly that. An ALIAS is the one legitimate
+   * unreadable value: `--lg-glass-bg: var(--lg-glass-bg-dark)` carries no alpha of its own, and the
+   * token it points at is declared and therefore classified on its own account. The dangling-reference
+   * test elsewhere in this suite is what catches an alias pointing at nothing.
+   */
+  const surfaceFamily = /^--dsw-alias-bg-|^--dsw-specific-|^--lg-glass-bg$/
+  for (const [theme, values] of Object.entries(base)) {
+    for (const [token, value] of Object.entries(values)) {
+      if (!surfaceFamily.test(token)) continue
+      if (TINTS.some(([name]) => name === token)) continue
+      if (/^var\(/i.test(value.trim())) continue
+      truthy(alphaOf(value) !== null, `${theme}: ${token} carries a readable alpha (${value})`)
+    }
+  }
+
+  /** Every brace-balanced block under a conditional prelude, across all sheets. */
+  const blocksFor = (prelude) => {
+    const blocks = []
+    let from = 0
+    for (;;) {
+      const start = css.indexOf(prelude, from)
+      if (start === -1) return blocks
+      let depth = 0
+      let end = css.length
+      for (let index = start; index < css.length; index += 1) {
+        if (css[index] === '{') depth += 1
+        else if (css[index] === '}') {
+          depth -= 1
+          if (depth === 0) {
+            end = index + 1
+            break
+          }
+        }
+      }
+      blocks.push(css.slice(start, end))
+      from = end
+    }
+  }
+
+  const BRANCHES = [
+    '@supports not ((backdrop-filter: blur(1px))',
+    '@media (prefers-reduced-transparency: reduce)',
+    '@media (forced-colors: active)',
+    '@media (prefers-contrast: more)',
+  ]
+  /** @type {Record<string, {light: Record<string, string>, dark: Record<string, string>}>} */
+  const covered = {}
+  for (const branch of BRANCHES) {
+    const blocks = blocksFor(branch)
+    truthy(blocks.length > 0, `the ${branch} branch exists`)
+    covered[branch] = { light: {}, dark: {} }
+    for (const block of blocks) {
+      Object.assign(covered[branch].light, allDeclarations(block, LIGHT))
+      Object.assign(covered[branch].dark, allDeclarations(block, DARK))
+    }
+  }
+
+  /*
+   * The check itself, COLLECTED rather than asserted one token at a time.
+   *
+   * `equal` throws, so a per-token assertion would report the first hole and stop — and the first
+   * run of this guard is kept as evidence precisely because it names every hole at once. The list
+   * below is what that run printed.
+   */
+  /** @type {string[]} */
+  const holes = []
+  for (const branch of BRANCHES) {
+    for (const token of SURFACES) {
+      /*
+       * Both themes, because the two are declared in different rules and a branch can cover one
+       * without the other: the composer's own suppression was correct in light and silently dead in
+       * dark, which a single-theme check would have called green.
+       */
+      const light = alphaOf(covered[branch].light[token])
+      const dark = alphaOf(covered[branch].dark[token])
+      if (light === 1 && dark === 1) continue
+      const show = (alpha) => (alpha === null ? 'nothing' : alpha)
+      holes.push(
+        `${branch} → ${token} (light: ${show(light)}, dark: ${show(dark)}; ` +
+          `declared light=${covered[branch].light[token] ?? '—'} dark=${covered[branch].dark[token] ?? '—'})`,
+      )
+    }
+  }
+  equal(
+    holes.length,
+    0,
+    `${holes.length} surface(s) are still translucent under a mode that removes transparency:\n  ` +
+      holes.join('\n  '),
+  )
+
+  /*
+   * And the pair-identity check. `@supports not` and `prefers-reduced-transparency` mean the same
+   * thing to this skin and their bodies were byte-identical until this round, which is how the same
+   * four-token omission came to exist twice. Which tokens they cover must not diverge.
+   */
+  const tokenSet = (text) => Object.keys(text).sort().join(',')
+  equal(
+    tokenSet(covered['@supports not ((backdrop-filter: blur(1px))'].light),
+    tokenSet(covered['@media (prefers-reduced-transparency: reduce)'].light),
+    'the two no-transparency branches cover the same light tokens',
+  )
+  equal(
+    tokenSet(covered['@supports not ((backdrop-filter: blur(1px))'].dark),
+    tokenSet(covered['@media (prefers-reduced-transparency: reduce)'].dark),
+    'and the same dark ones',
+  )
+
+  /*
+   * Named values, so a wrong number fails with the number rather than with a list of holes. These
+   * are the two additions whose values are not simply re-used from a block that already existed:
+   * `module-platform` shares layer-2's translucency, and `tooltip-bg` is its own colour with the
+   * alpha removed. Both are derived rather than invented, and both are pinned here.
+   */
+  contains(css, '--dsw-alias-bg-module-platform: #262a35', 'the module platform takes layer-2’s dark form')
+  contains(css, '--dsw-alias-tooltip-bg: #17171a', 'the light tooltip is its own colour, alpha removed')
+  contains(css, '--dsw-alias-tooltip-bg: #0c0e14', 'and so is the dark one')
 })
 
 await test('the palette follows the shipped dark-theme signal, never a media query', async () => {
