@@ -55,10 +55,12 @@ const LEGACY_LOCAL_KEYS = ['dsh-liquid-glass.settings', 'dsh-liquid-glass.settin
 /**
  * Delete the leftover keys from a previous generation, once per load.
  *
- * Kept here rather than in `skin.js` on purpose: this module is the ONLY place in the
- * plugin that touches `localStorage`, which is what keeps "where does state live" a
- * one-file question. A skin reaching for storage directly is exactly the drift this
- * centralisation exists to prevent.
+ * Kept here rather than in `skin.js` on purpose: this module is the only place that touches the
+ * plugin's own STATE record, which is what keeps "where does state live" a one-file question. A
+ * skin reaching for storage directly is exactly the drift this centralisation exists to prevent.
+ * (`diagnostics.js` reads one key of its own — the debug switch — and that is an instrumentation
+ * toggle, never state. This sentence used to claim this module was the only place in the plugin
+ * that touched `localStorage` at all, which was false the whole time it was written there.)
  *
  * Best-effort and silent. `localStorage` can throw on access (disabled, sandboxed,
  * quota-exhausted) and a stale key is never worth failing a plugin load over.

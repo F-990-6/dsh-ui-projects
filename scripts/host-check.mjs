@@ -58,18 +58,36 @@ const module = await import(pathToFileURL(join(packageRoot, 'lib', 'index.js')).
 
 /**
  * Fabricate the slice of a Cordis context this row touches.
+ *
+ * `on` and `get` were added when the row gained first-paint duties: it subscribes to
+ * `webserver/index-inject` and reads the settings document at emit time. A context missing either
+ * one does not fail a little — `apply` throws, and dsh refuses the loader entry.
  * @param register - stands in for `ctx.settings.register`.
+ * @param section - what the settings document holds for this namespace, or undefined for
+ *   "no settings service composed".
  */
-function makeContext(register) {
+function makeContext(register, section) {
   const calls = []
+  /** @type {Map<string, (arg: any) => void>} */
+  const handlers = new Map()
   return {
     calls,
+    handlers,
     ctx: {
       logger: { info: (line) => calls.push(`info:${line}`), warn: (line) => calls.push(`warn:${line}`) },
       inject: (deps, callback) => {
         calls.push(`inject:${JSON.stringify(deps)}`)
         callback({ settings: { register } })
       },
+      on: (event, handler) => {
+        calls.push(`on:${event}`)
+        handlers.set(event, handler)
+        return () => handlers.delete(event)
+      },
+      get: (service) =>
+        service === 'settings' && section !== undefined
+          ? { get: (namespace) => (namespace === EXPECTED_NAMESPACE ? section : undefined) }
+          : undefined,
     },
   }
 }
@@ -160,6 +178,78 @@ try {
   else fail('a registration failure produced no warning')
 } catch (err) {
   fail(`a registration failure must not escape apply: ${err.message}`)
+}
+
+// ── 6. the first-paint injection ─────────────────────────────────────────────
+//
+// This is the half of step 5 that has to live on the Host: the first frame happens before the
+// client bundle is fetched, so the critical CSS and the project marker must already be in the
+// served HTML. Asserted here rather than in the browser suite because the shapes are what matter
+// — one inert stylesheet, and a marker script only when the document says the skin is on.
+const ON_RECORD = { v: 1, initialized: true, enabled: ['liquid-glass'], settings: {}, touched: true }
+
+/** Fire the injection table the webserver emits, for one settings section. */
+function collectInjections(section) {
+  const probe = makeContext(() => {}, section)
+  module.apply(probe.ctx)
+  const emit = probe.handlers.get('webserver/index-inject')
+  if (typeof emit !== 'function') return undefined
+  const table = []
+  emit(table)
+  return table
+}
+
+const enabledTable = collectInjections(ON_RECORD)
+if (enabledTable === undefined) {
+  fail('the host half does not answer webserver/index-inject, so nothing reaches the first frame')
+} else {
+  ok('answers webserver/index-inject')
+  const styles = enabledTable.filter((row) => row.kind === 'style')
+  const scripts = enabledTable.filter((row) => row.kind === 'script')
+
+  if (styles.length === 1) {
+    ok('inlines exactly one first-paint stylesheet')
+  } else {
+    fail(`expected 1 style row, saw ${styles.length}`)
+  }
+
+  const css = styles[0]?.text ?? ''
+  if (css.includes('body[data-ui-project-liquid-glass="on"]')) {
+    ok('the stylesheet is scoped to the project marker')
+  } else {
+    fail('the first-paint stylesheet carries no project marker — it would restyle the default UI')
+  }
+  // Inlined verbatim into an element: a "<" could close it early and spill CSS into the document.
+  if (!css.includes('<')) ok('the stylesheet contains no "<" (safe to inline)')
+  else fail('the stylesheet contains "<", which can close the element it is inlined into')
+
+  if (scripts.length === 1) {
+    ok('marks the document when the record says the skin is on')
+  } else {
+    fail(`expected 1 marker script for an enabled skin, saw ${scripts.length}`)
+  }
+  if (scripts[0]?.placement === 'body') {
+    ok("the marker script is placed 'body'")
+  } else {
+    fail(`marker placement is ${JSON.stringify(scripts[0]?.placement)}, expected 'body' — the marker is on <body>`)
+  }
+  const script = scripts[0]?.text ?? ''
+  if (script.includes('data-ui-project-liquid-glass')) ok('the script sets the project marker')
+  else fail('the marker script does not set the project marker')
+  if (!script.includes('<')) ok('the script contains no "<" (safe to inline)')
+  else fail('the script contains "<", which can close the element it is inlined into')
+
+  // Off, and unsaid. Both must paint the default look with nothing to undo.
+  const offTable = collectInjections({ ...ON_RECORD, enabled: [] }) ?? []
+  if (offTable.every((row) => row.kind !== 'script')) ok('an enabled=[] record emits no marker script')
+  else fail('a disabled skin still emitted a marker script')
+
+  const bareTable = collectInjections(undefined) ?? []
+  if (bareTable.length === 1 && bareTable[0].kind === 'style') {
+    ok('with no settings service, only the inert stylesheet is emitted')
+  } else {
+    fail(`with no settings service the table is ${JSON.stringify(bareTable.map((row) => row.kind))}`)
+  }
 }
 
 process.stdout.write(failures === 0 ? '\nhost half is loadable\n' : `\n${failures} host problem(s)\n`)

@@ -956,6 +956,62 @@ try {
     const relevant = pageErrors.filter((message) => !/favicon|net::ERR_|Failed to load resource/i.test(message))
     equal(relevant, [], 'no errors raised while the skin was applied')
   })
+
+  /*
+   * Step 5, verified the hard way — and deliberately LAST, because it blocks the bundle.
+   *
+   * Everything above drives the RUNNING application, and a skin that is correct once the bundle
+   * has loaded says nothing about the first frame, which happens before that bundle is even
+   * fetched. With `dsh-ui-projects/client.js` blocked the application never mounts, so whatever
+   * the document shows came from the served HTML alone: the host's inlined stylesheet and its
+   * marker script. If the first frame is skinned here, it is skinned on every real load too —
+   * including the ones where the bundle is still in flight.
+   *
+   * The boundary this asserts around: the FROST is not expected, because it hangs off
+   * `data-ui-skin-column`, stamped by the client runtime. The colours, the transparent frame and
+   * the ambient gradient are.
+   */
+  await test('the first frame is already the skin, with the client bundle blocked', async () => {
+    await session.send('Network.enable')
+    await session.send('Network.setBlockedURLs', { urls: ['*dsh-ui-projects/client.js*'] })
+    try {
+      await session.send('Page.navigate', { url: pageUrl })
+      await waitFor(
+        session,
+        "document.body !== null && document.body.hasAttribute('data-ui-project-liquid-glass')",
+        'the host-emitted marker',
+        20000,
+      )
+      const first = await evaluate(
+        session,
+        `(() => {
+          const body = document.body
+          const style = getComputedStyle(body)
+          return {
+            marker: body.getAttribute('data-ui-project-liquid-glass'),
+            rootSkin: document.documentElement.getAttribute('data-ui-skin'),
+            fill: style.getPropertyValue('--dsw-alias-bg-base').trim(),
+            gradient: String(style.backgroundImage).includes('radial-gradient'),
+            attachment: String(style.backgroundAttachment),
+            mounted: document.querySelectorAll('#root *').length,
+          }
+        })()`,
+      )
+
+      // The bundle never ran, so the rest of this is the host's work and nothing else's.
+      equal(first.mounted, 0, 'the application did not mount, so the bundle really was blocked')
+      equal(first.marker, 'on', 'the host marked the body before the first paint')
+      equal(first.rootSkin, 'liquid-glass', 'and the root carries the skin id')
+      truthy(
+        String(first.fill).includes('/ 0%)'),
+        `the frame is already see-through on the first frame (${first.fill})`,
+      )
+      truthy(first.gradient, 'the ambient gradient is already painted on the body')
+      contains(first.attachment, 'fixed', `the gradient is viewport-anchored (${first.attachment})`)
+    } finally {
+      await session.send('Network.setBlockedURLs', { urls: [] })
+    }
+  })
 } finally {
   page?.close()
   cdp?.close()

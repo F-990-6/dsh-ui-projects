@@ -54,13 +54,18 @@ no core package, no route, no business plugin. Any state the plugin persisted li
 ## Architecture
 
 ```
-src/host/index.js                 host row: makes the browser half reachable
+src/host/index.js                 host row: the browser half's reachability, its settings
+                                  namespace, and the first-paint injection
+src/host/boot.css                 the first-paint subset of the skin, inlined into <head>
 src/client/
   index.js                        composition root: registry + persistence + runtime + settings section
   project-constants.js            the shared vocabulary (skin/enhancement, light/dark/mobile)
   registry.js                     what UI projects exist, and the enable/disable policy
   persist.js                      where state lives (dsh settings document, else localStorage)
-  runtime.js                      the only module that touches the DOM; applies and cleans up
+  runtime.js                      the only DOM-touching module in project code; applies and
+                                  cleans up. diagnostics.js adds a temporary overlay, never
+                                  touching a project's own DOM.
+  diagnostics.js                  the self-diagnosis overlay; a temporary instrument, off by default
   scope-css.js                    rewrites a project's CSS so it can only apply while active
   store.js                        what the settings page reads
   panel.js                        the Settings › UI page, rendered from the registry alone
@@ -223,6 +228,52 @@ Two rules keep the result readable, and both are asserted by the suite:
   `prefers-reduced-transparency`, every fill returns to opaque and the blur is dropped:
   the layout, hierarchy and edges survive, the transparency does not.
 
+### First paint
+
+A skin that arrives with the client bundle is a skin the first frame does not have: the shell
+paints, and only afterwards does the bundle load and apply anything. The last state is meant to be
+on screen from the first frame, so the part of it that can be is served inside the HTML.
+
+The mechanism is the **host half**, through `webserver/index-inject` — the same route
+`dsh-client-ui-theme` uses for its own bootstrap:
+
+- `src/host/boot.css` is inlined as a `<style>` immediately after `<head>`. It is the body-level
+  subset of the skin, already written in the marker form the runtime scoper emits, and the build
+  proves it rule-for-rule against that scoper's output. Because every selector carries the marker,
+  the sheet is **inert while the skin is off** — so it is emitted unconditionally, with no branch
+  to get wrong.
+- One `<script>` is emitted, immediately after `<body>` opens, and only when the settings document
+  says the skin is on. It sets `data-ui-project-liquid-glass="on"` on the body and
+  `data-ui-skin="liquid-glass"` on the root — before the application mounts and before anything
+  paints. If the document cannot be read at all, no script is emitted and the page paints the
+  default look.
+
+The state comes from the **settings document**, read at render time, never from `localStorage`.
+This is a deliberate departure from the specification, which asks for a head script that reads
+`localStorage` synchronously: this plugin's durable state is the settings document, and the client
+removes the `localStorage` copy after its first successful write — so a script reading that key
+would find nothing on exactly the loads that matter.
+
+**The physical boundary, stated rather than discovered.** A first frame gets the `--lg-*` tokens,
+the re-bound `--dsw-alias-*` colours, the body background with its ambient gradient, and the base
+text colours — the colours, the background and the material hierarchy. It does **not** get the
+blur: the frost hangs off `data-ui-skin-column`, which the client runtime stamps once the
+application's DOM exists, and no first frame can precede that. The blur lands a few milliseconds
+later. "The first frame is already Liquid Glass" holds inside that boundary: no white flash, and no
+default-look-to-skin jump.
+
+Two deviations from the specification are recorded here rather than left to be rediscovered:
+
+- **The marker is `data-ui-project-<id>`, not `data-ui-skin-<id>`.** The specification suggests the
+  latter; the former is what the scoper emits into every project stylesheet, so the boot script
+  marks what the CSS actually reads. Renaming would rewrite the scoper, every selector, every test
+  and every snapshot, for no change in behaviour.
+- **A non-loopback page can disagree for one frame.** There the client falls back to
+  `localStorage` while the host still reads the settings document, so a first frame can be skinned
+  and then have the marker removed by the runtime a moment later. Closing that needs the request's
+  loopback-ness plumbed into the injection table, which is an upstream interface change; on
+  `127.0.0.1` — the supported way to run this — it cannot happen.
+
 ### Persistence
 
 ```jsonc
@@ -333,6 +384,24 @@ There is no bundler dependency. `scripts/build.mjs` is the whole build: it rewri
 source's ESM imports/exports into one CommonJS graph, converts `*.css` files into string
 modules, and wraps the result in the registration block the dsh shell expects. React is
 the only external it requests, resolved from the shell's frozen module table.
+
+### Build artefacts — `lib/` is complete only with all three files
+
+| file | what it is |
+|---|---|
+| `lib/index.js` | the host half, copied from `src/host/index.js` after its package imports are checked |
+| `lib/client.js` | the browser bundle, built from `src/client/**` |
+| `lib/boot-css.js` | `src/host/boot.css` as a module — the first-paint stylesheet the host inlines |
+
+`lib/index.js` imports `./boot-css.js`, so a `lib/` holding only `index.js` and `client.js` is
+not merely stale: **dsh refuses the loader entry at boot**, and the GUI sits on "Loading
+plugins…". `npm run build` produces all three together; nothing else does.
+
+The third artefact is generated rather than copied because the host half ships as plain ESM and
+cannot import CSS. Before writing it, the build proves `src/host/boot.css` is a subset of the CSS
+the skin itself emits — rule by rule, whitespace-insensitively, with any drift failing the build
+and naming the offending rule. That check is the only thing keeping two copies of the same
+palette from becoming two different palettes.
 
 ### Verifying against a running dsh
 

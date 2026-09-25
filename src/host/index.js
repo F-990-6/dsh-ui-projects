@@ -2,8 +2,7 @@
  * dsh-ui-projects — host half.
  *
  * The UI project system lives in the browser: the registry, the runtime and the
- * Settings › UI section are all client-side, so this row exists for these reasons
- * only:
+ * Settings › UI section are all client-side, so this row exists for these reasons:
  *
  *  1. **Presence.** A Loader row is what makes the `dsh.client` declaration in
  *     `package.json` real: the client-modules node half scans enabled rows for
@@ -17,12 +16,22 @@
  *     Host document that survives a browser-profile reset. Without this
  *     registration the browser half's preferred transport reports `unavailable`,
  *     and `src/client/persist.js` silently falls back to `localStorage` instead.
+ *  4. **First paint.** It answers `webserver/index-inject` with the skin's
+ *     first-paint stylesheet and its data attribute. THIS half owns that because
+ *     the first frame happens before the client bundle is even fetched: the head
+ *     must already carry the critical CSS and the body must already carry the
+ *     marker, or the page paints in the default look and then switches — the flash
+ *     the specification forbids. The stylesheet is `src/host/boot.css`, a verbatim
+ *     subset of what the client emits; `scripts/build.mjs` fails the build if the
+ *     two ever disagree.
  *
- * It deliberately touches nothing else: no Service of its own, no Event, no
- * route, no business state. The client half is where the product lives.
+ * It owns no Service, no route and no business state of its own. The one Event it listens to is
+ * the index injection above, and the client half is still where the product lives.
  */
 
 import z from '@deepseek-ai/schemastery'
+
+import { BOOT_CSS } from './boot-css.js'
 
 /** The browser bundle this row makes reachable. */
 export const CLIENT_MODULE_ID = 'dsh-ui-projects'
@@ -74,6 +83,58 @@ export const UI_PROJECTS_SETTINGS_SCHEMA = z.object({
 })
 
 /**
+ * The shipped skin's project id.
+ *
+ * The host half needs exactly one id, and only for the first paint: a project registers its own
+ * id in the browser, and everything else here is generic. This is the one place the two halves
+ * name a project, so it is named once.
+ */
+const SHIPPED_SKIN_ID = 'liquid-glass'
+
+/**
+ * The project ids the settings document currently says are on.
+ *
+ * Read through the same document the browser half writes, so the first frame and the runtime
+ * cannot disagree about what is enabled. Every failure mode returns an empty list rather than
+ * throwing: no settings service composed, no section yet (the normal first run), or a section
+ * written by an older version. In all of those the answer "nothing is on" is safe — the first
+ * frame paints the default look, exactly as it did before this existed.
+ *
+ * Read at EMIT time rather than cached at mount: the injection table is collected fresh for every
+ * index render, so a toggle is reflected by the next reload with nothing to invalidate.
+ * @param {import('@deepseek-ai/cordis').Context} ctx
+ * @returns {string[]}
+ */
+function readEnabledIds(ctx) {
+  const settings = ctx.get('settings')
+  if (settings === undefined || typeof settings.get !== 'function') return []
+  const section = settings.get(UI_PROJECTS_SETTINGS_NAMESPACE)
+  if (section === null || typeof section !== 'object') return []
+  return Array.isArray(section.enabled) ? section.enabled : []
+}
+
+/**
+ * The first-paint row that marks the document, as an injection row.
+ *
+ * `placement: 'body'` is required rather than stylistic: the marker lives on `<body>`, and body
+ * rows are rendered immediately after the opening body tag — before the application is mounted
+ * and before the first paint. The same placement ui-theme uses for its own bootstrap, for the
+ * same reason.
+ * @param {string} projectId
+ * @returns {import('@deepseek-ai/dsh-host-webserver').IndexInjection}
+ */
+function bootMarkerRow(projectId) {
+  return {
+    kind: 'script',
+    placement: 'body',
+    text: `(() => {
+  document.body.setAttribute(${JSON.stringify(`data-ui-project-${projectId}`)}, 'on')
+  document.documentElement.setAttribute('data-ui-skin', ${JSON.stringify(projectId)})
+})()`,
+  }
+}
+
+/**
  * @param {import('@deepseek-ai/cordis').Context} ctx
  */
 export function apply(ctx) {
@@ -101,6 +162,22 @@ export function apply(ctx) {
         `[dsh-ui-projects] could not register the "${UI_PROJECTS_SETTINGS_NAMESPACE}" settings namespace (${String(err)}); UI project state will use localStorage`,
       )
     }
+  })
+
+  /*
+   * First paint — see reason 4 in the file header.
+   *
+   * The stylesheet goes in unconditionally. Every selector in it carries the project marker, so
+   * with the skin off the whole sheet is inert; pushing it always means the host needs no branch
+   * here, and there is one less way for "the skin is off" to go wrong.
+   *
+   * The marker is written only when the document says the skin is on, by a script that runs while
+   * the parser is still opening `<body>`. It fails soft by construction: if the settings document
+   * cannot be read, no script is emitted, no marker is set, and the page paints the default look.
+   */
+  ctx.on('webserver/index-inject', (table) => {
+    table.push({ kind: 'style', text: BOOT_CSS })
+    if (readEnabledIds(ctx).includes(SHIPPED_SKIN_ID)) table.push(bootMarkerRow(SHIPPED_SKIN_ID))
   })
 }
 

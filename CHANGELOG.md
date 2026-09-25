@@ -17,11 +17,107 @@ Verification vocabulary used below:
 | term | meaning |
 |---|---|
 | `suite` | `node scripts/verify.mjs` — behavioural assertions against the built bundle |
-| `host` | `node scripts/host-check.mjs` — the host half loads and `apply` runs |
+| `host` | `node scripts/host-check.mjs` — the host half loads, `apply` runs, and it answers the index injection |
 | `browser` | measured in a real Chrome over CDP, with screenshots |
 | `browser (user)` | confirmed by the user looking at their own running instance |
 | `emitted` | `node scripts/emitted-css.mjs` / `scope-peek.mjs` — the CSS the browser actually receives |
 | **unverified** | written from reasoning about the source; never observed running |
+
+---
+
+## Round 18 — two absolute claims that were not true, and how they were found
+
+**Status: documentation and one comment only. Nothing executable moved, so `suite` and `host` were
+not re-run.**
+
+Both claims were pre-existing — neither came from rounds 16 or 17 — and both were found while doing
+something else, which is the part worth keeping.
+
+1. **`persist.js` claimed to be the only module touching `localStorage`.** The sentence "this
+   module is the ONLY place in the plugin that touches `localStorage`" had been there for rounds.
+   `diagnostics.js:25` reads `window.localStorage?.getItem('dsh.ui.projects.debug')`, and that
+   module's own header documents the key. The architecture was never wrong — a debug toggle is not
+   state, and the two keys never interact — but the sentence was, and it was exactly the kind of
+   sentence a reader cites instead of checking. Rewritten to say what is true: the only place that
+   touches the plugin's own STATE record.
+2. **The README's file listing had no `diagnostics.js` entry at all.** Noticed because round 17's
+   new line for `runtime.js` names that file — a reference to something the reader cannot find in
+   the list beside it. Added.
+
+**Checked and deliberately left alone:** `runtime.js`'s header calls itself "the only place that
+touches the DOM, storage and the theme service on behalf of a project". That holds: the host half
+contributes HTML text and never touches the DOM API, and `diagnostics.js` builds an overlay but
+never a project's DOM. The README line that stated the stronger, false version of it was corrected
+in the same pass.
+
+**The method lesson — the reason this round exists.** The first claim had already been audited and
+passed. It was read, its intent agreed with, and confirmed, without the tree ever being searched
+for the keyword. An absolute claim — *only*, *never*, *always*, *the sole* — cannot be verified by
+reading it; it is verified by grepping what it generalises over and looking at every hit. The
+intent behind a false absolute is usually true, and that is precisely what lets it survive review.
+Both items above came out of keyword searches run for unrelated reasons; re-reading would not have
+found either.
+
+**A second method failure, caught the same way — and it happened twice.** Writing this entry
+consumed the heading of the round it was inserted before: the replacement text started at a `---`
+separator and ended at another, and the heading that sat between them was never re-emitted. The
+same mistake happened once before, with Round 15, six rounds earlier — and both times the edit
+looked clean when it was made. Both were caught by grepping `^## Round` and reading the numbers,
+not by re-reading the prose. Same rule as above: verify the artefact rather than the intention, and
+make the check mechanical enough that it cannot be skimmed. `node tools/snapshot.mjs --diff` is the
+other mechanical check that would have caught it, one command later.
+
+---
+
+## Round 17 — step 5: the first frame is already the skin
+
+**Status: done. `suite` 346 assertions / 0 failing, `host` green. The browser check is written but
+not yet run — it needs a live `dsh web` and a Chrome with a debug port.**
+
+Step 5 asks for the last state to be on screen from the first frame. Until now the skin was applied
+from the client bundle, which by definition loads *after* the shell has painted, so step 5 was one
+of the two steps still unimplemented (step 6 is the other).
+
+**Changed:** the host half now answers `webserver/index-inject` with two rows.
+
+1. `{ kind: 'style' }` carrying `src/host/boot.css` — the body-level subset of the skin, already
+   written in the scoper's marker form, inlined immediately after `<head>`. Emitted
+   **unconditionally**: every selector carries the project marker, so with the skin off the sheet
+   is inert and the host needs no branch to get wrong.
+2. `{ kind: 'script', placement: 'body' }`, emitted **only** when the settings document says the
+   skin is on, setting `data-ui-project-liquid-glass="on"` on the body and `data-ui-skin` on the
+   root, immediately after `<body>` opens — before the application mounts and before anything
+   paints.
+
+**The specification's own mechanism could not be used.** It asks for a blocking head script that
+reads `localStorage` synchronously. Round 16 made the settings document authoritative and removes
+the `localStorage` copy after the first successful write, so that script would find nothing on
+exactly the loads that matter. The host reads the same document the client writes, at render time.
+
+**How the CSS reaches the host:** the host half ships as plain ESM with no transformation and
+cannot import a stylesheet, so `lib/boot-css.js` is generated from `src/host/boot.css` — after the
+build **proves the source is a subset of the CSS the skin emits**, leaf rule by leaf rule, each
+with its at-rule context, compared whitespace-insensitively. Drift fails the build and names the
+rule. Verified by sabotage rather than by reading: `--lg-glass-blur: 20px` → `21px` turned the
+build red with "1 rule(s) drifted"; restoring it went green with the file byte-identical.
+
+**Two things this found on the way.** The check's first run accused its own documentation — the
+source file's header comment was parsed as a rule, so comments are now stripped before comparison
+(and before the payload is inlined, which also keeps ~1.4 KB of prose out of every page). And
+`host-check.mjs`'s fake context had neither `on` nor `get`, so the moment the row grew a listener
+the check would have reported `apply threw`: a context missing a method does not fail partially,
+it refuses the loader entry.
+
+**Not in this round:** step 6 — a performance level per project, enhancement priority and conflict
+warnings, blur-nesting detection, `prefers-contrast`, and the test checklist.
+
+**Verification:** `suite` (+20 assertions, including the *absence* of `::before` in the first-paint
+sheet: the blur cannot exist before the runtime stamps `data-ui-skin-column`, so pinning its
+absence keeps that a stated boundary instead of a surprise), `host` (+11 assertions: row shapes,
+`placement: 'body'`, the enabled / disabled / no-settings branches, and that neither payload
+contains `<` — both are inlined verbatim into HTML). **Not yet observed in a browser**: the new
+`browser-verify.mjs` check blocks `dsh-ui-projects/client.js` with `Network.setBlockedURLs` and then
+asserts the first frame is already skinned while the application never mounts.
 
 ---
 
@@ -385,7 +481,7 @@ card is narrow", which is the condition that actually matters.
 | script | purpose |
 |---|---|
 | `verify.mjs` | behavioural suite; asserts properties, not source text |
-| `host-check.mjs` | the host half loads and `apply` runs — the failure that looks like "stuck on Loading plugins…" |
+| `host-check.mjs` | the host half loads, `apply` runs, and the first-paint rows are shaped right — the failure that looks like "stuck on Loading plugins…" |
 | `build.mjs` | zero-dependency ESM→CJS bundler with a strict host-import check |
 | `balance-check.mjs` | bracket balance that skips comments, strings, templates and regexes |
 | `scope-peek.mjs` | the scoper's real output for a given selector |

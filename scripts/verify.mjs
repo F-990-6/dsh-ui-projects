@@ -22,7 +22,7 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import vm from 'node:vm'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -2533,6 +2533,68 @@ await test('the palette follows the shipped dark-theme signal, never a media que
   // A base-layer `prefers-color-scheme` block would fight the app's own setting.
   const beforeDark = css.slice(0, darkAt)
   excludes(beforeDark, 'prefers-color-scheme')
+})
+
+/*
+ * The first paint is served by the HOST half — before the client bundle is even fetched — so it
+ * is a second copy of the skin's body-level declarations. `scripts/build.mjs` proves that copy is
+ * a subset of what the skin emits, rule by rule. These assertions cover the other two ways it can
+ * fail: being too thin to be worth inlining, and not being inert when the skin is off.
+ *
+ * The inertness is what lets the host push the stylesheet unconditionally, with no branch on the
+ * enabled state: every selector carries the project marker, so with the skin off the whole sheet
+ * matches nothing. A single unscoped rule here would restyle the default UI for every user.
+ */
+await test('the first-paint stylesheet carries the skin, and only under its marker', async () => {
+  const { BOOT_CSS } = await import(pathToFileURL(join(packageRoot, 'lib', 'boot-css.js')).href)
+
+  // The thirteen tokens the specification names, spelled the way it spells them.
+  for (const token of [
+    '--lg-accent',
+    '--lg-accent-dark',
+    '--lg-bg-light',
+    '--lg-bg-dark',
+    '--lg-glass-bg-light',
+    '--lg-glass-bg-dark',
+    '--lg-glass-border-light',
+    '--lg-glass-border-dark',
+    '--lg-glass-blur',
+    '--lg-glass-saturate',
+    '--lg-glass-radius',
+    '--lg-glass-shadow',
+    '--lg-glass-inner-highlight',
+  ]) {
+    contains(BOOT_CSS, token)
+  }
+
+  // The frame has to be see-through on the first frame too, in both themes, or the page paints
+  // with the default opaque background and then flips.
+  contains(BOOT_CSS, '--dsw-alias-bg-base: rgb(255 255 255 / 0%)')
+  contains(BOOT_CSS, '--dsw-alias-bg-base: rgb(20 22 28 / 0%)')
+  // The ambient gradient, which is the only thing the frost has to refract.
+  contains(BOOT_CSS, 'radial-gradient')
+  contains(BOOT_CSS, 'background-attachment')
+
+  const selectors = [...BOOT_CSS.matchAll(/([^{}]+)\{/g)]
+    .map((match) => match[1].trim())
+    .filter((selector) => selector !== '' && !selector.startsWith('@'))
+  truthy(selectors.length > 0, 'the sheet has selectors to check')
+  const unscoped = selectors.filter((selector) => !selector.startsWith('body[data-ui-project-liquid-glass="on"]'))
+  equal(unscoped.length, 0, `every first-paint selector carries the marker (unscoped: ${unscoped.join(' | ')})`)
+
+  // It is inlined into an element verbatim, so it must not be able to close that element early.
+  excludes(BOOT_CSS, '<')
+
+  /*
+   * The physical boundary, pinned so it stays a stated limit rather than becoming a surprise.
+   *
+   * The frost hangs off `data-ui-skin-column`, which the client runtime stamps once the
+   * application's DOM exists — so NO first frame can have it, and a first-paint sheet that
+   * carried the frost rule would only be dead weight pretending to be blur. What a first frame
+   * can have is here: the tokens, the re-bound alias colours, the background and its gradient.
+   */
+  excludes(BOOT_CSS, '::before')
+  excludes(BOOT_CSS, 'data-ui-skin-column')
 })
 
 // ── retired: the sound-reminders suite ───────────────────────────────────────

@@ -25,12 +25,31 @@ import { createRequire } from 'node:module'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { scopeCss } from '../src/client/scope-css.js'
+
 const here = dirname(fileURLToPath(import.meta.url))
 const packageRoot = resolve(here, '..')
 const clientRoot = join(packageRoot, 'src', 'client')
 const hostEntry = join(packageRoot, 'src', 'host', 'index.js')
 const outFile = join(packageRoot, 'lib', 'client.js')
 const outHost = join(packageRoot, 'lib', 'index.js')
+
+/**
+ * The host-side first-paint stylesheet, and the module generated from it.
+ *
+ * It exists as a built artefact rather than as a copy compiled into the host, because the host
+ * half is shipped as plain ESM and cannot import CSS. Nothing here writes a second palette: the
+ * generated module is a byte-for-byte copy of the source file, and the check below is what keeps
+ * that source honest against the CSS the skin actually emits.
+ */
+const bootCssSource = join(packageRoot, 'src', 'host', 'boot.css')
+const outBootCss = join(packageRoot, 'lib', 'boot-css.js')
+
+/** The marker the client scoper stamps on every project rule. Must match `runtime.js`. */
+const LIQUID_GLASS_MARKER = 'body[data-ui-project-liquid-glass="on"]'
+
+/** The skin stylesheets the first-paint subset may draw from, in `apply` order. */
+const SKIN_STYLESHEETS = ['tokens.css', 'glass.css']
 
 /**
  * The bundle's entry module id, and the source file it comes from.
@@ -337,6 +356,126 @@ function assertHostImportsResolvable(source) {
   }
 }
 
+/**
+ * Split a stylesheet into top-level segments: `{ prelude, body }`.
+ *
+ * Thin on purpose. This package authors plain CSS, so a brace counter is exact and a real parser
+ * would be more machinery than the question needs; the only string in the skin's CSS that could
+ * hide a brace is `content: ''`, and it holds none.
+ * @param {string} css
+ * @returns {Array<{ prelude: string, body: string | undefined }>}
+ */
+function cssSegments(css) {
+  const out = []
+  let start = 0
+  for (let index = 0; index < css.length; index += 1) {
+    if (css[index] !== '{') continue
+    let depth = 1
+    let end = -1
+    for (let scan = index + 1; scan < css.length; scan += 1) {
+      if (css[scan] === '{') depth += 1
+      else if (css[scan] === '}') {
+        depth -= 1
+        if (depth === 0) {
+          end = scan
+          break
+        }
+      }
+    }
+    if (end < 0) throw new Error(`[build] unbalanced braces:\n${css.slice(start, start + 200)}`)
+    out.push({ prelude: css.slice(start, index), body: css.slice(index + 1, end) })
+    index = end
+    start = end + 1
+  }
+  return out
+}
+
+/** Whitespace-insensitive identity, so re-indenting a sheet can never trip the subset check. */
+const normalizeCss = (text) => text.replace(/\s+/g, ' ').trim()
+
+/**
+ * Every leaf rule of a stylesheet, each tagged with the at-rule context it sits in.
+ *
+ * Leaf rules rather than whole blocks, and the context matters: `glass.css` has conditional blocks
+ * that hold a body rule AND a frost rule together, so the first-paint sheet keeps part of such a
+ * block. Comparing blocks would call that a drift; comparing each rule together with its own
+ * at-rule prelude says exactly what is true — every rule in boot.css is a rule the skin also
+ * declares, under the same condition.
+ * @param {string} css
+ * @param {string} [context]
+ * @returns {Array<{ context: string, text: string }>}
+ */
+function leafRules(css, context = '') {
+  const out = []
+  for (const segment of cssSegments(css)) {
+    const prelude = segment.prelude.trim()
+    if (prelude === '' || segment.body === undefined) continue
+    if (prelude.startsWith('@')) {
+      out.push(...leafRules(segment.body, `${context}${normalizeCss(prelude)} | `))
+      continue
+    }
+    out.push({ context, text: normalizeCss(`${prelude}{${segment.body}}`) })
+  }
+  return out
+}
+
+/** @param {{ context: string, text: string }} rule */
+const ruleKey = (rule) => `${rule.context}${rule.text}`
+
+/**
+ * Generate `lib/boot-css.js` from `src/host/boot.css`, after proving it is a subset of the CSS the
+ * skin itself emits.
+ *
+ * WHY THE CHECK IS FATAL RATHER THAN A WARNING. The first paint and everything after it use two
+ * copies of the same declarations, and the only thing that makes that safe is that they are the
+ * same declarations. If they drift, the symptom is a colour that changes a few milliseconds after
+ * load — which reads as a rendering glitch rather than as a stale file, and would be chased in the
+ * wrong place. Failing here names the file to fix instead.
+ * @returns {Promise<{ bytes: number, blocks: number, rules: number }>}
+ */
+async function writeBootCss() {
+  /*
+   * Comments are stripped before anything else happens, for two reasons.
+   *
+   * They are not rules, so leaving them in made the header comment itself look like a drifted
+   * declaration — the first thing this check did was accuse its own documentation.
+   *
+   * And they are not shipped: the payload below is inlined into every rendered index, and the
+   * header is prose for whoever opens the source file. The page gets the declarations only.
+   */
+  const payload = (await readFile(bootCssSource, 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '').trim()
+  const skinDir = join(clientRoot, 'projects', 'liquid-glass')
+  /** @type {Set<string>} */
+  const emitted = new Set()
+  for (const file of SKIN_STYLESHEETS) {
+    const scoped = scopeCss(LIQUID_GLASS_MARKER, await readFile(join(skinDir, file), 'utf8'))
+    for (const rule of leafRules(scoped)) emitted.add(ruleKey(rule))
+  }
+  const rules = leafRules(payload)
+  if (rules.length === 0) throw new Error(`[build] ${bootCssSource} declares no rules`)
+  const drifted = rules.filter((rule) => !emitted.has(ruleKey(rule)))
+  if (drifted.length > 0) {
+    throw new Error(
+      `[build] src/host/boot.css is no longer a subset of the skin's own CSS — ${drifted.length} rule(s) drifted:\n` +
+        drifted.map((rule) => `[build]   ${rule.context}${rule.text.slice(0, 110)}…`).join('\n') +
+        '\n[build] The first-paint sheet must say exactly what the skin says. Change the value in' +
+        ' projects/liquid-glass/tokens.css or glass.css, then re-derive src/host/boot.css from' +
+        ' `node scripts/emitted-css.mjs`.',
+    )
+  }
+  const module = `/**
+ * GENERATED by scripts/build.mjs — do not edit.
+ *
+ * The first-paint subset of the Liquid Glass stylesheet, sourced from src/host/boot.css. The build
+ * proves it rule by rule against the CSS the skin itself emits; edit that file (and then the
+ * skin's own tokens.css / glass.css), never this one.
+ */
+export const BOOT_CSS = ${JSON.stringify(payload)}
+`
+  await writeFile(outBootCss, module, 'utf8')
+  return { bytes: Buffer.byteLength(payload, 'utf8'), blocks: cssSegments(payload).length, rules: rules.length }
+}
+
 async function build() {
   const files = await listFiles(clientRoot)
   /** Every module id in this bundle, so path resolution consults reality. */
@@ -502,12 +641,14 @@ ${body}
   const hostSource = await readFile(hostEntry, 'utf8')
   assertHostImportsResolvable(hostSource)
   await writeFile(outHost, hostSource, 'utf8')
+  const boot = await writeBootCss()
 
   const digest = createHash('sha256').update(bundle).digest('hex').slice(0, 12)
   const size = Buffer.byteLength(bundle, 'utf8')
   process.stdout.write(
     `[build] lib/client.js ← ${ordered.length} modules, ${size} bytes, sha256:${digest}\n` +
       `[build] lib/index.js  ← host half (${Buffer.byteLength(hostSource, 'utf8')} bytes)\n` +
+      `[build] lib/boot-css.js — ${boot.bytes} bytes, ${boot.blocks} blocks (host-side first-paint subset)\n` +
       `[build] externals: ${[...externals].sort().join(', ') || '(none)'}\n`,
   )
 }
