@@ -112,6 +112,20 @@ read, whether the settings dialog is centred, whether the first frame flashes. A
 those as `testItems`, and its card grows a disclosure with one checkbox each, a **Mark as passed**
 button, and — once something has been recorded — a **Withdraw confirmation** button.
 
+Each item is validated at registration, and all three rules are refusals rather than warnings:
+
+| rule | why |
+|---|---|
+| `id` matches `^[a-z][a-z0-9-]{1,47}$` — lowercase letters, digits and dashes, 2–48 characters | the id is the key a checklist is stored under, and the same shape a project id uses |
+| `label` is a non-empty string | a checkbox nobody can read is a checkbox nobody can tick honestly |
+| the `id` appears **once** in the definition | every part of the system keys the checklist by that id, so two rows would share one tick and the record could not tell them apart — "each declared item was read" would stop being verifiable |
+
+The uniqueness rule is stricter than the one for project ids, on purpose: a project id that arrives
+twice means *replace* (that is how hot reload works), while a test item id that arrives twice inside
+one definition means the definition contradicts itself. A duplicate is refused with a message naming
+the id and both labels, because the two rows look identical on the card — it is the one mistake an
+author cannot see from the interface.
+
 The button refuses until every box is ticked, and confirming is deliberately not an automatic
 consequence of ticking the last one: "I looked at all of these" is a claim a person makes, and the
 record should say when they made it.

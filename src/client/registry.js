@@ -411,8 +411,23 @@ export function normalize(definition) {
    * anything. An item without an id cannot be stored, and an item without a label is a checkbox
    * nobody can read — both would surface as a control that silently does nothing, which is the
    * failure this package has spent the most time removing.
+   *
+   * UNIQUENESS, and why this is stricter than the project id above it.
+   *
+   * A project id that arrives twice means REPLACE: that is how hot reload works, and `register` is
+   * documented that way, so it is accepted on purpose. A test item id that arrives twice inside ONE
+   * definition means the definition contradicts itself. Every part of this system keys a checklist by
+   * that id — the tick map, the stored record, the currency rule — so the two rows would share one
+   * tick and the record could not tell them apart. "Each declared item was read" would stop being a
+   * claim anybody can verify, which is the one thing a checklist is for.
+   *
+   * Refused rather than warned about, and not de-duplicated at render time either: hiding the second
+   * row would leave the definition just as contradictory while making it invisible, and a render-time
+   * fix would not reach the store, which is where the collision actually happens.
    */
   const testItems = Array.isArray(definition.testItems) ? definition.testItems : []
+  /** @type {Map<string, string>} id → the label it was first declared with, so the message can name both */
+  const seen = new Map()
   const items = testItems.map((entry) => {
     const itemId = entry?.id
     const label = entry?.label
@@ -424,6 +439,14 @@ export function normalize(definition) {
     if (typeof label !== 'string' || label.length === 0) {
       throw new TypeError(`[dsh-ui-projects] UI project "${id}" test item "${itemId}" needs a label`)
     }
+    const first = seen.get(itemId)
+    if (first !== undefined) {
+      throw new TypeError(
+        `[dsh-ui-projects] UI project "${id}" declares the test item id "${itemId}" twice ` +
+          `(labels "${first}" and "${label}"): a checklist is keyed by that id, so the two rows would share one tick`,
+      )
+    }
+    seen.set(itemId, label)
     return Object.freeze({ id: itemId, label })
   })
   return Object.freeze({

@@ -3630,9 +3630,9 @@ await test('an unknown region is refused, and the warnings reach the panel', asy
  * The verification checklist — step 6, final workstream.
  *
  * A project declares what a human should check; the panel renders it as a disclosure; confirming it
- * records the version it was confirmed against. The version stamp is the part with teeth: a project
- * that ships a new version has changed the thing the checklist verified, so the old confirmation is
- * a claim about code that no longer exists.
+ * records a claim about a PAIR — the version and the checklist it was made against. Either one moving
+ * invalidates the claim, for a different reason each time, and the card says which: `stale` when the
+ * version changed, `incomplete` when the checklist did. See `checksStateOf`.
  */
 await test('a checklist is declared, validated, and rendered as a disclosure', async () => {
   const registry = new Registry()
@@ -3640,6 +3640,7 @@ await test('a checklist is declared, validated, and rendered as a disclosure', a
     ['an item with no id', [{ label: 'Looks right' }]],
     ['an item with an unusable id', [{ id: 'Not An Id', label: 'Looks right' }]],
     ['an item with no label', [{ id: 'looks-right' }]],
+    ['the same item id twice', [{ id: 'one', label: 'One' }, { id: 'one', label: 'One again' }]],
   ]) {
     let threw = false
     try {
@@ -3649,8 +3650,29 @@ await test('a checklist is declared, validated, and rendered as a disclosure', a
     }
     truthy(threw, `${label} must be refused: a checklist that cannot record is silent by construction`)
   }
-  equal(registry.ids(), [], 'nothing registered')
+  equal(registry.ids(), [], 'nothing registered — a refused definition leaves no half-built entry')
   equal(new Registry().get('missing'), undefined, 'and an unknown id answers undefined')
+
+  /*
+   * And the refusal has to be actionable. A duplicate is the one case an author cannot see from the
+   * card — the two rows look identical there — so the message names the id and both labels.
+   */
+  let duplicate = ''
+  try {
+    registry.register({
+      id: 'bad-items',
+      name: 'Bad',
+      testItems: [
+        { id: 'one', label: 'One' },
+        { id: 'one', label: 'One again' },
+      ],
+    })
+  } catch (err) {
+    duplicate = err instanceof Error ? err.message : String(err)
+  }
+  contains(duplicate, '"one"', 'the message names the duplicated id')
+  contains(duplicate, '"One"', 'and the label it was first declared with')
+  contains(duplicate, '"One again"', 'and the label that collided with it')
 
   const harness = await boot()
   harness.registry.register({

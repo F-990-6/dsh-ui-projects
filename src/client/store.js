@@ -150,9 +150,10 @@ function storedChecks(project, runtime) {
  * The two conditions are not alternatives, and the subset test IS the equality test here: `storedChecks`
  * keeps only items that are declared now AND were ticked, so the kept set is a subset of the declared
  * set by construction, and requiring every declared item to be present makes it equal. A count-based
- * check would be weaker rather than simpler: `testItems` does not refuse duplicate ids (recorded as a
- * known issue in the changelog), and `[a, a]` against `{a: true}` is one tick standing for two
- * declarations.
+ * check would be redundant rather than stricter for the same reason — the record has already been
+ * reduced to declared-and-ticked keys, so counting says nothing the per-item test does not.
+ * (Duplicate ids used to be an argument for the per-item form; `registry.js` refuses them now, and the
+ * per-item test is simply the correct one rather than the safer of two.)
  * @param {import('./registry.js').UiProjectDefinition} project
  * @param {import('./runtime.js').UiProjectRuntime} runtime
  * @returns {'current' | 'stale' | 'incomplete' | undefined} undefined when nothing was ever recorded

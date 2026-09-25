@@ -751,6 +751,28 @@ try {
   page.on('Log.entryAdded', (params) => {
     if (params.entry.level === 'error') pageErrors.push(String(params.entry.text))
   })
+  /*
+   * Page-level `console.error` calls, which arrive on THIS event and nowhere else.
+   *
+   * The suite asserted "the skin raises no console or page errors" while listening only to the two
+   * events above, so the claim was broader than the instrument: a page's own `console.error` — how
+   * React reports duplicate list keys, among much else — was invisible to it. The gap was found while
+   * adding the registry's uniqueness rule, which removes one source of exactly such a warning.
+   *
+   * Errors only: the shell logs informational lines through the same event by design.
+   */
+  page.on('Runtime.consoleAPICalled', (params) => {
+    if (params.type !== 'error') return
+    pageErrors.push((params.args ?? []).map((arg) => String(arg.value ?? arg.description ?? '')).join(' '))
+  })
+  /**
+   * Whether every assertion that READS `pageErrors` has already run.
+   *
+   * The console calibration at the end of this file deliberately produces one, so from that point on
+   * the collector is no longer a clean channel. That contract is asserted rather than described —
+   * see the calibration test — because a comment cannot fail when someone adds an assertion after it.
+   */
+  let consoleAssertionsDone = false
 
   /** How many checklist writes `--no-write` refused, so the test can prove it refused something. */
   let refusedWrites = 0
@@ -1386,8 +1408,16 @@ try {
   })
 
   await test('the skin raises no console or page errors', () => {
+    /*
+     * Every channel a page can complain on: uncaught exceptions, browser log entries, and — since this
+     * round — the page's own `console.error`. The name of this test used to promise more than the
+     * instrument covered.
+     */
     const relevant = pageErrors.filter((message) => !/favicon|net::ERR_|Failed to load resource/i.test(message))
     equal(relevant, [], 'no errors raised while the skin was applied')
+    // The collector is a clean channel up to here; the calibration at the end of the run is what
+    // makes it dirty, and it asserts this flag before it does.
+    consoleAssertionsDone = true
   })
 
   /*
@@ -2086,6 +2116,25 @@ try {
     } finally {
       await session.send('Network.setBlockedURLs', { urls: [] })
     }
+  })
+
+  /*
+   * The console collector, calibrated — and LAST, because calibrating it dirties it.
+   *
+   * `the skin raises no console or page errors` reads `pageErrors`, and this pushes an error into that
+   * same array on purpose. The two facts have to be asserted rather than described: a listener that
+   * silently stopped working would leave every run green while proving nothing, which is the failure
+   * this round exists to fix — and a later assertion added below this one would read a channel that is
+   * no longer clean, so the ordering contract is checked here instead of trusted.
+   */
+  await test('the console collector observes page console errors at all', async () => {
+    truthy(consoleAssertionsDone, 'every assertion that reads the collector has already run')
+    await evaluate(session, `(() => { console.error('dsh-ui-projects calibration'); return true })()`)
+    await sleep(300)
+    truthy(
+      pageErrors.some((message) => message.includes('dsh-ui-projects calibration')),
+      `a page console.error reaches the collector (${pageErrors.length} message(s) collected)`,
+    )
   })
 } finally {
   /*

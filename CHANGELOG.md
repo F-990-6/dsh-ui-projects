@@ -25,6 +25,74 @@ Verification vocabulary used below:
 
 ---
 
+## Round 30 — a duplicate checklist id is refused, and the console claim is made true
+
+**Status: `suite` 609 assertions / 0 failing, `host` green. THE BROWSER SUITE IS NOT VERIFIED, and
+this round must not be snapshotted as done until it is — see "What the verification runs found"
+below. The registry rule and the console collector are in place and their sabotages fired; what is
+missing is a clean run, and a clean run has been stopped deliberately.**
+
+Two things, both about a claim being broader than the thing that backed it.
+
+**What the verification runs found, and why they were stopped.** Both runs were the deliberate
+sabotage of the new listener (the listener removed, expecting the calibration to fail — it did, in
+both). They disagreed on how many assertions ran: 144 with TWO failures, then 143 with one. Only one
+conditional assertion can explain that difference — the one that runs only when the instance already
+had a checklist record, and which asserts that the run refused to delete it. So the first run found a
+record, tried to assert it had been protected, and FAILED: the removal protection added in Round 28
+still does not engage, and the record that was there is gone from `settings.yaml`. The document was
+also left with `enabled: []` — the skin switched off — which the suite is supposed to leave as it
+found it. Neither is explained by the write-path model this suite is built on, and rather than run
+again on somebody's data to find out, the runs stopped here. The next unit is: log the real payload
+shapes, make `--no-write` refuse every write to the `settings` key rather than trying to detect the
+harmful ones, and only then run the browser suite again.
+
+Two things, both about a claim being broader than the thing that backed it.
+
+**A project could declare the same test item twice.** The id shape and the label were validated;
+uniqueness was not. The consequences were quiet in the way this package spends its time removing: the
+card rendered two identical rows, and every part of the system keys a checklist by that id — the tick
+map, the stored record, the currency rule — so the two rows shared one tick and the record could not
+tell them apart. "Each declared item was read" stopped being a claim anybody could verify. The
+uniqueness check is now part of the same loop, refusing with the id and BOTH labels, because a
+duplicate is the one mistake an author cannot see from the card.
+
+**The asymmetry with project ids is deliberate and now written down.** A project id that arrives twice
+means REPLACE — that is how hot reload works, and `register` is documented that way — so it is
+accepted. A test item id that arrives twice inside one definition means the definition contradicts
+itself, so it is refused. Refused rather than warned about, and not de-duplicated at render time
+either: hiding the second row leaves the definition just as contradictory while making it invisible,
+and a render-time fix would not reach the store, which is where the collision actually happens.
+
+**"The skin raises no console or page errors" was listening to two channels out of three.** The suite
+collected `Runtime.exceptionThrown` and `Log.entryAdded`, so a page's own `console.error` — how React
+reports duplicate list keys, among much else — never reached it. The claim named "console" and the
+instrument did not. `Runtime.consoleAPICalled` is now collected too (errors only; the shell logs
+informational lines through the same event by design), and that gap is exactly what the uniqueness
+rule above removes one source of.
+
+**The collector is calibrated, and the ordering contract is asserted.** A listener that silently
+stopped working would leave every run green while proving nothing, so a test at the END of the run
+emits `console.error('dsh-ui-projects calibration')` and asserts it arrives. It runs last because
+calibrating dirties the channel the console assertion reads — a property that is now a failing
+assertion (`consoleAssertionsDone`) rather than a comment, because a comment cannot fail when somebody
+adds an assertion below it.
+
+**Doc corrections that came with it.** `checksStateOf`'s comment cited the duplicate-id allowance as
+part of its reason for checking per item; that reason is gone, and the per-item test is simply the
+correct one. And the checklist test's header still said the version stamp was "the part with teeth",
+which Round 29 made incomplete: the claim is about a pair.
+
+**Verification:** `suite` 609 / 0 (+4), `host` green, `derive --check` unchanged. Two sabotage runs:
+the uniqueness check commented out (the duplicate assertion fails — seen), and the
+`Runtime.consoleAPICalled` listener commented out (the calibration fails — seen, in a browser, twice).
+**The clean browser run has not happened**, so the console calibration is proven to detect a missing
+listener and not yet proven to pass with one. The README's item rules are now written out in full
+rather than implied — the three refusals and why the uniqueness one is stricter than the project-id
+rule beside it.
+
+---
+
 ## Round 29 — a confirmation is worth what its version AND its checklist are worth
 
 **Status: done. `suite` 605 assertions / 0 failing, `host` green. Snapshot 44.** The browser suite was
@@ -71,10 +139,11 @@ invalidates the claim, not the fact that somebody read these items. The visible 
 an out-of-date record shows what was read before, and that the confirm button can already be enabled
 when the panel opens — the same reading, one click from being re-recorded.
 
-**Known issue, recorded rather than fixed here.** `registry.js` validates a test item's id shape and
-its label, but not that ids are UNIQUE, so a project can declare the same item twice: the card renders
-two identical rows sharing one tick. Orthogonal to this round — it belongs to registry validation —
-and it is the reason the currency rule is per-item rather than count-based.
+**Known issue, CLOSED in Round 30.** `registry.js` validated a test item's id shape and its label, but
+not that ids were UNIQUE, so a project could declare the same item twice: the card rendered two
+identical rows sharing one tick. It was recorded here rather than fixed in this round because it
+belongs to registry validation, and it was the reason the currency rule was written per-item rather
+than count-based — an argument that has since been replaced by a better one (see `checksStateOf`).
 
 **Verification:** `suite` 605 / 0 (+21), `host` green, `derive --check` unchanged. A sabotage run that
 reverted the rule to "version only" failed the added-item assertion and the seeded-document assertion,
