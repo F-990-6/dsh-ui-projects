@@ -1671,6 +1671,36 @@ await test('the section label follows the real locale snapshot shape', async () 
   equal(detectLocale(bare.ctx), 'en', 'a composition with no locale service falls back to English')
 })
 
+await test('both languages carry exactly the same copy', async () => {
+  /*
+   * Key parity, which nothing asserted until a key was added to one language and not the other.
+   *
+   * The failure mode is silent and one-sided: a missing key in `zh` renders `undefined` — or, if the
+   * panel falls back, an English sentence inside a Chinese interface — while every assertion written
+   * against the English copy keeps passing. This compares the two structures key by key, including
+   * the nested groups (`tests`, `badges`, `scopes`), because the nested ones are where a new string
+   * actually gets added.
+   */
+  const shapes = {
+    zh: strings('zh'),
+    en: strings('en'),
+  }
+  /** @param {unknown} value @param {string} at @returns {string[]} */
+  const paths = (value, at) => {
+    if (value === null || typeof value !== 'object') return [at]
+    return Object.keys(value).flatMap((key) => paths(value[key], `${at}.${key}`))
+  }
+  const zhPaths = paths(shapes.zh, 'zh')
+  const enPaths = paths(shapes.en, 'en').map((path) => path.replace(/^en/, 'zh'))
+  const missingInZh = enPaths.filter((path) => !zhPaths.includes(path))
+  const missingInEn = zhPaths.filter((path) => !enPaths.includes(path))
+  equal(JSON.stringify(missingInZh), '[]', `copy that exists in en but not in zh`)
+  equal(JSON.stringify(missingInEn), '[]', `copy that exists in zh but not in en`)
+  // And the new key is really in both, so the comparison above is not vacuous.
+  equal(shapes.zh.tests.withdraw, '撤回确认', 'the withdrawal label is translated')
+  equal(shapes.en.tests.withdraw, 'Withdraw confirmation', 'and it exists in English too')
+})
+
 await test('materialising the entry never touches an internal module, exactly as the loader does', () => {
   /*
    * The sharpest load-time contract, and the one a browser enforces: the shell materializes
@@ -3184,6 +3214,9 @@ await test('confirming records the version, and a new version invalidates it', a
   const stored = harness.runtime.settingsFor('confirmable')?.checks
   equal(stored?.version, '1.0.0', 'the version travels inside the record, so one write carries both')
   equal(stored?.items?.one, true, 'and the ticked item with it')
+  // And the withdrawal is offered exactly when there is something to withdraw — the pair matters,
+  // because a button with nothing to act on is as wrong as a record with no way to retract it.
+  contains(harness.render(), 'data-uip-action="clear-checks"', 'the card offers to withdraw the confirmation')
   /*
    * And the panel was told, which is the half that has no other mechanism behind it.
    *
@@ -3216,6 +3249,70 @@ await test('confirming records the version, and a new version invalidates it', a
     JSON.stringify(harness.runtime.settingsFor('confirmable')?.checks?.items),
     '{"one":true}',
     'only declared items are recorded',
+  )
+
+  /*
+   * WITHDRAWING THE CONFIRMATION, and the three ways this could have been quietly wrong.
+   *
+   * The record is a claim about a past run, and the three properties that make removing it honest are:
+   * the key is GONE rather than emptied (an empty object survives every `=== undefined` check in the
+   * codebase), the project's other options SURVIVE (retracting a claim must not cost a
+   * configuration), and it works whether or not the project is APPLIED (a card shows a stale
+   * confirmation while the project is off, so it has to be able to withdraw it there too).
+   */
+  contains(JSON.stringify(harness.runtime.settingsFor('confirmable')), '"checks"', 'there is a record to withdraw')
+  // A second option, to prove the withdrawal is surgical rather than a project-wide wipe.
+  await harness.runtime.contextFor('confirmable').writeSetting('strength', 7)
+  await harness.store.clearChecks('confirmable')
+  const remaining = harness.runtime.settingsFor('confirmable')
+  equal(remaining?.checks, undefined, 'the confirmation key is gone')
+  equal(JSON.stringify(remaining), '{"strength":7}', 'and the project kept its other options')
+  excludes(harness.render(), 'Confirmed for v', 'the card no longer claims a verification')
+  excludes(
+    harness.render(),
+    'data-uip-action="clear-checks"',
+    'and offers no withdrawal for a record that is already gone',
+  )
+
+  /*
+   * The same withdrawal from a project that is NOT applied.
+   *
+   * `contextFor` answers undefined for a project that is off, which is exactly why the runtime owns
+   * this path instead of the key being written through the project context — and `settingsFor` reads
+   * the record with the project off, by design, so a card can say "confirmed for 1.0.0" while the
+   * skin is switched off. Reading it there and being unable to withdraw it there is the asymmetry
+   * this asserts against.
+   */
+  await harness.store.confirmChecks('confirmable', ['one'])
+  contains(JSON.stringify(harness.runtime.settingsFor('confirmable')), '"checks"', 'a record exists again')
+  await harness.runtime.disable('confirmable')
+  equal(harness.runtime.contextFor('confirmable'), undefined, 'the project is off, so it has no context')
+  contains(
+    JSON.stringify(harness.runtime.settingsFor('confirmable')),
+    '"checks"',
+    'but its record is still readable with the project off',
+  )
+  await harness.store.clearChecks('confirmable')
+  const offAfter = harness.runtime.settingsFor('confirmable')
+  equal(offAfter?.checks, undefined, 'and withdrawable while off')
+  equal(JSON.stringify(offAfter), '{"strength":7}', 'without touching the options beside it')
+
+  /*
+   * `resetAll`, which the docstring has always described as forgetting every user choice.
+   *
+   * It kept `settings`, so a reset could leave "confirmed for 1.0.0" standing on a card whose options
+   * had just been restored to the shipped defaults. Asserted on the persisted document as well as the
+   * in-memory map, because the document is what a reload reads.
+   */
+  await harness.runtime.enable('confirmable')
+  await harness.store.confirmChecks('confirmable', ['one'])
+  contains(JSON.stringify(harness.runtime.settingsFor('confirmable')), '"checks"', 'a record exists again')
+  await harness.runtime.resetAll()
+  equal(harness.runtime.settingsFor('confirmable'), undefined, 'resetAll clears the in-memory settings')
+  excludes(
+    JSON.stringify(harness.settingsSection() ?? {}),
+    '"confirmable"',
+    'and the persisted record carries no settings for it either',
   )
 })
 

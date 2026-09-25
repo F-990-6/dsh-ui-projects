@@ -159,6 +159,7 @@ function isChecksCurrent(project, runtime) {
  * @property {(id: string) => Promise<void>} toggle
  * @property {(id: string) => Promise<void>} resetOne
  * @property {() => Promise<void>} resetAll
+ * @property {(id: string) => Promise<void>} clearChecks
  * @property {(id: string, itemIds: string[]) => Promise<void>} confirmChecks
  * @property {import('./persist.js').PersistAdapter['kind']} storageKind
  */
@@ -252,6 +253,15 @@ export function createStore(input) {
     toggle: (id) => runtime.toggle(id),
     resetOne: (id) => runtime.resetOne(id),
     resetAll: () => runtime.resetAll(),
+    /**
+     * Withdraw a recorded verification, leaving the project's other options alone.
+     *
+     * The counterpart to `confirmChecks` below, and it goes through the runtime rather than the
+     * project context for the reason stated there: a context exists only while the project is
+     * applied, and a confirmation is readable — and therefore withdrawable — while it is off.
+     * @param {string} id
+     */
+    clearChecks: (id) => runtime.clearChecks(id),
     /**
      * Record a verification: these items, for the version currently registered.
      *

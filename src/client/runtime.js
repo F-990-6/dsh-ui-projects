@@ -277,11 +277,22 @@ export class UiProjectRuntime {
   async resetAll() {
     return this.#serialize(async () => {
       for (const id of this.registry.activeIds()) await this.#disable(id, { persist: false })
-      await this.#write({ ...this.persist.read(), initialized: false, enabled: [], touched: false })
+      /*
+       * Every stored option goes, not only the enabled list.
+       *
+       * The docstring has always said "forget every user choice" while the code kept `settings`, and
+       * the gap was invisible because `settings` held nothing but recorded verifications — a reset
+       * that left "confirmed for 3.0.0" on a card whose settings had just been described as restored
+       * to the shipped default. Clearing the whole map closes it before a project that declares a
+       * real control makes it obvious.
+       */
+      this.settings.clear()
+      await this.#write({ ...this.persist.read(), initialized: false, enabled: [], settings: {}, touched: false })
       for (const project of this.registry.list()) {
         if (project.defaultEnabled) await this.#enable(project.id, { persist: false })
       }
       this.#syncPerfAttribute()
+      this.registry.notify()
     })
   }
 
@@ -318,8 +329,41 @@ export class UiProjectRuntime {
       const record = this.persist.read()
       const enabled = record.enabled.filter((entry) => entry !== id)
       if (project.defaultEnabled && !enabled.includes(id)) enabled.push(id)
-      await this.#write({ ...record, initialized: true, enabled })
+      /*
+       * The project's own options go too, which includes any recorded verification.
+       *
+       * A button that says "restore Liquid Glass to its default" and leaves a confirmation behind is
+       * a partial reset wearing the name of a complete one: the card would still claim a version had
+       * been verified, by the same person who just asked for the defaults back.
+       */
+      this.settings.delete(id)
+      await this.#write({ ...record, initialized: true, enabled, settings: this.#allSettings() })
       this.#syncPerfAttribute()
+      this.registry.notify()
+    })
+  }
+
+  /**
+   * Forget a project's recorded verification, leaving its other options alone.
+   *
+   * Deliberately NOT routed through the project context, even though `confirmChecks` is. A context
+   * exists only for an APPLIED project, and `settingsFor` above already reads a confirmation with the
+   * project switched off — a card is expected to say "confirmed for 3.0.0" while the skin is off, so
+   * it has to be able to withdraw that claim in the same state. Writing through the context would
+   * have made the control do nothing at exactly the moment the record is most likely to be stale, and
+   * a button that silently does nothing reports nothing.
+   * @param {string} id
+   * @returns {Promise<void>}
+   */
+  async clearChecks(id) {
+    return this.#serialize(async () => {
+      const values = this.settings.get(id)
+      if (values === undefined || !('checks' in values)) return
+      const next = { ...values }
+      delete next.checks
+      this.#applySettings(id, next)
+      await this.#write({ ...this.persist.read(), settings: this.#allSettings() })
+      this.registry.notify()
     })
   }
 
@@ -676,7 +720,7 @@ export class UiProjectRuntime {
         const next = { ...(this.settings.get(id) ?? {}) }
         if (value === undefined) delete next[key]
         else next[key] = value
-        this.settings.set(id, next)
+        this.#applySettings(id, next)
         await this.#write({ ...this.persist.read(), settings: this.#allSettings() })
         /*
          * Tell the registry, so the panel re-reads.
@@ -704,6 +748,22 @@ export class UiProjectRuntime {
       if (Object.keys(values).length > 0) all[id] = values
     }
     return all
+  }
+
+  /**
+   * Replace one project's stored options, dropping the entry entirely when nothing is left in it.
+   *
+   * `#allSettings()` skips empty records, so an emptied project already vanished from the DOCUMENT —
+   * but the in-memory map kept `{ id: {} }`, which meant `settingsFor(id)` answered an empty object
+   * rather than nothing, and every reader had to treat "no settings" and "settings that happen to be
+   * empty" as the same case. Deleting the entry is what makes the two the same thing, and it is the
+   * whole requirement for a withdrawn confirmation: absent, not present-and-empty.
+   * @param {string} id
+   * @param {Record<string, unknown>} values
+   */
+  #applySettings(id, values) {
+    if (Object.keys(values).length === 0) this.settings.delete(id)
+    else this.settings.set(id, values)
   }
 
   /**

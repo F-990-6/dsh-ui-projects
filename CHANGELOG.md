@@ -25,6 +25,60 @@ Verification vocabulary used below:
 
 ---
 
+## Round 26 — withdrawing a recorded verification
+
+**Status: done. `suite` 517 assertions / 0 failing, `host` green, `browser` 108 assertions / 0
+failing. `settings.yaml` byte-identical after the run. Snapshot 40.**
+
+A confirmation could be made and never taken back. The only way to remove one was to reset the whole
+project, which also discarded its settings — a destructive action to undo a small mistake, and the
+last behavioural item left on step 1's specification.
+
+**Changed**
+
+- **The card's reset clears the project's stored options**, not just its enabled state. "Reset Liquid
+  Glass to its default" that leaves "confirmed for 3.0.0" on the card is a partial reset wearing the
+  name of a complete one.
+- **`Restore default UI` clears every project's options.** Its docstring has always said it forgets
+  every user choice while the code kept `settings`; the discrepancy was invisible only because
+  `settings` held nothing but confirmations.
+- **A `Withdraw confirmation` button** in the checklist, shown only when there is a record to
+  withdraw. Separate from the reset on purpose: retracting a claim should not also cost a
+  configuration.
+- Copy in both languages, and the checklist's ticks clear with the record.
+
+**Three decisions worth recording**
+
+1. **Withdrawal is owned by the RUNTIME, not by the project context.** `confirmChecks` writes through
+   the project's context, which exists only while the project is applied — and `settingsFor` reads a
+   confirmation with the project switched off, by design, so a card can say "confirmed for 3.0.0"
+   while the skin is off. Reading it there and being unable to withdraw it there is an asymmetry that
+   would have shown up as a button doing nothing in exactly the state where a stale confirmation is
+   most likely to be sitting there. `clearChecks` is a runtime method for that reason, and a sabotage
+   run that routed it back through the context failed the assertion written for it.
+2. **The key is deleted, not emptied.** An empty object survives every `=== undefined` check in the
+   codebase, so "cleared" and "never confirmed" would have become two states that read the same in
+   some places and differently in others. `#applySettings` now drops a project's entry when the last
+   key leaves it, which also makes `settingsFor(id)` mean the same thing as "no settings".
+3. **The ticks go with the record.** They are seeded from the stored confirmation, so withdrawing it
+   would otherwise leave a fully ticked checklist beside no record at all — indistinguishable from
+   the reading that was just retracted, one click from being recorded again.
+
+**Also asserted, because nothing did.** Both languages now have to carry exactly the same copy, key
+by key, including the nested groups. Nothing checked this before, and the failure mode is one-sided
+and silent: a key missing from `zh` renders English inside a Chinese interface while every assertion
+written against the English copy keeps passing. A sabotage run that deleted `zh.tests.withdraw` failed
+the check with the exact path.
+
+**Verification:** `suite` 517 / 0 (+18: withdrawal, the off-state path, `resetAll`, the parity table,
+and the button's presence-when-present), `host` green, `browser` 108 / 0 with a new check that ticks,
+confirms, presses the card's reset, and asserts the record, the withdrawal offer and the ticks are all
+gone — and that the skin went back to its shipped default, which for this skin is OFF. Three sabotage
+runs: clearing routed through the context, `resetAll` keeping settings, and the missing `zh` key. Each
+failed exactly the assertion written for it and nothing else. `settings.yaml` unchanged byte for byte.
+
+---
+
 ## Round 25 — the browser suite runs green, and what it had really been measuring
 
 **Status: done. `suite` 499 assertions / 0 failing, `host` green, `browser` 99 assertions / 0

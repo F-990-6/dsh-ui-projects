@@ -154,6 +154,7 @@ function UiProjectsSection(props) {
               onToggle: () => run(project.id, store.toggle(project.id)),
               onReset: () => run(project.id, store.resetOne(project.id)),
               onConfirmChecks: (itemIds) => run(project.id, store.confirmChecks(project.id, itemIds)),
+              onClearChecks: () => run(project.id, store.clearChecks(project.id)),
             }),
           ),
         ),
@@ -181,10 +182,22 @@ function UiProjectsSection(props) {
  * @returns {any}
  */
 function Checklist(props) {
-  const { R, t, project, pending, onConfirm } = props
+  const { R, t, project, pending, onConfirm, onClear } = props
   const stored = project.checksCurrent ? project.checks : undefined
+  const hasRecord = project.checks !== undefined
   const [ticked, setTicked] = React.useState(() => ({ ...(stored?.items ?? {}) }))
   const all = project.testItems.length > 0 && project.testItems.every((item) => ticked[item.id] === true)
+
+  /*
+   * When the record goes away, the ticks go with it.
+   *
+   * The boxes are seeded from the stored confirmation at mount, so withdrawing that confirmation would
+   * otherwise leave a fully ticked checklist standing beside no record at all — a reading nobody can
+   * tell apart from the one that was just retracted, one click away from being recorded again.
+   */
+  React.useEffect(() => {
+    if (!hasRecord) setTicked({})
+  }, [hasRecord])
 
   const rows = project.testItems.map((item) =>
     R.createElement(
@@ -225,6 +238,27 @@ function Checklist(props) {
         },
         t.tests.markPassed,
       ),
+      /*
+       * Withdrawing the confirmation, shown only when there is one to withdraw.
+       *
+       * Separate from the card's reset on purpose: retracting a claim should not also cost the
+       * project's settings, and the card's reset is a bigger action than a person who confirmed by
+       * mistake is asking for. It is not gated on the boxes — it is about the RECORD, not the reading
+       * in progress — so it stays available while the boxes are empty.
+       */
+      hasRecord
+        ? R.createElement(
+            'button',
+            {
+              type: 'button',
+              className: 'uip-button',
+              'data-uip-action': 'clear-checks',
+              disabled: pending,
+              onClick: onClear,
+            },
+            t.tests.withdraw,
+          )
+        : null,
     ),
   )
 
@@ -255,7 +289,7 @@ function Checklist(props) {
  * @returns {any}
  */
 function createCard(input) {
-  const { React: R, project, t, pending, activeNames, outOfOrder, conflictsHere, onToggle, onReset, onConfirmChecks } = input
+  const { React: R, project, t, pending, activeNames, outOfOrder, conflictsHere, onToggle, onReset, onConfirmChecks, onClearChecks } = input
   const name = project.name
 
   const badges = [
@@ -357,6 +391,7 @@ function createCard(input) {
         project,
         pending,
         onConfirm: (itemIds) => onConfirmChecks(project.id, itemIds),
+        onClear: () => onClearChecks(project.id),
       }),
     )
   }
@@ -366,7 +401,14 @@ function createCard(input) {
       { className: 'uip-actions', key: 'actions' },
       R.createElement(
         'button',
-        { type: 'button', className: 'uip-button', onClick: onReset, disabled: pending },
+        {
+          type: 'button',
+          className: 'uip-button',
+          // Same reason as the checklist's buttons: the label is translated, the hook is not.
+          'data-uip-action': 'reset-one',
+          onClick: onReset,
+          disabled: pending,
+        },
         t.resetOne(name),
       ),
     ),

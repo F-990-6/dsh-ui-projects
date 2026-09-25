@@ -45,6 +45,7 @@ export const STRINGS = {
     tests: {
       summary: (count) => `Verification checklist (${count})`,
       markPassed: 'Mark as passed',
+      withdraw: 'Withdraw confirmation',
       passed: (version) => `Confirmed for v${version}.`,
       stale: (version) => `Confirmed for v${version}; this version needs confirming again.`,
     },
@@ -101,6 +102,7 @@ export const STRINGS = {
     tests: {
       summary: (count) => `验收清单（${count} 项）`,
       markPassed: '标记为已通过',
+      withdraw: '撤回确认',
       passed: (version) => `已针对 v${version} 确认。`,
       stale: (version) => `此前针对 v${version} 确认过；当前版本需要重新确认。`,
     },

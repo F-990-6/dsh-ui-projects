@@ -109,8 +109,8 @@ src/client/
 
 Some things a test cannot judge and a person can: whether text over the glass is comfortable to
 read, whether the settings dialog is centred, whether the first frame flashes. A project declares
-those as `testItems`, and its card grows a disclosure with one checkbox each and a **Mark as passed**
-button.
+those as `testItems`, and its card grows a disclosure with one checkbox each, a **Mark as passed**
+button, and — once something has been recorded — a **Withdraw confirmation** button.
 
 The button refuses until every box is ticked, and confirming is deliberately not an automatic
 consequence of ticking the last one: "I looked at all of these" is a claim a person makes, and the
@@ -121,6 +121,23 @@ namespace, and one write rather than two, so the stamp cannot disagree with the 
 That version stamp is the part with teeth: **shipping a new version invalidates the confirmation**,
 because the thing that was verified has changed. The old record is reported rather than deleted —
 "confirmed for 1.0.0, needs confirming again" tells a reader something an empty checkbox cannot.
+
+**Withdrawing** removes that key outright rather than emptying it, leaves the project's other options
+alone, and takes the ticks with it: a fully ticked checklist standing beside no record is a reading
+nobody can tell apart from the one that was just retracted. It is deliberately not the same action as
+the card's reset — retracting a claim should not also cost a configuration, and the reset is a bigger
+thing than someone who confirmed by mistake is asking for.
+
+The card's reset **does** clear it, along with the project's other stored options: a button that says
+"reset to its default" and leaves "confirmed for 3.0.0" behind is a partial reset wearing the name of
+a complete one. The same is true of **Restore default UI**, whose docstring has always said it forgets
+every user choice.
+
+Withdrawal is owned by the runtime rather than by the project context, and that choice is the whole
+reason it works: a context exists only while a project is applied, and a confirmation is *readable*
+with the project switched off (see above), so it has to be withdrawable there too. Routed through the
+context, the control would have done nothing in exactly the state where a stale confirmation is most
+likely to be sitting on a card.
 
 Confirming requires the project to be applied, which is the point rather than a limitation: a
 checklist is confirmed by looking at the running thing. *Reading* a confirmation does not, so a card
@@ -618,8 +635,8 @@ a mobile viewport gets the reduced blur with no overflow, and — measuring the 
 screenshot pixels — text over the glass stays readable. Turning the switch off must
 restore the *exact* set of blurred surfaces and the original token values. It also checks the
 dark palette, the `prefers-contrast: more` branch in BOTH themes, the reduced tier on a device
-forced to be weak, the checklist's confirmation, and the first frame with this bundle blocked
-(`--shot` writes `glass.png` and `glass-dark.png`).
+forced to be weak, the checklist's confirmation and its withdrawal through the card's reset, and the
+first frame with this bundle blocked (`--shot` writes `glass.png` and `glass-dark.png`).
 
 Dark mode is entered the way a skin actually sees it: by setting `data-ds-dark-theme` on `body`,
 which is the whole interface between the shipped theme feature and a skin. Driving the Appearance

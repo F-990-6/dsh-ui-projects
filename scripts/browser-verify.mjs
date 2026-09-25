@@ -1289,6 +1289,97 @@ try {
   })
 
   /*
+   * WITHDRAWING IT AGAIN, through the card's own reset button, in a running browser.
+   *
+   * The order is deliberate: this re-records a confirmation first, so the check is about the removal
+   * rather than inheriting a state from the test above — and in `--no-write` mode that matters twice
+   * over, because the refused write leaves the confirmation in memory only, so there is still
+   * something on the card to withdraw.
+   *
+   * What it asserts is the pair a reset has to satisfy: the record goes, and the reading goes with it.
+   * A card that kept its boxes ticked would leave a full checklist standing beside no confirmation,
+   * one click away from recording the same claim again.
+   */
+  await test('the card reset withdraws the confirmation and the ticks with it', async () => {
+    const openAndTick = `(() => {
+      const details = document.querySelector('details.uip-tests[data-project="liquid-glass"]')
+      if (details === null) return { error: 'no disclosure' }
+      details.open = true
+      const boxes = Array.from(details.querySelectorAll('input[type=checkbox]'))
+      for (const box of boxes) if (!box.checked) box.click()
+      return { boxes: boxes.length }
+    })()`
+    const recordState = `(() => {
+      const details = document.querySelector('details.uip-tests[data-project="liquid-glass"]')
+      if (details === null) return { error: 'no disclosure' }
+      const record = details.querySelector('[data-uip-checks]')
+      const boxes = Array.from(details.querySelectorAll('input[type=checkbox]'))
+      return {
+        record: record === null ? null : record.getAttribute('data-uip-checks'),
+        withdrawOffered: details.querySelector('button[data-uip-action="clear-checks"]') !== null,
+        ticked: boxes.filter((box) => box.checked).length,
+        boxes: boxes.length,
+      }
+    })()`
+
+    await ensurePanel(session)
+    // State stated rather than inherited: this check needs the skin running, and it ends by switching
+    // it off, so it must not depend on which phase left it in which state.
+    await setSkin(session, true)
+    const ticked = await evaluate(session, openAndTick)
+    truthy(ticked.boxes >= 1, `the checklist has items (${JSON.stringify(ticked)})`)
+    await waitFor(
+      session,
+      `(() => {
+        const button = document.querySelector('details.uip-tests[data-project="liquid-glass"] button[data-uip-action="confirm-checks"]')
+        return button !== null && !button.disabled
+      })()`,
+      'the confirm button to become available',
+    )
+    await evaluate(
+      session,
+      `document.querySelector('details.uip-tests[data-project="liquid-glass"] button[data-uip-action="confirm-checks"]').click()`,
+    )
+    await waitFor(
+      session,
+      `document.querySelector('details.uip-tests[data-project="liquid-glass"] [data-uip-checks]') !== null`,
+      'a confirmation to exist',
+    )
+    const recorded = await evaluate(session, recordState)
+    equal(recorded.withdrawOffered, true, 'the card offers to withdraw it')
+    equal(recorded.ticked, recorded.boxes, 'every item is ticked')
+
+    // The reset button, found by its hook rather than by its translated label.
+    const reset = await evaluate(
+      session,
+      `(() => {
+        const button = document.querySelector('li.uip-card[data-project="liquid-glass"] button[data-uip-action="reset-one"]')
+        if (button === null) return { error: 'no reset button' }
+        button.click()
+        return { ok: true }
+      })()`,
+    )
+    truthy(reset.ok, `the card reset was clicked (${JSON.stringify(reset)})`)
+
+    await waitFor(
+      session,
+      `document.querySelector('details.uip-tests[data-project="liquid-glass"] [data-uip-checks]') === null`,
+      'the confirmation to be withdrawn',
+    )
+    const cleared = await evaluate(session, recordState)
+    equal(cleared.record, null, 'the card no longer claims a verification')
+    equal(cleared.withdrawOffered, false, 'and offers no withdrawal for a record that is gone')
+    equal(cleared.ticked, 0, 'the ticks went with the record, so nothing is left half-claimed')
+    /*
+     * The reset is "back to the shipped default", and this skin's default is OFF — so the assertion
+     * is that it went off, not that it stayed on. The state is then put back, because every phase
+     * below measures the skin and this one has just switched it off.
+     */
+    equal(await skinIsOn(session), false, 'and the reset returned the skin to its shipped default, which is off')
+    await setSkin(session, true)
+  })
+
+  /*
    * A request for more contrast, answered where it can actually be measured: in pixels.
    *
    * `Emulation.setEmulatedMedia` is how a real `prefers-contrast: more` is presented to the page
