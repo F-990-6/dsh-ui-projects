@@ -422,9 +422,20 @@ reason: an id literally named `index` would be indistinguishable from a collapse
 
 ## Deliberate limits
 
-- **No host-side settings namespace yet.** The client prefers `ctx.settingsScope` and
-  falls back to `localStorage`; registering a Host namespace for `ui-projects` would make
-  the settings-document path the only one, with no client change.
+- **Persistence has two backends, and only one of them is authoritative.** The `ui-projects`
+  namespace is registered by the host half (`src/host/index.js`) and bound on the client through
+  `ctx.settingsScope`, so the record lives in `$DSH_HOME/settings.yaml` under `ui-projects`. That
+  is the authoritative store and what a running instance uses. `window.localStorage` remains for
+  the one case the settings document cannot serve: a page that is not loopback, where the Host
+  keeps preferences process-local and the bound scope reports `mode: 'memory'`. The client half
+  declares `settingsScope` in its `inject` list, so the adapter is chosen *after* the settings
+  transport is up rather than racing it, and `runtime.start()` waits for the document's first read
+  before applying a record — reading earlier would return the empty record and silently restore
+  the shipped defaults. The card names the backend in use ("Saved with your dsh settings" or
+  "Saved in this browser", from `persist.kind`), and the first successful write through the
+  settings document deletes the `localStorage` copy, so the two can never become competing
+  records. A skew or a waited-out deadline shows up as `persistKind` / `persistReady` /
+  `persistDiverged` in the diagnostics overlay.
 - **The scope transform is not a full CSS parser.** It handles rule blocks,
   comma-separated selector lists, nested conditional at-rules and comments — the shapes
   this repository authors. Minified or exotic CSS should be normalized first.

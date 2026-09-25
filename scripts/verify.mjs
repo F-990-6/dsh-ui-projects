@@ -405,13 +405,35 @@ function createStorage() {
 /* ── fake Cordis context ──────────────────────────────────────────────────── */
 
 /**
+ * The settings namespace this plugin owns and binds.
+ *
+ * Named once here because three places need the same string: seeding the fake document, the
+ * `settingsScope` fake's lookup, and the harness's `settingsSection()` reader.
+ */
+const SETTINGS_SCOPE_NS = 'ui-projects'
+
+/**
  * @param {object} input
  * @param {ReturnType<typeof createFakeDom>} input.dom
  * @param {boolean} [input.withSettingsScope]
+ * @param {Record<string, unknown>} [input.scopeRecord] The record the settings document already
+ *   holds when the page loads, so a test can start from a user's existing choice.
+ * @param {number} [input.scopeDelayMs] How long the scope stays `idle` before its first read
+ *   settles. This reproduces the real cold-load gap; without it the fake is instantly `ready`
+ *   and the whole readiness path is untestable.
+ * @param {string} [input.scopeError] Make the read fail: the status stays `idle` and `error` is
+ *   set, which is the terminal state a broken transport leaves behind.
  * @param {boolean} [input.withTheme]
  */
 function createCtx(input) {
-  const { dom, withSettingsScope = false, withTheme = false } = input
+  const {
+    dom,
+    withSettingsScope = false,
+    scopeRecord,
+    scopeDelayMs = 0,
+    scopeError,
+    withTheme = false,
+  } = input
   /** @type {Map<string, any>} */
   const services = new Map()
   /** @type {Array<() => void>} */
@@ -423,18 +445,45 @@ function createCtx(input) {
   let themeLayers = 0
 
   if (withSettingsScope) {
+    // Seeded before anything binds, the way `settings.yaml` already holds a record by the time a
+    // page loads.
+    if (scopeRecord !== undefined) namespaces.set(SETTINGS_SCOPE_NS, scopeRecord)
     services.set('settingsScope', {
       bind(/** @type {{ namespace: string }} */ spec) {
         let revision = 1
         const listeners = new Set()
+        /*
+         * `status` is the field the plugin's readiness wait reads, and in the real service it
+         * starts at `idle`: ui-settings kicks off the first `settings.describe` read without
+         * awaiting it and publishes the service immediately, so every consumer binds while the
+         * document is still in flight. `scopeDelayMs` is that gap, made controllable.
+         *
+         * A FAILED read never reaches `ready` either: ui-settings keeps the last good view and
+         * leaves the status at `idle`, putting the reason in `error`. `scopeError` reproduces
+         * exactly that shape, which is why it also suppresses the delayed release.
+         */
+        const failed = scopeError !== undefined
+        const delayed = scopeDelayMs > 0
+        const pending = failed || delayed
+        const settled = namespaces.get(spec.namespace)
         const snapshot = {
-          status: 'ready',
-          value: namespaces.get(spec.namespace),
+          status: pending ? 'idle' : 'ready',
+          value: pending ? undefined : settled,
           base: undefined,
-          user: namespaces.get(spec.namespace),
+          user: pending ? undefined : settled,
           revision,
           writable: true,
           mode: 'host',
+          error: scopeError ?? null,
+        }
+        if (delayed && !failed) {
+          setTimeout(() => {
+            snapshot.status = 'ready'
+            snapshot.value = namespaces.get(spec.namespace)
+            snapshot.user = snapshot.value
+            revision += 1
+            for (const listener of listeners) listener()
+          }, scopeDelayMs)
         }
         return {
           getSnapshot: () => ({ ...snapshot, revision }),
@@ -874,7 +923,7 @@ let activeCleanup
  *
  * Each boot tears down the previous one first, so tests neither leak effects into
  * one another nor double-dispose them.
- * @param {{ withStorage?: boolean | ReturnType<typeof createStorage>, withSettingsScope?: boolean, withTheme?: boolean, detachedFrame?: boolean, viewportWidth?: number, viewportHeight?: number, fakeTimers?: boolean }} [options]
+ * @param {{ withStorage?: boolean | ReturnType<typeof createStorage>, withSettingsScope?: boolean, scopeRecord?: Record<string, unknown>, scopeDelayMs?: number, scopeError?: string, withTheme?: boolean, detachedFrame?: boolean, viewportWidth?: number, viewportHeight?: number, fakeTimers?: boolean }} [options]
  */
 async function boot(options = {}) {
   // Tear down BEFORE the sandbox globals move: a previous instance's disposers
@@ -955,6 +1004,9 @@ async function boot(options = {}) {
   const host = createCtx({
     dom,
     withSettingsScope: options.withSettingsScope,
+    scopeRecord: options.scopeRecord,
+    scopeDelayMs: options.scopeDelayMs,
+    scopeError: options.scopeError,
     withTheme: options.withTheme,
   })
   await plugin.apply(host.ctx)
@@ -984,7 +1036,7 @@ async function boot(options = {}) {
     timers,
     persistKind: runtime.persist.kind,
     /** The settings namespace this plugin wrote, as the fake host sees it. */
-    settingsSection: () => host.namespaces.get('ui-projects'),
+    settingsSection: () => host.namespaces.get(SETTINGS_SCOPE_NS),
     /**
      * The project's marker, which the runtime sets on the BODY: project styles are
      * scoped there because that is where the shipped client declares its tokens.
@@ -1072,9 +1124,20 @@ function renderPanel(plugin) {
 
 process.stdout.write(`\ndsh-ui-projects verification\nbundle: ${origin}\n\n`)
 
-await test('the bundle registers one plugin with exactly one hard dependency', () => {
+await test('the bundle registers one plugin with the two hard dependencies it needs', () => {
   equal(plugin.name, 'ui-projects', 'plugin name')
-  equal(plugin.inject, ['slots'], 'inject list')
+  /*
+   * `settingsScope` is a TIMING dependency rather than a functional one: the plugin degrades to
+   * localStorage without it, so nothing here fails loudly when it is missing. But it binds the
+   * scope synchronously in `apply`, while the provider appears only after the host handshake — so
+   * leaving it out meant the bind always ran first and always lost, and the switch silently
+   * persisted per-browser while the settings document kept a stale copy.
+   *
+   * The list is asserted, not described, because a missing declaration is invisible to every
+   * behavioural test in this file: `boot()` calls `plugin.apply(ctx)` directly, which bypasses
+   * exactly the parking the declaration controls.
+   */
+  equal(plugin.inject, ['slots', 'settingsScope'], 'inject list')
   equal(typeof plugin.apply, 'function', 'apply')
   equal(typeof plugin.ready, 'function', 'ready() exposes the applied-state settlement')
   equal(plugin.section, undefined, 'nothing is published before the plugin is applied')
@@ -1341,6 +1404,40 @@ await test('state uses the dsh settings document when the host offers a scope', 
   equal(JSON.stringify(harness.settingsSection()?.enabled), '[]', 'disabled recorded as an empty set')
 })
 
+/*
+ * Every cold load binds the scope while the settings document is still in flight: ui-settings
+ * starts the describe read without awaiting it and publishes the service straight away. Reading
+ * the snapshot at that moment returns the EMPTY record, and the empty record means "the user has
+ * never chosen anything" — so `start()` restored the shipped defaults, and the skin stayed off
+ * even though the document said it was on.
+ *
+ * The declared inject list is asserted in "the bundle registers one plugin with the two hard
+ * dependencies it needs" above; this is the behaviour that declaration buys.
+ */
+await test('a record that arrives after the bind is still restored', async () => {
+  const harness = await boot({
+    withSettingsScope: true,
+    scopeDelayMs: 20,
+    scopeRecord: { v: 1, initialized: true, enabled: ['liquid-glass'], settings: {}, touched: true },
+  })
+
+  equal(harness.persistKind, 'settings', 'the settings document is the backend')
+  equal(harness.runtime.persist.readiness, 'ready', 'and the wait settled on a real answer')
+  equal(harness.registry.isEnabled('liquid-glass'), true, 'the stored choice is applied, not the shipped default')
+  truthy(harness.projectMarker('liquid-glass') !== null, 'so the skin is genuinely on')
+})
+
+await test('a failed read settles instead of waiting out the deadline', async () => {
+  // A failed describe read leaves the status at `idle` and puts the reason in `error`, so a
+  // readiness check that only watched `status` would burn the full two seconds on every broken
+  // transport. Terminal means terminal.
+  const harness = await boot({ withSettingsScope: true, scopeError: 'transport down' })
+
+  equal(harness.runtime.persist.readiness, 'error', 'a snapshot carrying an error is terminal')
+  equal(harness.persistKind, 'settings', 'the backend is still the settings document')
+  equal(harness.registry.isEnabled('liquid-glass'), false, 'and the defaults apply rather than a hang')
+})
+
 await test('resetAll returns to the shipped default in one step', async () => {
   const harness = await boot()
   await harness.runtime.enable('liquid-glass')
@@ -1416,10 +1513,10 @@ await test('the entry module loads without touching React or a project', () => {
   const { entry: probe } = materializeEntry(bundleSource, strict)
   equal(requested, [], 'the entry module requests nothing from the shell at load time')
   equal(typeof probe.apply, 'function', 'it still exports a usable plugin')
-  equal(probe.inject, ['slots'], 'and still declares its service dependency')
+  equal(probe.inject, ['slots', 'settingsScope'], 'and still declares its service dependencies')
 })
 
-await test('the project modules register only once the settings slot is declared', () => {
+await test('the project modules register only once the settings slot is declared', async () => {
   const requested = []
   /** The shell's frozen table: React and nothing else. */
   const shellTable = (/** @type {string} */ id) => {
@@ -1470,6 +1567,17 @@ await test('the project modules register only once the settings slot is declared
 
   try {
     probe.apply(ctx)
+    /*
+     * `apply` starts the runtime asynchronously, and this probe's context cannot hand the
+     * settlement back — its `effect` returns the disposer, not the promise. So wait on the
+     * plugin's own `ready()`, exactly as `boot()` does.
+     *
+     * Without this the read inside `start()` landed AFTER the `finally` below had already cleared
+     * `globals.window.localStorage`, and the localStorage adapter reported — correctly, and
+     * confusingly — that it could not read a storage that no longer existed. A green suite that
+     * prints an unexplained error is how real failures get ignored later.
+     */
+    await probe.ready()
     // One settings section: the UI project manager. It waits for the slot
     // declaration, so it does not register before the slot exists.
     equal(injections.length, 1, 'the section registration waits for the slot declaration')

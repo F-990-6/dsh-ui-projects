@@ -95,6 +95,20 @@ export function collectDiagnostics(projects, runtime) {
     dialog: collectDialog(),
     /** Which stylesheets are actually loaded, and the fills the skin resolved. */
     sheets,
+    /*
+     * Where state actually lives, and whether that went cleanly.
+     *
+     * These three are the only outlet for a question this plugin has already lost a round to.
+     * `persistKind` names the backend that won (`'settings'` = the dsh settings document,
+     * `'local'` = this browser only), `persistReady` says whether the wait for the settings
+     * transport settled or hit its deadline, and `persistDiverged` says a leftover localStorage
+     * record disagreed with the settings document during the handover. A skin that "did not come
+     * back" after a reload is one of these three — and until now the only way to see any of them
+     * was one line of small print on the settings card.
+     */
+    persistKind: runtime?.persist?.kind ?? 'no runtime',
+    persistReady: runtime?.persist?.readiness ?? 'no runtime',
+    persistDiverged: runtime?.persist?.diverged === true,
     sidebarFill: getComputedStyle(body).getPropertyValue('--dsw-specific-sidebar-fill').trim(),
     dialogFill: getComputedStyle(body).getPropertyValue('--dsw-alias-bg-layer-2').trim(),
     /* ── everything below is context; the fields above answer most questions ── */

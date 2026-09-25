@@ -142,6 +142,21 @@ export class UiProjectRuntime {
    * @returns {Promise<void>}
    */
   async start() {
+    /*
+     * Wait for the record before reading it.
+     *
+     * The settings adapter's snapshot starts as `idle` and only becomes `ready` after the first
+     * `settings.describe` read settles — a wire round-trip the provider starts without awaiting.
+     * Reading before that yields the EMPTY record, which means "the user has never chosen
+     * anything", so the fallback below would restore the shipped defaults and quietly ignore the
+     * user's set — for the shipped skin, the skin would not come back on a reload that the
+     * settings document says it should.
+     *
+     * `start()` reads once and there is no second chance, so the wait belongs here rather than in
+     * a retry. `?.()` because only the settings adapter has anything to wait for: the local one
+     * resolves immediately, and an adapter that omits the method is treated the same way.
+     */
+    await this.persist.ready?.()
     const record = this.persist.read()
     this.settings = new Map(Object.entries(record.settings ?? {}))
     this.#markRoot()

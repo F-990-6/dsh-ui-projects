@@ -209,9 +209,24 @@ function installBuiltInProjects(target) {
  */
 module.exports = {
   name: 'ui-projects',
-  // `slots` is a hard dependency: without the settings slot system there is
-  // nowhere to put the page. Everything else is optional and read with ctx.get.
-  inject: ['slots'],
+  /*
+   * Two hard dependencies, for two different reasons.
+   *
+   * `slots` is functional: without the settings slot system there is nowhere to put the page.
+   *
+   * `settingsScope` is a TIMING dependency, and leaving it out was a real bug. The service is
+   * provided by `@deepseek-ai/dsh-client-ui-settings`, which declares `inject: ["remote",
+   * "remote.settings"]` itself — so it appears only after the host handshake completes. This
+   * plugin binds the scope synchronously in `apply` (`persist.js` reads
+   * `ctx.get('settingsScope')`), so with only `slots` declared the bind ran BEFORE the provider
+   * existed, found nothing, and silently fell back to localStorage: the switch persisted
+   * per-browser while the settings document kept a stale copy of an earlier choice, and the two
+   * records could disagree without anything reporting it. Declaring the dependency makes Cordis
+   * park this plugin until the service is genuinely there.
+   *
+   * Everything else this plugin touches is optional and read with `ctx.get`.
+   */
+  inject: ['slots', 'settingsScope'],
   apply,
 
   /** @returns {UiProjectRegistry} the live registry, for other plugins. */
