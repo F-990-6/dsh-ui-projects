@@ -1,0 +1,539 @@
+/*
+ * dsh base layer for the UI project system.
+ *
+ * Two things live here, both owned by this plugin and removed with it:
+ *   1. the two generic hooks every UI project relies on, and
+ *   2. the Settings > UI page chrome (`.uip-*`).
+ *
+ * The page chrome carries no project-specific knowledge: it styles a list of
+ * cards, and the cards come from the registry. It paints with the shipped alias
+ * tokens only, so it follows the active dsh theme (light or dark) with no palette
+ * of its own.
+ */
+
+/* The marker the runtime sets while the system is mounted at all. */
+html[data-ui-projects='on'] {
+  /* Reserved for future system-wide, project-neutral hooks. */
+}
+
+/*
+ * A project's stylesheet is authored with root selectors (`.lg-glass { ... }`) and
+ * delivered already rewritten to `html[data-ui-project-<id>='on'] .lg-glass`.
+ * Keeping the rewrite in one place means a project can be written as plain CSS
+ * and still be impossible to leak: no marker, no effect.
+ */
+
+/* Projects that inject a full-screen ambient layer ask for this seat, which sits
+   behind the application and never intercepts pointer events. */
+html[data-ui-projects='on'] .ui-ambient-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* ── page layout ───────────────────────────────────────────────────────────── */
+
+.uip-root {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.uip-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.uip-headText {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.uip-title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 26px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.uip-intro {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.uip-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.uip-hint {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.uip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── project card ─────────────────────────────────────────────────────────── */
+
+.uip-card {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-1);
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.uip-card:hover {
+  border-color: var(--dsw-alias-border-l2);
+}
+
+.uip-card[data-status='active'] {
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.uip-card[data-status='error'] {
+  border-color: var(--dsw-alias-state-error-primary);
+}
+
+.uip-preview {
+  position: relative;
+  width: 116px;
+  height: 80px;
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l1);
+  overflow: hidden;
+}
+
+.uip-previewImage {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.uip-previewGlass {
+  position: absolute;
+  inset: 10px;
+  border-radius: 10px;
+  border: 1px solid rgb(255 255 255 / 45%);
+  box-shadow: 0 6px 18px rgb(15 23 42 / 18%);
+  background: rgb(255 255 255 / 32%);
+}
+
+.uip-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.uip-rowTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.uip-identity {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.uip-name {
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.uip-version {
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.uip-description {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.uip-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.uip-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l1);
+  white-space: nowrap;
+}
+
+.uip-badge[data-kind='type'] {
+  color: var(--dsw-alias-brand-primary);
+  border-color: var(--dsw-alias-border-l2);
+}
+
+.uip-error {
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-error-primary);
+  background: var(--dsw-alias-bg-layer-2);
+  overflow-wrap: anywhere;
+}
+
+.uip-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ── switch ───────────────────────────────────────────────────────────────── */
+
+.uip-switch {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-2);
+  cursor: pointer;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease;
+}
+
+.uip-switch:hover:not(:disabled) {
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.uip-switch[aria-checked='true'] {
+  background: var(--dsw-alias-brand-primary);
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.uip-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.uip-knob {
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  margin-top: -9px;
+  border-radius: 50%;
+  background: var(--dsw-alias-bg-overlay);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 30%);
+  transition: transform 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.uip-switch[aria-checked='true'] .uip-knob {
+  transform: translateX(16px);
+}
+
+/* ── buttons ──────────────────────────────────────────────────────────────── */
+
+.uip-button {
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  padding: 5px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.uip-button:hover:not(:disabled) {
+  border-color: var(--dsw-alias-border-l2);
+}
+
+.uip-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* keyboard focus is always visible */
+
+.uip-button:focus-visible,
+.uip-switch:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 2px;
+}
+
+/* ── project control: opacity slider ──────────────────────────────────────── */
+
+/*
+ * The slider is built to match the on/off switch exactly, because the two sit on the same
+ * card and mean the same kind of thing. So it reuses the switch's geometry and its colours
+ * by name:
+ *
+ *   track — the switch's unhurried state: the same 1px `--dsw-alias-border-l2`, the same
+ *           `bg-layer-2` fill, the same full rounding, and the same 24px height, so the two
+ *           controls line up on a card.
+ *   thumb — literally the switch's knob: 18px, `--dsw-alias-bg-overlay`, the same shadow.
+ *           It is that knob, moved along a line instead of across one.
+ *   drag  — `cursor: grab`/`grabbing`, which says "you can move this" — a switch does not
+ *           need that hint and a slider does.
+ *
+ * The native `input[type=range]` is kept rather than rebuilt as a div, so keyboard support,
+ * screen-reader semantics, touch handling and reduced-motion all come from the platform
+ * instead of from a reimplementation. The track and thumb are painted over it through the
+ * vendor pseudo-elements.
+ */
+.uip-control {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.uip-controlHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.uip-controlLabel {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.uip-controlValue {
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+.uip-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  max-width: 320px;
+  height: 24px;
+  margin: 0;
+  background: transparent;
+  cursor: grab;
+}
+
+.uip-slider:active {
+  cursor: grabbing;
+}
+
+.uip-slider::-webkit-slider-runnable-track {
+  height: 24px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.uip-slider::-moz-range-track {
+  height: 24px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.uip-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  border: none;
+  border-radius: 50%;
+  background: var(--dsw-alias-bg-overlay);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 30%);
+}
+
+.uip-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: var(--dsw-alias-bg-overlay);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 30%);
+}
+
+.uip-slider:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.uip-slider:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+/* ── the card adapts to its CONTAINER, not to the window ──────────────────── */
+
+/*
+ * The card's preview is a fixed `116px` track beside a `minmax(0, 1fr)` text column, so when the
+ * space available is not much more than the preview, the text column is squeezed to a few dozen
+ * pixels and every word wraps onto its own line — text running vertically down the card.
+ *
+ * The two `@media` breakpoints above cannot prevent that: they fire on the WINDOW's width, and the
+ * card can be narrow inside a wide window. The settings dialog is exactly that case — it is
+ * `min(800px, 100vw - 48px)` and can be constrained further by whatever lays it out — so a window
+ * query never learns that the card only has 300px to live in.
+ *
+ * A container query asks the right question. `container-type: inline-size` makes the card its own
+ * query container, and below 420px of CARD width the grid becomes a single column with the preview
+ * across the top: the same treatment the window-width rules apply, now guaranteed to fire whenever
+ * the card is actually tight.
+ *
+ * `container-type: inline-size` imposes inline-size containment, meaning the card's own inline size
+ * cannot be derived from its contents. That is already true here — the card is a grid with defined
+ * columns — so nothing about the layout above the breakpoint changes.
+ */
+.uip-card {
+  container-type: inline-size;
+}
+
+@container (max-width: 420px) {
+  .uip-card {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px;
+  }
+
+  .uip-preview {
+    width: 100%;
+    height: 64px;
+  }
+
+  .uip-rowTop {
+    align-items: flex-start;
+  }
+}
+
+/* ── the settings shell on a narrow window ────────────────────────────────── */
+
+/*
+ * The shipped settings dialog is a `188px` navigation column beside a content column, with
+ * nothing telling it what to do when the window is too narrow for both. On a small window
+ * the columns then squeeze each other and the navigation labels — which are `nowrap` with
+ * ellipsis — become unusable.
+ *
+ * Stacking is the answer a dialog of this shape wants: the navigation becomes a horizontal
+ * strip above the page instead of a squeezed column beside it. It is expressed as a
+ * container-independent `@media` query on the dialog's own width, so it fires from the
+ * window size rather than from any class name, and it cannot touch the shipped layout
+ * above the breakpoint.
+ *
+ * This is a *skin* rule, so the default interface keeps the shipped behaviour exactly.
+ */
+@media (max-width: 720px) {
+  .uip-root {
+    gap: 12px;
+  }
+
+  .uip-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .uip-card {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px;
+  }
+
+  .uip-preview {
+    width: 100%;
+    height: 64px;
+  }
+
+  .uip-meta {
+    gap: 8px;
+  }
+
+  .uip-slider {
+    max-width: none;
+  }
+}
+
+/* ── narrow viewports ─────────────────────────────────────────────────────── */
+
+@media (max-width: 560px) {
+  .uip-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .uip-preview {
+    width: 100%;
+    height: 72px;
+  }
+
+  .uip-rowTop {
+    align-items: flex-start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uip-switch,
+  .uip-knob,
+  .uip-card,
+  .uip-button {
+    transition: none;
+  }
+}

@@ -1,0 +1,10 @@
+# dsh-ui-projects bundle patch: one host row over the web profile.
+#
+# The row name resolves from the profile's own node_modules, where
+# `dsh plugin --profile web add <path>` installed this package. The host half
+# is intentionally thin: the UI project registry lives in the browser half
+# (`./client`), which the client-modules node half serves because this
+# package declares `dsh.client.platform: web`.
+- insert:
+    - id: ui-projects
+      name: dsh-ui-projects

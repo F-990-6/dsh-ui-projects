@@ -1,0 +1,2256 @@
+/**
+ * Behavioural verification for dsh-ui-projects.
+ *
+ * The browser half cannot be tested by importing its source, because the client
+ * is delivered as one lazy-CJS bundle resolved against the shell's frozen module
+ * table. So this script rebuilds that situation faithfully:
+ *
+ *   - it loads `lib/client.js` through a real `window.__ModuleLoader__` facade,
+ *   - resolves `require('react')` against the real React package,
+ *   - throws on any module request outside the shell's table,
+ *   - boots the plugin against a fake Cordis context whose `effect` records
+ *     disposers exactly like the real one, and a minimal DOM that records
+ *     attributes and style elements,
+ *   - renders the real settings component to markup with `react-dom/server`.
+ *
+ * It then asserts the observable contract: registry policy, persistence, live
+ * toggling, CSS scoping, complete cleanup, and the rendered settings card.
+ *
+ * Run: `npm test` (after `npm run build`).
+ */
+
+import { readdir, readFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import vm from 'node:vm'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const packageRoot = resolve(here, '..')
+const nodeRequire = createRequire(join(packageRoot, 'package.json'))
+
+const react = nodeRequire('react')
+const server = nodeRequire('react-dom/server')
+
+/* ── assertions ───────────────────────────────────────────────────────────── */
+
+let failures = 0
+let checks = 0
+
+/** @param {string} name @param {() => void | Promise<void>} body */
+async function test(name, body) {
+  try {
+    await body()
+    process.stdout.write(`  ok   ${name}\n`)
+  } catch (err) {
+    failures += 1
+    process.stdout.write(`  FAIL ${name}\n         ${err instanceof Error ? err.message : String(err)}\n`)
+  }
+}
+
+/** @param {unknown} actual @param {unknown} expected @param {string} [what] */
+/**
+ * A description of a value that never throws.
+ *
+ * `JSON.stringify` is the obvious choice and the wrong one here: the harness holds fake
+ * DOM nodes, whose parent/child links are circular, so stringifying one throws
+ * "Converting circular structure to JSON" and buries the assertion that actually
+ * failed. A DOM-ish value is described by its tag and attributes instead — which is
+ * also far more readable in a failure message.
+ * @param {unknown} value
+ * @returns {string}
+ */
+function describe(value) {
+  if (value === undefined) return 'undefined'
+  if (value === null) return 'null'
+  if (typeof value !== 'object') return JSON.stringify(value)
+  const node = /** @type {any} */ (value)
+  if (typeof node.tagName === 'string') {
+    const attrs = ['id', 'className']
+      .filter((key) => typeof node[key] === 'string' && node[key].length > 0)
+      .map((key) => `${key}="${node[key]}"`)
+      .join(' ')
+    return `<${node.tagName.toLowerCase()}${attrs === '' ? '' : ' ' + attrs}>`
+  }
+  if (Array.isArray(value)) {
+    const head = value.slice(0, 6).map(describe)
+    return `[${head.join(', ')}${value.length > 6 ? `, …${value.length - 6} more` : ''}]`
+  }
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return Object.prototype.toString.call(value)
+  }
+}
+
+/** @param {unknown} actual @param {unknown} expected @param {string} [what] */
+function equal(actual, expected, what = 'value') {
+  checks += 1
+  const a = describe(actual)
+  const b = describe(expected)
+  if (a !== b) throw new Error(`${what}: expected ${b}, got ${a}`)
+}
+
+/** @param {unknown} value @param {string} [what] */
+function truthy(value, what = 'value') {
+  checks += 1
+  if (!value) throw new Error(`${what}: expected truthy, got ${describe(value)}`)
+}
+
+/** @param {string} haystack @param {string} needle */
+function contains(haystack, needle) {
+  checks += 1
+  if (!String(haystack).includes(needle)) throw new Error(`expected to find ${JSON.stringify(needle)}`)
+}
+
+/** @param {string} haystack @param {string} needle */
+function excludes(haystack, needle) {
+  checks += 1
+  if (String(haystack).includes(needle)) throw new Error(`expected NOT to find ${JSON.stringify(needle)}`)
+}
+
+/* ── fake DOM ─────────────────────────────────────────────────────────────── */
+
+/**
+ * Compile a simple selector into a predicate.
+ *
+ * Handles `tag`, `#id`, `.class`, `[attr]` and `[attr="value"]`, in any combination, and throws
+ * for everything else. Throwing is the point: a harness matcher that silently returned nothing
+ * for an unsupported form would hide exactly the bug class it is here to catch.
+ * @param {string} selector
+ * @returns {(element: any) => boolean}
+ */
+function parseCompound(selector) {
+  const text = String(selector).trim()
+  if (text === '' || /[\s>,+~]/.test(text)) {
+    throw new Error(`the fake DOM cannot match a complex selector: ${JSON.stringify(selector)}`)
+  }
+  /** @type {((element: any) => boolean)[]} */
+  const tests = []
+  let rest = text
+  const tag = /^[a-zA-Z][\w-]*/.exec(rest)
+  if (tag !== null) {
+    const wanted = tag[0].toUpperCase()
+    tests.push((element) => element.tagName === wanted)
+    rest = rest.slice(tag[0].length)
+  }
+  while (rest.length > 0) {
+    const id = /^#([\w-]+)/.exec(rest)
+    if (id !== null) {
+      const wanted = id[1]
+      tests.push((element) => element.id === wanted)
+      rest = rest.slice(id[0].length)
+      continue
+    }
+    const cls = /^\.([\w-]+)/.exec(rest)
+    if (cls !== null) {
+      const wanted = cls[1]
+      tests.push((element) => String(element.className).split(/\s+/).includes(wanted))
+      rest = rest.slice(cls[0].length)
+      continue
+    }
+    const attr = /^\[([\w-]+)(?:=["']?([^"'\]]*)["']?)?\]/.exec(rest)
+    if (attr !== null) {
+      const name = attr[1]
+      const value = attr[2]
+      tests.push((element) =>
+        value === undefined ? element.hasAttribute(name) : element.getAttribute(name) === value,
+      )
+      rest = rest.slice(attr[0].length)
+      continue
+    }
+    throw new Error(`the fake DOM cannot match part of a selector: ${JSON.stringify(rest)} of ${JSON.stringify(selector)}`)
+  }
+  if (tests.length === 0) throw new Error(`empty selector: ${JSON.stringify(selector)}`)
+  return (element) => tests.every((test) => test(element))
+}
+
+/**
+ * Would this selector match this element, allowing for a marker ancestor?
+ *
+ * The scoper's output is always `<marker> <authored selector>`, so the form that has to be
+ * checkable is "a compound matching an ancestor, then a compound matching the element". A real CSS
+ * engine would do far more; this does exactly enough to answer the question the tests ask, and
+ * still refuses anything else rather than guessing.
+ * @param {string} selector
+ * @param {any} element
+ * @returns {boolean}
+ */
+function matchesWithAncestors(selector, element) {
+  const parts = String(selector).trim().split(/\s+/)
+  if (parts.length === 1) {
+    try {
+      return parseCompound(parts[0])(element)
+    } catch {
+      return false
+    }
+  }
+  if (parts.length !== 2) return false
+  let ancestor = element.parentNode
+  while (ancestor !== null && ancestor !== undefined) {
+    if (parseCompound(parts[0])(ancestor) && parseCompound(parts[1])(element)) return true
+    ancestor = ancestor.parentNode
+  }
+  return false
+}
+
+/** @param {string} tagName */
+function createElement(tagName) {
+  /** @type {Map<string, string>} */
+  const attributes = new Map()
+  /** @type {any} */
+  const element = {
+    tagName: String(tagName).toUpperCase(),
+    id: '',
+    className: '',
+    textContent: '',
+    /**
+     * A style declaration that stores what the runtime writes.
+     *
+     * The opacity control works by setting a custom property and reading it back, so a fake
+     * that silently dropped writes would make that whole path untestable — and the code
+     * under test is precisely the code that needs testing.
+     */
+    style: {
+      /** @type {Map<string, string>} */
+      properties: new Map(),
+      /** @param {string} name @param {string} value */
+      setProperty(name, value) {
+        this.properties.set(name, String(value))
+      },
+      /** @param {string} name */
+      removeProperty(name) {
+        this.properties.delete(name)
+      },
+      /** @param {string} name */
+      getPropertyValue(name) {
+        return this.properties.get(name) ?? ''
+      },
+    },
+    parentNode: /** @type {any} */ (null),
+    children: /** @type {any[]} */ ([]),
+    removed: false,
+    getAttribute: (/** @type {string} */ name) => (attributes.has(name) ? attributes.get(name) : null),
+    setAttribute: (/** @type {string} */ name, /** @type {unknown} */ value) => {
+      attributes.set(name, String(value))
+    },
+    removeAttribute: (/** @type {string} */ name) => {
+      attributes.delete(name)
+    },
+    hasAttribute: (/** @type {string} */ name) => attributes.has(name),
+    /**
+     * The first descendant matching a selector, for the selector forms this package uses.
+     *
+     * A deliberately narrow matcher rather than a CSS engine — but it FAILS LOUDLY on a form it
+     * does not implement rather than quietly matching nothing, because a selector quietly
+     * matching nothing is the exact failure this whole package has been chasing.
+     * @param {string} selector
+     * @returns {any | null}
+     */
+    querySelector: (selector) => element.querySelectorAll(selector)[0] ?? null,
+    /**
+     * A box, because the runtime tells a column from a container by whether the element
+     * actually occupies the grid. A fake DOM has no layout, so the box is declared:
+     * everything is a real box unless it is marked as the overlay or the handle.
+     * @returns {{ x: number, y: number, width: number, height: number }}
+     */
+    getBoundingClientRect: () => {
+      const overlay = attributes.has('data-test-overlay')
+      return overlay ? { x: 0, y: 0, width: 0, height: 0 } : { x: 0, y: 0, width: 120, height: 600 }
+    },
+    /**
+     * The container's content height, which the runtime compares against the viewport to decide
+     * whether the boot page is in the way. Declared rather than computed, so a test can put the
+     * container into the oversized state on purpose.
+     * @type {number}
+     */
+    scrollHeight: 0,
+    /** The viewport height, which `boot()` sets on the fake `window`. */
+    get clientHeight() {
+      return sandbox.window?.innerHeight ?? 0
+    },
+    /**
+     * Every descendant matching a selector, depth first.
+     *
+     * Supports the forms this package actually uses — a tag name, and any combination of tag,
+     * `#id`, `.class`, `[attr]` and `[attr="value"]` — and THROWS on anything else. A matcher
+     * that quietly returned nothing for an unimplemented form would reproduce, inside the test
+     * harness, the same silent-no-match class of bug the harness exists to catch.
+     * @param {string} selector
+     */
+    querySelectorAll: (selector) => {
+      const compound = parseCompound(selector)
+      const found = []
+      const walk = (/** @type {any} */ node) => {
+        for (const child of node.children) {
+          if (compound(child)) found.push(child)
+          walk(child)
+        }
+      }
+      walk(element)
+      return found
+    },
+    remove() {
+      element.removed = true
+      if (element.parentNode !== null) {
+        const index = element.parentNode.children.indexOf(element)
+        if (index >= 0) element.parentNode.children.splice(index, 1)
+      }
+    },
+    /** @param {any} child */
+    appendChild(child) {
+      child.parentNode = element
+      element.children.push(child)
+      return child
+    },
+    /** @param {any} child */
+    insertBefore(child) {
+      child.parentNode = element
+      element.children.unshift(child)
+      return child
+    },
+    /**
+     * Remove a child.
+     *
+     * Needed because a re-render is exactly "the shell replaces the frame's children", and a
+     * harness that cannot express that cannot test the repair of it.
+     * @param {any} child
+     */
+    removeChild(child) {
+      const index = element.children.indexOf(child)
+      if (index >= 0) element.children.splice(index, 1)
+      child.parentNode = null
+      return child
+    },
+  }
+  return element
+}
+
+function createFakeDom() {
+  const root = createElement('html')
+  const head = createElement('head')
+  const body = createElement('body')
+  root.appendChild(head)
+  root.appendChild(body)
+  const document = {
+    documentElement: root,
+    head,
+    body,
+    createElement,
+    getElementById: (/** @type {string} */ id) => {
+      const found = root.querySelectorAll('div').find((el) => el.id === id)
+      return found ?? (root.id === id ? root : null)
+    },
+    /**
+     * Document-level queries, which the diagnostics uses.
+     *
+     * Delegated to the document element, because on a real page `document.querySelectorAll` walks
+     * the whole tree exactly as `documentElement.querySelectorAll` does — minus the root element
+     * itself, which is the same behaviour the real one has for a descendant combinator.
+     * @param {string} selector
+     */
+    querySelectorAll: (selector) => root.querySelectorAll(selector),
+    /** @param {string} selector */
+    querySelector: (selector) => root.querySelector(selector),
+  }
+  return {
+    document,
+    root,
+    head,
+    body,
+    /** @returns {any[]} */
+    styles: () => head.children.filter((child) => child.tagName === 'STYLE'),
+    allCss: () => head.children.map((child) => child.textContent).join('\n'),
+    /**
+     * The ambient field, wherever it was placed.
+     *
+     * Deliberately a search rather than a direct-child lookup: the layer belongs INSIDE the
+     * application's floating layer, not under `<body>`. Hanging it off the body is what made
+     * the shell's own sidebar measurement collapse the sidebar to a rail whenever the skin
+     * was on, so the placement is part of the behaviour under test.
+     * @returns {any[]}
+     */
+    ambient: () =>
+      [body, ...body.querySelectorAll('div')].filter(
+        (element) => element.className === 'ds-ambient ui-ambient-layer',
+      ),
+    /**
+     * Put the application frame into the document, as the shell does when it finishes booting.
+     *
+     * Assigned by `boot`, which owns the stub: the fake DOM factory deliberately knows nothing
+     * about the frame, so that a test can control exactly when it appears.
+     * @type {() => any}
+     */
+    mountFrame: () => {
+      throw new Error('boot() has not assigned mountFrame')
+    },
+  }
+}
+
+function createStorage() {
+  /** @type {Map<string, string>} */
+  const map = new Map()
+  return {
+    map,
+    getItem: (/** @type {string} */ key) => (map.has(key) ? map.get(key) : null),
+    setItem: (/** @type {string} */ key, /** @type {unknown} */ value) => {
+      map.set(key, String(value))
+    },
+    removeItem: (/** @type {string} */ key) => {
+      map.delete(key)
+    },
+  }
+}
+
+/* ── fake Cordis context ──────────────────────────────────────────────────── */
+
+/**
+ * @param {object} input
+ * @param {ReturnType<typeof createFakeDom>} input.dom
+ * @param {boolean} [input.withSettingsScope]
+ * @param {boolean} [input.withTheme]
+ */
+function createCtx(input) {
+  const { dom, withSettingsScope = false, withTheme = false } = input
+  /** @type {Map<string, any>} */
+  const services = new Map()
+  /** @type {Array<() => void>} */
+  const effects = []
+  /** @type {Array<{ name: string, id: string, order?: number, label?: any }>} */
+  const registrations = []
+  /** @type {Map<string, any>} */
+  const namespaces = new Map()
+  let themeLayers = 0
+
+  if (withSettingsScope) {
+    services.set('settingsScope', {
+      bind(/** @type {{ namespace: string }} */ spec) {
+        let revision = 1
+        const listeners = new Set()
+        const snapshot = {
+          status: 'ready',
+          value: namespaces.get(spec.namespace),
+          base: undefined,
+          user: namespaces.get(spec.namespace),
+          revision,
+          writable: true,
+          mode: 'host',
+        }
+        return {
+          getSnapshot: () => ({ ...snapshot, revision }),
+          subscribe(/** @type {() => void} */ listener) {
+            listeners.add(listener)
+            return () => listeners.delete(listener)
+          },
+          async set(/** @type {string} */ field, /** @type {unknown} */ value) {
+            const section = namespaces.get(spec.namespace) ?? {}
+            section[field] = value
+            namespaces.set(spec.namespace, section)
+            revision += 1
+            snapshot.value = section
+            snapshot.user = section
+            for (const listener of listeners) listener()
+          },
+          async unset(/** @type {string} */ field) {
+            const section = namespaces.get(spec.namespace) ?? {}
+            delete section[field]
+            revision += 1
+            snapshot.value = section
+            for (const listener of listeners) listener()
+          },
+          async mutate() {},
+          dispose() {},
+        }
+      },
+    })
+  }
+
+  if (withTheme) {
+    services.set('theme', {
+      overrideTokens() {
+        themeLayers += 1
+        return () => {
+          themeLayers -= 1
+        }
+      },
+    })
+  }
+
+  /** Section render handlers, keyed by slot. */
+  const handlers = new Map()
+  /** Callbacks waiting for a slot to be declared, keyed by slot. */
+  const pendingInjections = new Map()
+  const slots = {
+    /**
+     * The real service runs the callback once the slot is DECLARED, and the
+     * callback returns the registration's disposer. This fake treats a slot as
+     * declared as soon as someone injects on it, and runs the callback on the next
+     * microtask — the same "declaration becomes true later" shape the plugin must
+     * work with.
+     * @param {string} key @param {() => any} callback
+     */
+    inject(key, callback) {
+      const list = pendingInjections.get(key) ?? []
+      list.push(callback)
+      pendingInjections.set(key, list)
+      let disposed = false
+      queueMicrotask(() => {
+        if (disposed) return
+        for (const entry of list) {
+          const result = entry()
+          if (typeof result === 'function') disposers.push(result)
+        }
+        list.length = 0
+      })
+      return () => {
+        disposed = true
+      }
+    },
+    /** @param {any} options @param {() => any} component */
+    register(options, component) {
+      registrations.push(options)
+      handlers.set(`${options.name}:${options.id}`, component)
+      return () => {
+        const index = registrations.indexOf(options)
+        if (index >= 0) registrations.splice(index, 1)
+        handlers.delete(`${options.name}:${options.id}`)
+      }
+    },
+  }
+  /** @type {Array<() => void>} */
+  const disposers = []
+  services.set('slots', slots)
+
+  /** Every `$on` this bundle registered, so a test can prove the wiring happened. */
+  const remoteSubscriptions = []
+  services.set('remote', {
+    /**
+     * @param {string} name
+     * @param {(...args: any[]) => any} handler
+     */
+    $on: (name, handler) => {
+      remoteSubscriptions.push({ name, handler })
+      return () => {
+        const at = remoteSubscriptions.findIndex((entry) => entry.handler === handler)
+        if (at >= 0) remoteSubscriptions.splice(at, 1)
+      }
+    },
+  })
+
+  const ctx = {
+    get: (/** @type {string} */ name) => services.get(name),
+    /**
+     * Cordis' dependency-resolved injection. The fake runs the callback immediately when
+     * every named service already exists, which is how the real one behaves — and it
+     * calls back synchronously, so the bundle's subscriptions exist by the time `apply`
+     * returns, exactly as they do in the browser.
+     * @param {string[]} names
+     * @param {(scoped: any) => any} callback
+     */
+    inject(names, callback) {
+      const ready = names.every((name) => services.get(name) !== undefined)
+      if (!ready) return () => {}
+      const result = callback(ctx)
+      const dispose = typeof result === 'function' ? result : () => {}
+      disposers.push(dispose)
+      return dispose
+    },
+    provide(/** @type {string} */ name, /** @type {unknown} */ value) {
+      services.set(name, value)
+      return () => services.delete(name)
+    },
+    on() {
+      return () => {}
+    },
+    /** @param {() => any} callback */
+    effect(callback) {
+      const result = callback()
+      const dispose = typeof result === 'function' ? result : () => {}
+      effects.push(dispose)
+      return dispose
+    },
+    cleanup() {
+      for (const dispose of effects.reverse()) dispose()
+      effects.length = 0
+      registrations.length = 0
+      handlers.clear()
+    },
+  }
+
+  void dom
+  return {
+    ctx,
+    registrations,
+    handlers,
+    namespaces,
+    /** Every `$on` the bundle registered, so a test can prove the wiring happened. */
+    remoteSubscriptions,
+    themeLayers: () => themeLayers,
+  }
+}
+
+/**
+ * A `MutationObserver` the harness can drive.
+ *
+ * The runtime marks its columns in response to the DOM changing — the shell mounting the
+ * application IS that mutation — so a fake that never fires would leave the path untested,
+ * and one that fired eagerly would test nothing. This records its callbacks and exposes
+ * `flushAll()` so a test can say "the DOM just changed" at the moment it means.
+ */
+class FakeMutationObserver {
+  /** @param {() => void} callback */
+  constructor(callback) {
+    this.callback = callback
+    this.callbacks = [callback]
+    FakeMutationObserver.instances.push(this)
+  }
+
+  observe() {
+    this.callbacks = [this.callback]
+  }
+
+  disconnect() {
+    this.callbacks = []
+  }
+
+  flush() {
+    for (const callback of [...this.callbacks]) callback()
+  }
+
+  static instances = []
+
+  static reset() {
+    FakeMutationObserver.instances = []
+  }
+
+  static flushAll() {
+    for (const instance of [...FakeMutationObserver.instances]) instance.flush()
+  }
+}
+
+/**
+ * A `getComputedStyle` that answers the one question this package asks of it.
+ *
+ * The runtime identifies the application frame by asking the DOM what it is — a grid
+ * with a multi-track template and more than one child — rather than by naming a
+ * CSS-module class, so the harness has to be able to answer that. Everything else
+ * reports empty values, which is honest: this fake DOM has no layout engine.
+ * @param {ReturnType<typeof createFakeDom>} dom
+ * @returns {(el: any) => any}
+ */
+function wrapGetComputedStyle(dom) {
+  const empty = {
+    display: 'block',
+    gridTemplateColumns: 'none',
+    backgroundColor: 'rgba(0, 0, 0, 0)',
+    backdropFilter: 'none',
+    getPropertyValue: () => '',
+  }
+  return (element) => {
+    if (element === undefined || element === null) return empty
+    // Only the element explicitly marked as the frame reports as one. Deriving it from
+    // "has more than one child" made the mount point itself look like a frame, which is
+    // a harness fiction rather than a property of the shipped markup.
+    const isFrame = element.hasAttribute?.('data-test-frame') === true
+    return {
+      ...empty,
+      display: isFrame ? 'grid' : 'block',
+      gridTemplateColumns: isFrame ? '280px 1fr 0px' : 'none',
+      // The overlay layer is absolutely positioned, which is how the runtime tells a
+      // container apart from a column.
+      position: element.getAttribute?.('data-test-overlay') === '' ? 'absolute' : 'static',
+    }
+  }
+}
+
+/* ── bundle loader ────────────────────────────────────────────────────────── */
+
+/**
+ * The bundle under test.
+ *
+ * By default the freshly built `lib/client.js`. Setting
+ * `DSH_UI_PROJECTS_BUNDLE_URL` (or passing a URL as the first argument) makes the
+ * suite read the bytes a running dsh process actually serves instead — the
+ * strongest available check short of a browser, because it exercises the same
+ * composition, the same `dsh.client` scan and the same bundle route the page uses.
+ * @returns {Promise<{ source: string, origin: string }>}
+ */
+async function readBundleSource() {
+  const url = process.argv[2] ?? process.env.DSH_UI_PROJECTS_BUNDLE_URL
+  if (url === undefined || url.length === 0) {
+    return { source: await readFile(join(packageRoot, 'lib', 'client.js'), 'utf8'), origin: 'lib/client.js (built)' }
+  }
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`cannot read the served bundle from ${url}: HTTP ${response.status}`)
+  return { source: await response.text(), origin: url }
+}
+
+/**
+ * Execute a bundle the way the shell does: register its factory, then materialize
+ * the entry module with a module table that throws on a miss.
+ *
+ * The bundle runs inside a real `vm` global whose `document`/`window` are
+ * re-pointed at each test's fake DOM, so the plugin resolves them exactly as it
+ * would in a browser (`document` is a global there, not an import).
+ *
+ * The sandbox intentionally provides a global `require`: the bundle is a browser
+ * script, but Node classifies a script that mentions `require` without providing
+ * one as ambiguous CommonJS/ESM (`ERR_AMBIGUOUS_MODULE_SYNTAX`). A browser has no
+ * such global, which is exactly why the bundle must never rely on one.
+ * @returns {Promise<{ plugin: any, sandbox: Record<string, any>, origin: string }>}
+ */
+async function loadClientBundle() {
+  const { source, origin } = await readBundleSource()
+  /** @type {{ id: string, factory: (require: (id: string) => any) => any } | undefined} */
+  let registered
+  const sandbox = {
+    document: undefined,
+    window: {
+      __ModuleLoader__: {
+        /** @param {any} registration */
+        load(registration) {
+          registered = registration
+        },
+      },
+      localStorage: undefined,
+    },
+    console,
+  }
+  sandbox.globalThis = sandbox
+  const context = vm.createContext(sandbox)
+  vm.runInContext(source, context, { filename: 'client.js' })
+  if (registered === undefined) throw new Error('bundle did not register a ModuleLoader factory')
+  equal(registered.id, 'dsh-ui-projects', 'bundle id')
+
+  /** The shell's frozen module table. React is the very same instance the
+   * renderer uses, so hooks resolve to one copy. */
+  const staticModules = {
+    react,
+    'react/jsx-runtime': { jsx: () => null },
+    'react-dom': { default: {} },
+  }
+  const require = (/** @type {string} */ id) => {
+    if (Object.prototype.hasOwnProperty.call(staticModules, id)) {
+      return /** @type {Record<string, any>} */ (staticModules)[id]
+    }
+    throw new Error(`module-table miss: the shell exposes no "${id}"`)
+  }
+
+  // The bundle's `require` argument is passed straight through the factory call,
+  // so it stays a host function and React keeps its real identity.
+  const plugin = registered.factory(require)
+
+  // `window.__ModuleLoader__` lives inside the context; give the context a
+  // request function too, for the global-require path.
+  context.require = require
+  return { plugin, sandbox, context, origin, source }
+}
+
+/**
+ * Materialize the bundle's entry module under a caller-supplied module table,
+ * inside its own global, which it returns so a caller can install fake browser
+ * globals before calling `apply`.
+ *
+ * This is how the load-time contracts are tested: the shell materializes the entry
+ * module BEFORE calling `apply`, with a `require` that answers only its frozen
+ * table, so a bundle that imports React or a project at load time fails in the
+ * browser and nowhere else.
+ * @param {string} source
+ * @param {(id: string) => any} require
+ * @returns {{ entry: any, globals: Record<string, any> }}
+ */
+function materializeEntry(source, require) {
+  /** @type {any} */
+  let registered
+  /** @type {Record<string, any>} */
+  const globals = {
+    document: undefined,
+    window: { __ModuleLoader__: { load: (/** @type {any} */ r) => (registered = r) }, localStorage: undefined },
+    console,
+  }
+  globals.globalThis = globals
+  vm.runInContext(source, vm.createContext(globals), { filename: 'client.js' })
+  if (registered === undefined) throw new Error('bundle did not register a ModuleLoader factory')
+  return { entry: registered.factory(require), globals }
+}
+
+/* ── boot helper ──────────────────────────────────────────────────────────── */
+
+const { plugin, sandbox, origin, source: bundleSource } = await loadClientBundle()
+const { Registry, scopeCss, strings, detectLocale } = plugin.__internals
+// The opacity scale is shared by every project, so the tests assert against the same
+// constants the runtime uses rather than repeating the numbers.
+const { MATERIAL_ALPHA_CEILING, MATERIAL_ALPHA_FLOOR, MATERIAL_SCALE_REVISION } = await import(
+  '../src/client/project-constants.js'
+)
+
+/** Tears down the most recent boot, so tests cannot leak into one another. */
+let activeCleanup
+
+/**
+ * Boot a plugin instance against fake DOM globals and fake services.
+ *
+ * Each boot tears down the previous one first, so tests neither leak effects into
+ * one another nor double-dispose them.
+ * @param {{ withStorage?: boolean | ReturnType<typeof createStorage>, withSettingsScope?: boolean, withTheme?: boolean }} [options]
+ */
+async function boot(options = {}) {
+  // Tear down BEFORE the sandbox globals move: a previous instance's disposers
+  // read `document` when they run, so they must still see the document they
+  // wrote to.
+  if (activeCleanup !== undefined) {
+    activeCleanup()
+    activeCleanup = undefined
+  }
+  const storage =
+    typeof options.withStorage === 'object' && options.withStorage !== null ? options.withStorage : createStorage()
+  const dom = createFakeDom()
+
+  // A minimal stand-in for the shipped frame: the runtime finds it by asking the DOM
+  // (a grid with a multi-track template and more than one child), so the fake DOM has to
+  // answer that question for `markColumns` to be exercised at all. The stub's display is
+  // reported through `getComputedStyle`, which is what the runtime reads.
+  const appRoot = createElement('div')
+  appRoot.id = 'root'
+  const frame = createElement('div')
+  frame.setAttribute('data-test-frame', '')
+  const fakeColumns = [createElement('div'), createElement('div'), createElement('div')]
+  for (const column of fakeColumns) frame.appendChild(column)
+  // Plus the two things that are NOT columns: the frame-wide overlay (a container, and
+  // blurring it softens everything) and the zero-area resize handle.
+  const fakeOverlay = createElement('div')
+  fakeOverlay.setAttribute('data-test-overlay', '')
+  frame.appendChild(fakeOverlay)
+  const fakeHandle = createElement('div')
+  fakeHandle.setAttribute('data-test-overlay', '')
+  frame.appendChild(fakeHandle)
+  appRoot.appendChild(frame)
+  // `detachedFrame` reproduces the real ordering problem: a project is applied while the
+  // shell is still booting, so the frame is not in the document yet — which is exactly when a
+  // one-shot lookup fails and only the observer can save it.
+  if (options.detachedFrame !== true) dom.body.appendChild(appRoot)
+  dom.mountFrame = () => {
+    if (!dom.body.children.includes(appRoot)) dom.body.appendChild(appRoot)
+    return frame
+  }
+  /** The frame stub itself, for a test that wants to replace its children. */
+  dom.frame = () => frame
+
+  // The plugin reads the DOM through globals, so the sandbox's globals are what
+  // change per boot — not `globalThis`, which the bundle never sees.
+  sandbox.document = dom.document
+  sandbox.window.localStorage = storage
+  // A viewport to measure against: the runtime compares the container's content height with it
+  // to decide whether the boot page is genuinely in the way.
+  sandbox.window.innerWidth = options.viewportWidth ?? 1400
+  sandbox.window.innerHeight = options.viewportHeight ?? 800
+  sandbox.getComputedStyle = wrapGetComputedStyle(dom)
+  // The bundle retries the frame lookup on a timer, because the shell has not mounted the
+  // application when a project is first applied. A sandbox without timers would make that
+  // retry impossible to exercise — and would licence a plugin that hangs on a real page.
+  sandbox.setInterval = setInterval
+  sandbox.clearInterval = clearInterval
+  sandbox.setTimeout = setTimeout
+  sandbox.clearTimeout = clearTimeout
+  // The runtime also marks on DOM changes, which is what catches the shell mounting the
+  // application. Without a MutationObserver in the sandbox that path is silently untested.
+  FakeMutationObserver.reset()
+  sandbox.MutationObserver = FakeMutationObserver
+  void fakeColumns
+
+  const host = createCtx({
+    dom,
+    withSettingsScope: options.withSettingsScope,
+    withTheme: options.withTheme,
+  })
+  await plugin.apply(host.ctx)
+  // The initial state application settles asynchronously, and the settings section
+  // registers once the slot is declared (also asynchronous). Wait for both, exactly
+  // as a host integration would.
+  await plugin.ready()
+  await new Promise((resolve) => queueMicrotask(resolve))
+
+  const runtime = plugin.runtime
+  if (runtime === undefined) throw new Error('the plugin did not publish its runtime')
+
+  activeCleanup = () => {
+    host.ctx.cleanup()
+    sandbox.document = undefined
+    sandbox.window.localStorage = undefined
+  }
+
+  return {
+    dom,
+    storage,
+    ctx: host.ctx,
+    registrations: host.registrations,
+    registry: plugin.registry,
+    runtime,
+    persistKind: runtime.persist.kind,
+    /** The settings namespace this plugin wrote, as the fake host sees it. */
+    settingsSection: () => host.namespaces.get('ui-projects'),
+    /**
+     * The project's marker, which the runtime sets on the BODY: project styles are
+     * scoped there because that is where the shipped client declares its tokens.
+     */
+    projectMarker: (/** @type {string} */ id) => dom.document.body.getAttribute(`data-ui-project-${id}`),
+    stylesContain: (/** @type {string} */ needle) =>
+      dom.styles().some((style) => style.textContent.includes(needle)),
+    allCss: () => dom.allCss(),
+    /** Render the registered settings section exactly as the shell would. */
+    render: () => renderPanel(plugin),
+    themeLayers: host.themeLayers,
+  }
+}
+
+/**
+ * Every CSS custom property the shipped web client declares.
+ *
+ * The skin re-binds the design system's own alias tokens rather than inventing
+ * names, so this is the reference set that proves it: a typo in a `--dsw-*` name
+ * would silently do nothing in the browser, and this turns that into a test
+ * failure. Read from the installed frontend and theme bundles — the actual source
+ * of truth for the running application — not from this package.
+ * @returns {Promise<Set<string>>}
+ */
+async function shippedDesignTokens() {
+  const declared = new Set()
+  for (const file of await shippedCssFiles()) {
+    for (const token of declaredTokens(await readFile(file, 'utf8'))) declared.add(token)
+  }
+  if (declared.size === 0) throw new Error('no shipped design tokens found; the reference set would be vacuous')
+  return declared
+}
+
+/**
+ * The stylesheets the running client loads: the built frontend plus the token
+ * sheet the theme plugin injects.
+ * @returns {Promise<string[]>}
+ */
+async function shippedCssFiles() {
+  const install = join(
+    process.env.LOCALAPPDATA ?? join(process.env.USERPROFILE ?? '', 'AppData', 'Local'),
+    'npm-cache',
+    '_npx',
+    '1e7f6d9597241db0',
+    'node_modules',
+    '@deepseek-ai',
+  )
+  const { readdir } = await import('node:fs/promises')
+  const files = []
+  const assets = join(install, 'dsh-web-frontend', 'dist', 'assets')
+  for (const entry of await readdir(assets)) {
+    if (entry.endsWith('.css')) files.push(join(assets, entry))
+  }
+  files.push(join(install, 'dsh-client-ui-theme', 'lib', 'client.js'))
+  return files
+}
+
+/**
+ * Every custom property DECLARED in a stylesheet (`--name:`), as opposed to merely
+ * referenced (`var(--name)`).
+ * @param {string} css
+ * @returns {Set<string>}
+ */
+function declaredTokens(css) {
+  const found = new Set()
+  for (const match of String(css).matchAll(/(--[a-z0-9][a-z0-9-]*)\s*:/gi)) found.add(match[1])
+  return found
+}
+
+/**
+ * Render the Settings › UI panel to static markup.
+ *
+ * The panel is rendered through React, exactly as the shell renders it: React
+ * supplies the hook dispatcher, so the component's own state and effects run for
+ * real. A ready snapshot is handed in so the render does not depend on a live
+ * store subscription.
+ * @param {any} plugin
+ * @returns {string}
+ */
+function renderPanel(plugin) {
+  return server.renderToStaticMarkup(react.createElement(plugin.section))
+}
+
+/* ── suite ────────────────────────────────────────────────────────────────── */
+
+process.stdout.write(`\ndsh-ui-projects verification\nbundle: ${origin}\n\n`)
+
+await test('the bundle registers one plugin with exactly one hard dependency', () => {
+  equal(plugin.name, 'ui-projects', 'plugin name')
+  equal(plugin.inject, ['slots'], 'inject list')
+  equal(typeof plugin.apply, 'function', 'apply')
+  equal(typeof plugin.ready, 'function', 'ready() exposes the applied-state settlement')
+  equal(plugin.section, undefined, 'nothing is published before the plugin is applied')
+})
+
+await test('the registry rejects a malformed project id', () => {
+  const registry = new Registry()
+  for (const id of ['Bad Id', '9leading', '', 'has_underscore', 'has?question']) {
+    let threw = false
+    try {
+      registry.register({ id, name: 'x' })
+    } catch {
+      threw = true
+    }
+    truthy(threw, `"${id}" must be rejected (an id becomes a CSS attribute selector)`)
+  }
+  equal(registry.ids(), [], 'nothing registered')
+})
+
+await test('the runtime feeds the theme service a layer it can take back', async () => {
+  const harness = await boot({ withTheme: true })
+  equal(harness.themeLayers(), 0, 'no layer before the skin is on')
+  await harness.runtime.enable('liquid-glass')
+  equal(harness.themeLayers(), 0, 'the skin itself registers no theme layer (its palette is a stylesheet)')
+  harness.runtime.dispose()
+  equal(harness.themeLayers(), 0, 'and none survives')
+})
+
+await test('liquid-glass registers as a skin that is off by default', () => {
+  const registry = new Registry()
+  registry.register(plugin.liquidGlass)
+  const project = registry.get('liquid-glass')
+  equal(project.type, 'skin', 'type')
+  equal(project.defaultEnabled, false, 'defaultEnabled')
+  equal(project.version, '3.0.0', 'version')
+  equal(registry.isEnabled('liquid-glass'), false, 'initial state')
+})
+
+await test('enabling liquid-glass marks the root and mounts its material', async () => {
+  const harness = await boot()
+  const before = harness.dom.styles().length
+  await harness.runtime.enable('liquid-glass')
+
+  equal(harness.registry.isEnabled('liquid-glass'), true, 'registry state')
+  equal(harness.projectMarker('liquid-glass'), 'on', 'project marker')
+  equal(harness.dom.root.getAttribute('data-ui-skin'), 'liquid-glass', 'skin marker')
+  equal(harness.dom.root.getAttribute('data-ui-projects'), 'on', 'system marker')
+  truthy(harness.dom.styles().length > before, 'a stylesheet was inserted')
+  truthy(harness.stylesContain('--lg-fill'), 'design tokens present')
+  truthy(harness.stylesContain('body[data-ui-project-liquid-glass="on"]'), 'CSS scoped to the marker')
+  truthy(harness.stylesContain('@supports not'), 'the no-backdrop-filter fallback ships with it')
+  equal(harness.dom.ambient().length, 0, 'this skin mounts no DOM: stylesheets only')
+})
+
+await test('skins are mutually exclusive and the previous one is fully removed', async () => {
+  const harness = await boot()
+  harness.registry.register({
+    id: 'other-skin',
+    name: 'Other Skin',
+    description: '',
+    version: '1.0.0',
+    type: 'skin',
+  })
+
+  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('other-skin')
+
+  equal(harness.registry.isEnabled('liquid-glass'), false, 'previous skin off')
+  equal(harness.registry.isEnabled('other-skin'), true, 'new skin on')
+  equal(harness.dom.root.getAttribute('data-ui-skin'), 'other-skin', 'skin marker follows the winner')
+  equal(harness.projectMarker('liquid-glass'), null, 'previous marker removed')
+  equal(harness.dom.ambient().length, 0, 'previous skin DOM removed')
+  excludes(harness.allCss(), '--lg-fill', 'previous skin CSS removed')
+})
+
+await test('disabling liquid-glass leaves no style, marker or theme residue', async () => {
+  const harness = await boot({ withTheme: true })
+  const before = harness.dom.styles().length
+
+  await harness.runtime.enable('liquid-glass')
+  truthy(harness.dom.styles().length > before, 'stylesheet added while on')
+
+  await harness.runtime.disable('liquid-glass')
+  equal(harness.dom.styles().length, before, 'stylesheet removed')
+  excludes(harness.allCss(), '--lg-fill', 'no glass CSS left')
+  equal(harness.dom.ambient().length, 0, 'ambient layer removed')
+  equal(harness.registry.isEnabled('liquid-glass'), false, 'registry state')
+  equal(harness.projectMarker('liquid-glass'), null, 'project marker removed')
+  equal(harness.dom.root.getAttribute('data-ui-skin'), null, 'skin marker removed')
+  equal(harness.dom.root.getAttribute('data-ui-projects'), 'on', 'system marker stays while mounted')
+  equal(harness.themeLayers(), 0, 'no theme token layer left')
+})
+
+await test('project CSS is scoped to its own marker, at-rules included', () => {
+  const compact = (/** @type {string} */ css) =>
+    css
+      .replace(/\s*\{\s*/g, '{')
+      .replace(/\s*\}\s*/g, '}')
+      .replace(/\s*,\s*/g, ',')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const scoped = compact(
+    scopeCss(
+      'body[data-ui-project-x="on"]',
+      `:root { --a: 1; }
+.card, .row:hover { color: red; }
+@media (max-width: 560px) { .card { padding: 0; } }
+@keyframes spin { from { opacity: 0 } to { opacity: 1 } }`,
+    ),
+  )
+  contains(scoped, 'body[data-ui-project-x="on"]{--a: 1;}')
+  contains(scoped, 'body[data-ui-project-x="on"] .card,body[data-ui-project-x="on"] .row:hover{color: red;}')
+  contains(scoped, '@media (max-width: 560px){body[data-ui-project-x="on"] .card{padding: 0;}}')
+  contains(scoped, '@keyframes spin{from{opacity: 0}to{opacity: 1}}')
+  excludes(scoped, ':root{--a: 1;}')
+})
+
+await test('a selector about the root or the body binds to that element, not below it', () => {
+  const marker = 'body[data-ui-project-x="on"]'
+  const compact = (/** @type {string} */ css) => css.replace(/\s+/g, ' ').trim()
+
+  // The skin's dark branch is written as `body[data-ds-dark-theme]` — the shipped
+  // client's own signal. Prefixing it produced `body[marker] body[data-ds-dark-theme]`,
+  // "a body inside a body", which matches nothing and left dark mode completely dead.
+  // This case exists because that happened.
+  equal(
+    compact(scopeCss(marker, 'body[data-ds-dark-theme] { --a: 1; }')),
+    'body[data-ui-project-x="on"][data-ds-dark-theme]{ --a: 1; }',
+    'a body-scoped selector gains the marker as an attribute, not as an ancestor',
+  )
+  equal(
+    compact(scopeCss(marker, 'body { --a: 1; }')),
+    'body[data-ui-project-x="on"]{ --a: 1; }',
+    'a bare body becomes the marker',
+  )
+  equal(
+    compact(scopeCss(marker, 'html { --a: 1; }')),
+    'body[data-ui-project-x="on"]{ --a: 1; }',
+    'html is the root, so it becomes the marker',
+  )
+  // The ordinary case is untouched: a component selector stays a descendant.
+  equal(
+    compact(scopeCss(marker, '.card { --a: 1; }')),
+    'body[data-ui-project-x="on"] .card{ --a: 1; }',
+    'a component selector is still a descendant of the marker',
+  )
+  equal(
+    compact(scopeCss(marker, ':where([data-rightbar-col]) > * { --a: 1; }')),
+    'body[data-ui-project-x="on"] :where([data-rightbar-col]) > *{ --a: 1; }',
+    'a structural selector is still a descendant',
+  )
+})
+
+await test('a project that throws on apply is rolled back and reported as an error', async () => {
+  const harness = await boot()
+  harness.registry.register({
+    id: 'broken',
+    name: 'Broken',
+    description: '',
+    version: '1.0.0',
+    apply() {
+      throw new Error('boom')
+    },
+  })
+
+  // The plugin logs the failure on purpose; keep the suite output readable.
+  const realError = console.error
+  console.error = () => {}
+  try {
+    await harness.runtime.enable('broken')
+  } finally {
+    console.error = realError
+  }
+  equal(harness.registry.isEnabled('broken'), false, 'not enabled')
+  equal(harness.registry.status('broken'), 'error', 'status reported as error')
+  contains(harness.registry.error('broken'), 'boom')
+  equal(harness.projectMarker('broken'), null, 'no marker left behind')
+})
+
+await test('dispose() removes every effect it owns', async () => {
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  harness.runtime.dispose()
+  equal(harness.registry.isEnabled('liquid-glass'), false, 'nothing active after dispose')
+  equal(
+    harness.dom.styles().length,
+    1,
+    'the project stylesheet is removed; only the system stylesheet is left',
+  )
+  excludes(harness.allCss(), '--lg-fill', 'no project CSS left')
+  equal(harness.dom.ambient().length, 0, 'ambient removed')
+  equal(harness.dom.root.getAttribute('data-ui-projects'), null, 'system marker removed')
+})
+
+await test('state persists and survives a reload, in both directions', async () => {
+  const storage = createStorage()
+  const first = await boot({ withStorage: storage })
+  await first.runtime.enable('liquid-glass')
+  equal(first.registry.isEnabled('liquid-glass'), true, 'enabled before reload')
+  equal(
+    JSON.stringify(first.runtime.persist.read().enabled),
+    '["liquid-glass"]',
+    'the record stores what is on, not what is off',
+  )
+
+  // A page refresh: fresh runtime, same storage. Turning a default-off project on
+  // must therefore survive it — the bug the record shape exists to prevent.
+  const reloaded = await boot({ withStorage: storage })
+  await reloaded.runtime.start()
+  equal(reloaded.registry.isEnabled('liquid-glass'), true, 'restored on reload')
+  equal(reloaded.projectMarker('liquid-glass'), 'on', 'marker restored')
+  equal(reloaded.dom.ambient().length, 0, 'and it mounts no DOM on reload either')
+  truthy(reloaded.stylesContain('--lg-fill'), 'its stylesheet restored')
+
+  const turnedOff = await boot({ withStorage: storage })
+  await turnedOff.runtime.start()
+  await turnedOff.runtime.disable('liquid-glass')
+  equal(
+    JSON.stringify(turnedOff.runtime.persist.read().enabled),
+    '[]',
+    'turning it off is recorded as an empty active set',
+  )
+
+  const third = await boot({ withStorage: storage })
+  await third.runtime.start()
+  equal(third.registry.isEnabled('liquid-glass'), false, 'stays off after reload')
+  equal(third.projectMarker('liquid-glass'), null, 'no marker after reload')
+})
+
+await test('storage keys from a previous generation are swept on load', async () => {
+  /*
+   * `dsh-liquid-glass.settings` and `dsh-liquid-glass.settings.version` were written by an
+   * earlier generation of this plugin, which kept per-project state in its own localStorage
+   * keys. Nothing reads them now — the shared `ui-projects` record owns state — but a stale
+   * key that looks authoritative costs a future reader real time, so `persist.js` deletes
+   * them the moment it sees them.
+   *
+   * Asserted rather than assumed, because the sweep is best-effort and silent by design: if
+   * it quietly stopped running, nothing else in this suite would notice.
+   */
+  const storage = createStorage()
+  storage.map.set('dsh-liquid-glass.settings', '{"scale":1}')
+  storage.map.set('dsh-liquid-glass.settings.version', '3')
+  storage.map.set('dsh.ui.projects.v1', '{"kept":true}')
+
+  await boot({ withStorage: storage })
+
+  equal(storage.map.has('dsh-liquid-glass.settings'), false, 'the stale settings key is swept')
+  equal(storage.map.has('dsh-liquid-glass.settings.version'), false, 'and so is its version key')
+  // The sweep is a list of two names, not "clear everything": the current key must survive.
+  equal(storage.map.has('dsh.ui.projects.v1'), true, 'while the key this plugin does use is untouched')
+})
+
+await test('state uses the dsh settings document when the host offers a scope', async () => {
+  const harness = await boot({ withSettingsScope: true })
+  equal(harness.persistKind, 'settings', 'adapter kind')
+
+  await harness.runtime.enable('liquid-glass')
+  equal(harness.settingsSection()?.touched, true, 'touched recorded')
+  equal(harness.settingsSection()?.initialized, true, 'initialized recorded')
+  equal(JSON.stringify(harness.settingsSection()?.enabled), '["liquid-glass"]', 'enabled recorded')
+
+  await harness.runtime.disable('liquid-glass')
+  equal(JSON.stringify(harness.settingsSection()?.enabled), '[]', 'disabled recorded as an empty set')
+})
+
+await test('resetAll returns to the shipped default in one step', async () => {
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.resetAll()
+  equal(harness.registry.isEnabled('liquid-glass'), false, 'back to its default')
+  equal(harness.projectMarker('liquid-glass'), null, 'no marker')
+  equal(harness.dom.styles().length, 1, 'only the system stylesheet remains')
+})
+
+await test('the settings section registers once, with a localized label thunk', async () => {
+  const harness = await boot()
+  const registration = /** @type {any} */ (
+    harness.registrations.find((entry) => entry.name === 'settings.section')
+  )
+  truthy(registration !== undefined, 'settings.section registered')
+  equal(registration.id, 'ui', 'section id')
+  equal(typeof registration.order, 'number', 'order present')
+  equal(typeof registration.label, 'function', 'label is a thunk so a locale change re-renders')
+  equal(registration.label(), 'UI', 'label in en')
+  equal(typeof plugin.section, 'function', 'the render handler is published for the host')
+  equal(plugin.runtime, harness.runtime, 'the live runtime is published')
+  truthy(plugin.store !== undefined, 'the panel store is published')
+})
+
+await test('the rendered page shows a keyboard-accessible switch per project', async () => {
+  const harness = await boot()
+  const markup = harness.render()
+
+  contains(markup, 'class="uip-root"')
+  contains(markup, 'Liquid Glass')
+  contains(markup, 'role="switch"')
+  contains(markup, 'aria-checked="false"')
+  contains(markup, 'aria-label="Turn on Liquid Glass"')
+  contains(markup, 'v1.0.0')
+  contains(markup, 'Skin')
+  contains(markup, 'Restore default UI')
+  contains(markup, 'data-status="inactive"')
+
+  await harness.runtime.enable('liquid-glass')
+  const after = harness.render()
+  contains(after, 'aria-checked="true"')
+  contains(after, 'aria-label="Turn off Liquid Glass"')
+  contains(after, 'data-status="active"')
+})
+
+await test('a second project appears with no change to the settings page', async () => {
+  const harness = await boot()
+  harness.registry.register({
+    id: 'demo-enhancement',
+    name: 'Demo Enhancement',
+    description: 'Registered only through the registry.',
+    version: '2.3.4',
+    type: 'enhancement',
+  })
+  const markup = harness.render()
+  contains(markup, 'Demo Enhancement')
+  contains(markup, 'Registered only through the registry.')
+  contains(markup, 'v2.3.4')
+  contains(markup, 'Enhancement')
+})
+
+await test('the entry module loads without touching React or a project', () => {
+  // The contract the real loader enforces, and the one a Node test is most prone
+  // to miss: the shell materializes the entry module BEFORE calling `apply`, with
+  // a `require` that answers only its frozen module table. Importing React or a
+  // project at load time is a module-table miss that takes the whole plugin down —
+  // which is exactly what the first browser run of this package hit.
+  const requested = []
+  const strict = (/** @type {string} */ id) => {
+    requested.push(id)
+    throw new Error(`module-table miss: the shell exposes no "${id}"`)
+  }
+  const { entry: probe } = materializeEntry(bundleSource, strict)
+  equal(requested, [], 'the entry module requests nothing from the shell at load time')
+  equal(typeof probe.apply, 'function', 'it still exports a usable plugin')
+  equal(probe.inject, ['slots'], 'and still declares its service dependency')
+})
+
+await test('the project modules register only once the settings slot is declared', () => {
+  const requested = []
+  /** The shell's frozen table: React and nothing else. */
+  const shellTable = (/** @type {string} */ id) => {
+    requested.push(id)
+    if (id === 'react') return react
+    throw new Error(`module-table miss: the shell exposes no "${id}"`)
+  }
+  const { entry: probe, globals } = materializeEntry(bundleSource, shellTable)
+  equal(requested, [], 'nothing is requested at load time')
+
+  // `apply` writes markers and a stylesheet immediately, so the fake browser globals
+  // must be in place first — the bundle reads them as globals, not as imports.
+  const dom = createFakeDom()
+  globals.document = dom.document
+  globals.window.localStorage = createStorage()
+
+  /** @type {Array<() => any>} */
+  const injections = []
+  /** @type {any} */
+  let registeredSection
+  const ctx = {
+    get: (/** @type {string} */ name) =>
+      name === 'slots'
+        ? {
+            inject: (/** @type {string} */ key, /** @type {() => any} */ callback) => {
+              void key
+              injections.push(callback)
+              return () => {}
+            },
+            register: (/** @type {any} */ options) => {
+              registeredSection = options
+              return () => {}
+            },
+          }
+        : name === 'remote'
+          ? { $on: () => () => {} }
+          : undefined,
+    // Honour the requested dependency names rather than assuming one, so a fake
+    // context stays faithful if the plugin's `ctx.inject` calls change.
+    inject: (/** @type {string[]} */ names, /** @type {(scoped: any) => any} */ callback) =>
+      names.includes('remote') ? callback(ctx) : () => {},
+    on: () => () => {},
+    effect: (/** @type {() => any} */ callback) => {
+      const result = callback()
+      return typeof result === 'function' ? result : () => {}
+    },
+  }
+
+  try {
+    probe.apply(ctx)
+    // One settings section: the UI project manager. It waits for the slot
+    // declaration, so it does not register before the slot exists.
+    equal(injections.length, 1, 'the section registration waits for the slot declaration')
+    equal(registeredSection, undefined, 'and it does not register before it')
+
+    injections[0]()
+    truthy(registeredSection !== undefined, 'the section registers once the slot exists')
+    equal(registeredSection.id, 'ui', 'section id')
+    equal(typeof registeredSection.label, 'function', 'localized label thunk')
+    truthy(probe.registry.ids().includes('liquid-glass'), 'the built-in project registered with it')
+
+    // The retired reminders section used to be a second registration here, with
+    // its own id, label, and `probe.reminders` handle. Nothing replaced it: the
+    // UI project manager is the plugin's only settings section, which is what
+    // `injections.length` above now pins.
+
+    // React is reached when the panel renders, never while the plugin loads.
+    const element = react.createElement(probe.section)
+    equal(typeof element, 'object', 'the section render handler produces an element')
+    equal(
+      requested.filter((id) => id !== 'react'),
+      [],
+      `only React was ever requested, got: ${requested.join(', ')}`,
+    )
+  } finally {
+    globals.document = undefined
+    globals.window.localStorage = undefined
+  }
+})
+
+await test('the section label follows the real locale snapshot shape', async () => {
+  // The locale service publishes `{ active, locales, revision }`. Reading `locale`,
+  // `id` or `current` finds nothing, falls back to English, and leaves the whole
+  // section untranslated in a Chinese client — which is exactly what happened. This
+  // asserts against the real shape rather than a convenient one.
+  const harness = await boot()
+  harness.ctx.provide('locale', { getSnapshot: () => ({ active: 'zh', locales: ['zh', 'en'], revision: 3 }) })
+  equal(detectLocale(harness.ctx), 'zh', 'the active locale is read from `active`')
+  equal(strings(detectLocale(harness.ctx)).sectionLabel, '界面', 'and the zh section label is used')
+  equal(strings(detectLocale(harness.ctx)).resetAll, '恢复默认界面', 'as is the rest of the copy')
+
+  // A plain string snapshot, and a composition with no locale service at all.
+  harness.ctx.provide('locale', { getSnapshot: () => 'en' })
+  equal(detectLocale(harness.ctx), 'en', 'a plain string snapshot is accepted')
+  const bare = await boot()
+  equal(detectLocale(bare.ctx), 'en', 'a composition with no locale service falls back to English')
+})
+
+await test('materialising the entry never touches an internal module, exactly as the loader does', () => {
+  /*
+   * The sharpest load-time contract, and the one a browser enforces: the shell materializes
+   * the entry module with a `require` that answers ONLY its frozen table. A module graph
+   * resolves its own imports, so the bundle's internal requests never reach that table — but
+   * a load-time side effect that walks the graph eagerly, or a circular import, surfaces here
+   * as a thrown exception rather than as a page stuck on "Loading plugins…".
+   *
+   * Deliberately stricter than the other load-time cases: the table answers React ONLY, so
+   * anything else the entry reaches for at load time is a failure.
+   */
+  const requested = []
+  const strict = (/** @type {string} */ id) => {
+    requested.push(id)
+    if (id === 'react') return react
+    throw new Error(`module-table miss: the shell exposes no "${id}"`)
+  }
+  /** @type {any} */
+  let entry
+  try {
+    entry = materializeEntry(bundleSource, strict).entry
+  } catch (err) {
+    throw new Error(`the entry module threw while loading: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  equal(requested.filter((id) => id !== 'react'), [], 'nothing outside React was requested at load time')
+  equal(typeof entry.apply, 'function', 'and the plugin exports an apply')
+})
+
+await test('the frost goes on surfaces, never on a container of them', async () => {
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  const css = harness.allCss()
+
+  // A `backdrop-filter` on a CONTAINER blurs every surface inside it at once. That is
+  // what made an earlier version of this skin unreadable: the frame's whole-viewport
+  // floating layer (`[data-shell-overlay]`, measured 1414×800) and every direct child
+  // of the frame were blurred, so the conversation was softened along with everything
+  // else. Frost belongs on the columns and on floating panels — the surfaces.
+  const blurSelectors = [...String(css).matchAll(/(^|\})\s*([^{}@]+)\{[^{}]*backdrop-filter[^{}]*\}/g)]
+    .map((match) => match[2].trim())
+    .filter((selector) => selector.length > 0)
+  truthy(blurSelectors.length > 0, 'the skin does apply refraction somewhere')
+
+  for (const selector of blurSelectors) {
+    if (selector.includes('data-shell-overlay')) {
+      throw new Error(`frost is applied to the frame-wide floating container: ${selector}`)
+    }
+    if (selector.includes('body') && !selector.includes('data-ui-project')) {
+      throw new Error(`frost is applied to the document body, which contains everything: ${selector}`)
+    }
+  }
+  // The columns ARE blurred on purpose — that is the skin — and the assertion that
+  // they are is what keeps this test honest about the direction of the rule.
+  truthy(
+    blurSelectors.some((selector) => selector.includes('data-ui-skin-column')),
+    `the columns carry the frost (found: ${JSON.stringify(blurSelectors.slice(0, 4))})`,
+  )
+  // And the seam they are aimed by is stamped by the runtime, not guessed by a
+  // structural selector — the guess failed silently twice in this package.
+  const harnessWithFrame = await boot()
+  await harnessWithFrame.runtime.enable('liquid-glass')
+  const markedCount = () =>
+    harnessWithFrame.dom.document.body
+      .querySelectorAll('div')
+      .filter((el) => el.hasAttribute('data-ui-skin-column')).length
+  // The marking retries on a timer, because at `apply` time the shell has not mounted
+  // the application yet and there is no frame to find. So the test waits for it, exactly
+  // as the browser does — the assertion is about the outcome, not the latency.
+  let marks = markedCount()
+  for (let attempt = 0; attempt < 40 && marks < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    marks = markedCount()
+  }
+  truthy(marks >= 2, `the runtime marked the frame's columns (${marks})`)
+  // And it marked ONLY columns: not the frame-wide overlay, which is a container.
+  const markedEls = harnessWithFrame.dom.document.body
+    .querySelectorAll('div')
+    .filter((el) => el.hasAttribute('data-ui-skin-column'))
+  equal(
+    markedEls.filter((el) => el.hasAttribute('data-test-overlay')).length,
+    0,
+    'the overlay container and the resize handle were left unmarked',
+  )
+  equal(markedEls.length, 3, 'exactly the three columns were marked')
+  await harnessWithFrame.runtime.disable('liquid-glass')
+  equal(markedCount(), 0, `and unmarked them on the way out (style sheets now: ${harnessWithFrame.dom.styles().length})`)
+
+  /*
+   * The frame's own background IS see-through — that is what puts the ambient field
+   * behind the glass, so the columns have something to show. It is safe only because
+   * the frame paints nothing but a background: no text of its own, and every surface
+   * inside it carries its own fill.
+   *
+   * The property that must hold is therefore not "opaque" but "never translucent
+   * without a way back": a see-through window with no `backdrop-filter` support is
+   * just an unreadable page, so a fallback must restore it.
+   */
+  const base = /--dsw-alias-bg-base:\s*([^;]+);/.exec(css)
+  truthy(base !== null, 'the frame background token is set')
+  const fallback = /@supports not \(\(backdrop-filter:[^)]*\)[^{]*\)\s*\{([\s\S]*?)\n\}/.exec(css)
+  truthy(fallback !== null, 'a no-backdrop-filter fallback exists')
+  truthy(
+    /--dsw-alias-bg-base:\s*(#|rgb|hsl)/.test(fallback[1]),
+    'the fallback restores an opaque window when there is nothing to refract',
+  )
+})
+
+await test('every inserted stylesheet is owned and removable', async () => {
+  const harness = await boot()
+  equal(
+    harness.dom.styles().length,
+    1,
+    'exactly the system stylesheet before any project is on',
+  )
+  await harness.runtime.enable('liquid-glass')
+  equal(harness.dom.styles().length, 3, 'system + palette + material')
+  for (const style of harness.dom.styles()) truthy(String(style.id).length > 0, 'style element carries an id')
+  harness.runtime.dispose()
+  equal(
+    harness.dom.styles().length,
+    1,
+    'the project stylesheets are gone; only the system stylesheet remains (the plugin is still mounted)',
+  )
+})
+
+await test('turning the skin off restores every shipped token it re-bound', async () => {
+  const harness = await boot()
+  const defaultTokens = declaredTokens(harness.allCss())
+
+  await harness.runtime.enable('liquid-glass')
+  const skinnedTokens = declaredTokens(harness.allCss())
+  const added = [...skinnedTokens].filter((token) => !defaultTokens.has(token)).sort()
+  truthy(added.length >= 20, `the skin's palette is applied (${added.length} tokens)`)
+
+  // Every token the skin touches is named after a shipped one, so removing the
+  // sheet restores the shipped value instead of deleting a definition the client
+  // depends on. (A token that merely starts with `--dsw-` could still be invented,
+  // which the next test checks against the installed design system.)
+  const shippedNamed = added.filter((token) => token.startsWith('--dsw-'))
+  truthy(shippedNamed.length >= 20, `${shippedNamed.length} re-bind shipped design tokens`)
+
+  await harness.runtime.disable('liquid-glass')
+  const after = declaredTokens(harness.allCss())
+  equal(
+    added.filter((token) => after.has(token)),
+    [],
+    'no token the skin introduced survives the disable',
+  )
+  equal(harness.projectMarker('liquid-glass'), null, 'the marker is gone')
+  equal(harness.dom.ambient().length, 0, 'the ambient layer is gone')
+})
+
+await test('the skin adds nothing to the document flow', async () => {
+  const harness = await boot()
+  // The shipped shell decides whether the sidebar is wide or a rail by MEASURING the frame,
+  // so an extra element in the document's own children distorts that measurement. It did:
+  // with the ambient field appended to `<body>`, enabling the skin collapsed the sidebar to
+  // the rail and squeezed the settings dialog until its navigation became a vertical strip —
+  // and only while the skin was on, which is what pointed at the skin at all.
+  //
+  // So this asserts the property that matters rather than the mechanism: the number of
+  // children `<body>` has is exactly what the shell left there.
+  const before = harness.dom.body.children.length
+  await harness.runtime.enable('liquid-glass')
+  equal(harness.dom.body.children.length, before, 'enabling the skin adds no child to the body')
+
+  // v3 mounts nothing at all, so there is no layer to place and nothing for the shell to
+  // measure around. Asserted rather than assumed: an ambient field is the one thing that
+  // previously collapsed the sidebar, and "no DOM" is the contract that prevents it.
+  equal(harness.dom.ambient().length, 0, 'this skin mounts no DOM at all')
+
+  await harness.runtime.disable('liquid-glass')
+  equal(harness.dom.body.children.length, before, 'and disabling it takes nothing with it')
+  equal(harness.dom.ambient().length, 0, 'the ambient field is gone')
+})
+
+await test('a project can declare a control, and the page renders it without knowing what it does', async () => {
+  /*
+   * The mechanism outlives the feature. Liquid Glass used to declare an opacity slider and no
+   * longer does — the material has one fixed look — but "a project may declare controls and the
+   * settings page renders them without knowing what any of them mean" is the extensibility
+   * promise this package exists to keep. So the control is exercised through a purpose-built
+   * project here, which is also a better test: it belongs to the harness rather than to a skin
+   * that might change its mind again.
+   */
+  const harness = await boot()
+  harness.registry.register({
+    id: 'with-a-control',
+    name: 'Has a control',
+    description: 'Declares one slider and nothing else.',
+    version: '1.0.0',
+    type: 'enhancement',
+    scope: 'global',
+    supports: [],
+    defaultEnabled: false,
+    controls: [
+      {
+        id: 'wobble',
+        type: 'slider',
+        labelKey: 'opacity',
+        min: 0,
+        max: 10,
+        step: 1,
+        defaultValue: 4,
+        storageKey: 'wobble',
+      },
+    ],
+    apply: () => {},
+  })
+  await harness.runtime.enable('with-a-control')
+
+  const markup = harness.render()
+  contains(markup, 'data-control="wobble"')
+  contains(markup, 'type="range"')
+  // The label comes from the shared control copy, keyed by the control's own `labelKey`.
+  contains(markup, 'aria-label=')
+  // The value is the control's own declared default, since nothing is stored yet.
+  contains(markup, 'value="4"')
+
+  // A project that declares no controls renders none — the card is not obliged to have any.
+  await harness.runtime.enable('liquid-glass')
+  excludes(harness.render(), 'data-control="opacity"', 'the skin no longer declares a control')
+})
+
+await test('the slider mirrors the switch exactly', async () => {
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  const css = harness.allCss()
+  /** @param {string} needle */
+  const rule = (needle) => {
+    const at = css.indexOf(needle)
+    if (at < 0) return ''
+    const open = css.indexOf('{', at)
+    const close = css.indexOf('}', open)
+    return open < 0 || close < 0 ? '' : css.slice(open + 1, close)
+  }
+
+  // The two controls sit on the same card and mean the same kind of thing, so the slider's
+  // geometry and colour are asserted against the switch's OWN declarations rather than
+  // against literals: if the switch is restyled, this test follows it.
+  const switchRule = rule('.uip-switch{') || rule('.uip-switch {')
+  const knobRule = rule('.uip-knob{') || rule('.uip-knob {')
+  const trackRule = rule('::-webkit-slider-runnable-track')
+  const thumbRule = rule('::-webkit-slider-thumb')
+
+  truthy(trackRule.length > 0, 'the slider has a track rule')
+  truthy(thumbRule.length > 0, 'the slider has a thumb rule')
+
+  // Track: the switch's own height, border and rounding, and the same background tier.
+  contains(trackRule, 'height: 24px', "the track uses the switch's height")
+  contains(switchRule, 'height: 24px', "and that is in fact the switch's height")
+  contains(trackRule, 'border: 1px solid var(--dsw-alias-border-l2)', "the track uses the switch's border")
+  contains(switchRule, 'border: 1px solid var(--dsw-alias-border-l2)', "and that is the switch's border")
+  contains(trackRule, 'border-radius: 999px', "the track uses the switch's rounding")
+  contains(switchRule, 'border-radius: 999px', 'and that is the switch rounding')
+  contains(trackRule, 'background: var(--dsw-alias-bg-layer-2)', "the track uses the switch's fill tier")
+  contains(switchRule, 'background: var(--dsw-alias-bg-layer-2)', 'and that is the switch fill')
+
+  // Thumb: literally the switch's knob — same size, fill and shadow.
+  for (const declaration of [
+    'width: 18px',
+    'height: 18px',
+    'border-radius: 50%',
+    'background: var(--dsw-alias-bg-overlay)',
+    'box-shadow: 0 1px 2px rgb(15 23 42 / 30%)',
+  ]) {
+    contains(thumbRule, declaration, `the thumb matches the switch knob (${declaration})`)
+    contains(knobRule, declaration, `and the switch knob really declares it (${declaration})`)
+  }
+})
+
+await test('the material transparency is fixed, and no user control can thin it out', async () => {
+  /*
+   * There WAS an opacity slider here, and it was removed at the user's request. The regression
+   * this test guards is specific and worth keeping: the slider's floor once sat at 0.45 of the
+   * nominal fill, which put a surface at roughly 15% alpha — technically present, invisible in
+   * practice — and a user who found the bottom of the scale reasonably concluded the skin had
+   * stopped working.
+   *
+   * So the assertion is that transparency is a FIXED design decision now: the fills carry
+   * explicit alphas, nothing writes a material factor at runtime, and a project cannot be talked
+   * into thinning them.
+   */
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  const body = harness.dom.document.body
+
+  // No runtime-written material factor, on either element.
+  equal(body.style.getPropertyValue('--lg-material-swap'), '', 'no material factor is written on the body')
+  equal(harness.dom.root.style.getPropertyValue('--lg-material-swap'), '', 'nor on the root')
+
+  // The fills are the design's own, with no multiplier in them.
+  const css = harness.allCss()
+  excludes(css, '--lg-material-swap', 'the sheet declares no material factor either')
+  contains(css, '--dsw-specific-sidebar-fill: rgb(250 250 254 / 20%)', 'the sidebar carries a fixed alpha')
+
+  // The context no longer offers the control the slider drove.
+  const context = harness.runtime.contextFor('liquid-glass')
+  truthy(context !== undefined, 'an applied project still exposes its context')
+  equal(
+    typeof /** @type {any} */ (context).setMaterialOpacity,
+    'undefined',
+    'and offers no way to change the material transparency',
+  )
+})
+
+await test('marking the columns survives the application not being mounted yet', async () => {
+  /*
+   * The case that fails in a real browser and nowhere else.
+   *
+   * A project is applied while the shell is still booting, so the frame either does not exist
+   * yet or exists with zero-area children that a filter for "actually occupies the grid"
+   * rejects. Both are transient, and both look exactly like success to a one-shot lookup.
+   *
+   * So: boot with the frame DETACHED, enable the project, and only afterwards let the frame
+   * appear. Marking must still happen — driven by the DOM-change observer, not by luck of
+   * timing.
+   */
+  const harness = await boot({ detachedFrame: true })
+  await harness.runtime.enable('liquid-glass')
+
+  const markedCount = () =>
+    harness.dom.document.body.querySelectorAll('div').filter((el) => el.hasAttribute('data-ui-skin-column')).length
+  equal(markedCount(), 0, 'nothing is marked while there is no frame to mark')
+
+  // The shell mounts the application: this is the mutation the runtime waits for.
+  harness.dom.mountFrame()
+  FakeMutationObserver.flushAll()
+
+  equal(markedCount(), 3, 'the columns are marked as soon as the frame appears')
+  const state = harness.runtime.markingState.get('liquid-glass')
+  truthy(
+    typeof state?.note === 'string' && /marked/.test(state.note),
+    `the diagnostic records that it succeeded (${JSON.stringify(state)})`,
+  )
+
+  await harness.runtime.disable('liquid-glass')
+  equal(markedCount(), 0, 'and a disable still unmarks them')
+})
+
+/*
+ * RETIRED — "the emitted selectors actually match the elements they are meant to hide".
+ *
+ * That test built the cost-meter's dock row (`.cm-root`) and the composer's stats marker in
+ * the DOM, then executed the skin's emitted selectors against them with a real matcher, to
+ * prove the hiding rule reached the elements rather than merely existing.
+ *
+ * The rule it guarded is gone, and its removal is a deliberate loss of behaviour:
+ *
+ *   CSS:        body [data-composer-stats], body .cm-root { display: none }
+ *   Behaviour:  the composer's token row and the session total were hidden while the skin
+ *               was on — at the user's request.
+ *   Removed by: v3's rule that the skin carries no `display` declaration. `display` is a
+ *               layout property, and setting it on another package's elements is the same
+ *               class of coupling as the hash-class and `!important` overrides that broke
+ *               this skin twice. It is not the frost bug, but it is the same shape.
+ *
+ * So the rows are visible again while Liquid Glass is on. Nothing else about the skin depends
+ * on them, and the two elements belong to `dsh-cost-meter` rather than to dsh.
+ *
+ * If the hiding is wanted back it should return as an explicit, separately-reviewed exception
+ * with its own rule and comment — not folded quietly into a skin's stylesheet, and not
+ * re-added without this note being deleted on purpose.
+ */
+
+await test('the skin never changes stacking or clipping on a layout column', async () => {
+  /*
+   * The bug this guards, in the user's own words: "the settings panel sits over the left workspace
+   * card, underneath the conversation area".
+   *
+   * The cause was one decorative declaration. `isolation: isolate` on the marked columns was added
+   * to keep one column's blur out of another's painting — redundant, since a `backdrop-filter`
+   * already creates a stacking context — and it is not free: a stacking context is also a CLIPPING
+   * and ORDERING boundary for everything painted inside it. The settings dialog renders inside the
+   * centre column, so its `position: absolute; inset: 0` mask covered only that column, the
+   * conversation beside it stayed bright, and the panel was cut off at the column's edge.
+   *
+   * A `position: fixed` child cannot escape an ancestor's clipping, so no amount of adjusting the
+   * panel's own properties could have fixed it — and four rounds were spent trying. This asserts the
+   * rule rather than the instance: a column may be PAINTED, never re-stacked or clipped.
+   */
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  const css = harness.allCss()
+
+  /*
+   * v3 emits NO rule scoped to a column at all — a stronger guarantee than the one this test
+   * used to make.
+   *
+   * It previously required the column rule to exist and to be free of stacking and clipping
+   * declarations. The rule itself turned out to be the problem: `backdrop-filter` creates a
+   * containing block for `position: fixed` descendants, the settings dialog renders inside a
+   * column, and so the frost captured the dialog and collapsed it to a narrow strip. The frost
+   * now lives on the frame's `::before`; see `glass.css` and the containing-block probe.
+   *
+   * The assertion below is the shape of that: every mention of the column marker must sit
+   * inside a `:has(> …)` guard, which selects the FRAME by looking at its children.
+   */
+  const columnSelectors = [...css.matchAll(/([^{}]*\[data-ui-skin-column\][^{}]*)\{/g)].map((m) => m[1].trim())
+  truthy(columnSelectors.length > 0, 'the column marker is used to find the frame')
+  for (const selector of columnSelectors) {
+    truthy(
+      selector.includes(':has('),
+      `the column marker only ever appears inside :has(), to select the frame (found: ${selector})`,
+    )
+  }
+  // And the properties that caused the original bug never appear on a column.
+  for (const forbidden of ['isolation', 'z-index', 'overflow', 'contain:', 'clip-path', 'backdrop-filter']) {
+    for (const selector of columnSelectors) {
+      excludes(selector, forbidden, `a column selector never carries ${forbidden}`)
+    }
+  }
+
+  /*
+   * The dialog geometry assertions that used to follow are gone, along with the rules they
+   * described.
+   *
+   * They pinned a block in `surfaces.css` that forced the shipped settings dialog's position,
+   * size and stacking from outside, using dsh's build-hashed CSS-module classes and 39
+   * `!important` declarations. Five selectors, all `.VOzbGW_*`. It was compensating for a
+   * dsh-side layout bug, which a skin cannot own: a rebuild rehashes the class, every rule
+   * stops matching, and nothing reports it.
+   *
+   * Two things replace them, and neither is a weaker version of the same test:
+   *
+   *   - `surfaces.css` now states the rule that was crossed — appearance properties only on
+   *     shipped elements, never geometry — and the suite asserts that no hash-shaped class
+   *     appears in the emitted CSS at all (see "the skin names no CSS-module hash" below).
+   *   - The invariant this test actually exists for is above and unchanged: a layout column
+   *     may be PAINTED, never re-stacked or clipped.
+   */
+})
+
+await test('one frost on the frame, and no blur on a column', async () => {
+  /*
+   * The shape of v3, asserted as properties rather than as strings.
+   *
+   * An earlier version put the frost on each column. That is not merely a different choice —
+   * `backdrop-filter` creates a containing block for `position: fixed` descendants, so
+   * frosting a column captures the settings dialog rendered inside it and confines it to the
+   * column. The user-visible symptom was the settings panel collapsing into a narrow strip on
+   * the left. `tools/probe-backdrop-containing-block.html` measures the whole chain.
+   *
+   * These assertions exist so that shape cannot come back unnoticed.
+   */
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  const css = String(harness.allCss())
+
+  // 1. The frost is written on the frame, found through the runtime's own column marker.
+  contains(css, ':has(> [data-ui-skin-column])', 'the frame is selected by its marked children')
+
+  // 2. It reaches a stacking context through `isolation`, the one property that does NOT
+  //    capture fixed descendants — which is exactly what the dialog depends on.
+  contains(css, 'isolation: isolate', 'the stacking context comes from isolation')
+
+  // 3. Every `backdrop-filter` lands on a pseudo-element or a floating surface, never on a
+  //    column itself. This is the specific regression that broke the dialog.
+  const blurSelectors = [...css.matchAll(/([^{}@]+)\{[^{}]*backdrop-filter[^{}]*\}/g)].map((m) => m[1].trim())
+  truthy(blurSelectors.length > 0, 'the skin does apply refraction somewhere')
+  for (const selector of blurSelectors) {
+    const onAColumn = /\[data-ui-skin-column\]/.test(selector)
+    truthy(!onAColumn || selector.includes('::before'), `no column carries backdrop-filter directly (found: ${selector})`)
+  }
+})
+
+await test('the composer stat rows are hidden, and without moving the composer', async () => {
+  /*
+   * Two rows of small text sit under the composer — dsh's own token and efficiency pills, and
+   * dsh-cost-meter's session cost line — and this skin hides them at the project owner's
+   * request. The rule is cross-package coupling, and `glass.css` documents it in full. What
+   * this test guards are the two properties that took a round each to get right.
+   *
+   * WHY `visibility` AND NOT `display`
+   *
+   * `display: none` was tried first, and it moved the input box. It removes the rows from the
+   * box tree, the composer container is anchored to the bottom of the viewport, so the
+   * container shortened and its top edge — carrying the input — moved down by about the height
+   * of the two rows. Measured in use, not predicted.
+   *
+   * The requirement is that the input box does not move, and only a declaration that keeps the
+   * boxes can satisfy it. So these assertions are not merely "the rows are hidden": they are
+   * "they are hidden by a property with no layout effect". That distinction is the whole point.
+   * A future rewrite reaching for `display: none` again would look correct in review and break
+   * the composer, which is exactly the failure this test exists to catch. `height` is excluded
+   * for the same reason: setting it to 0 removes the rows' height and reintroduces the shift
+   * just as surely as `display` did.
+   *
+   * The cost is a blank band where the rows were. That trade was made deliberately.
+   *
+   * WHY THE TWO HOOKS ARE THE RIGHT ONES
+   *
+   * They come from different packages, so they are two different seams:
+   * `[data-composer-stats]` is dsh's own hand-written data attribute (its class name is a
+   * CSS-module reference, and naming that would be the hash-class mistake this skin was
+   * rebuilt to remove); `.cm-root` is dsh-cost-meter's public class, from a namespace of 177
+   * entirely plain `cm-*` names. Neither is a build artefact.
+   */
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  const css = String(harness.allCss())
+
+  // Both rows, both scoped to the project marker — so switching the skin off brings them back.
+  contains(css, 'body[data-ui-project-liquid-glass="on"] [data-composer-stats]')
+  contains(css, 'body[data-ui-project-liquid-glass="on"] .cm-root')
+
+  const statRule = /body\[data-ui-project-liquid-glass="on"\] \[data-composer-stats\][^{]*\{([^}]*)\}/.exec(css)
+  truthy(statRule !== null)
+
+  const declarations = statRule[1]
+  contains(declarations, 'visibility: hidden')
+  // The regression this test exists for: a property that removes the boxes moves the composer.
+  excludes(declarations, 'display')
+  excludes(declarations, 'height')
+  excludes(declarations, 'overflow')
+})
+
+await test('the scoper refuses to emit a doubled project marker', async () => {
+  /*
+   * The bug this catches, in full.
+   *
+   * A rule was written as `body[data-ui-project-liquid-glass='on'] .VOzbGW_panel` — the marker
+   * spelled out by hand, which is allowed. The scoper leaves a selector containing the marker
+   * alone, but this one did not match the runtime's marker exactly (single quotes against double),
+   * so it was scoped a second time into:
+   *
+   *     body[data-ui-project-liquid-glass="on"][data-ui-project-liquid-glass='on'] .VOzbGW_panel
+   *
+   * The same attribute twice on one compound. That matches nothing, on any page, forever — and it
+   * reads as perfectly reasonable CSS. The guard makes the next occurrence a thrown error instead
+   * of a rule that silently does nothing for several rounds.
+   */
+  const marker = 'body[data-ui-project-x="on"]'
+  let threw = false
+  try {
+    scopeCss(marker, "body[data-ui-project-x='on'] .thing { color: red }")
+  } catch (err) {
+    threw = true
+    truthy(
+      String(err).includes('twice'),
+      `the failure explains itself (${err instanceof Error ? err.message : String(err)})`,
+    )
+  }
+  truthy(threw, 'a selector that would carry the marker twice is refused')
+
+  // The legitimate forms still work, and are scoped exactly once.
+  const plain = scopeCss(marker, 'body .thing { color: red }')
+  equal((plain.match(/data-ui-project-x/g) ?? []).length, 1, 'a plain `body …` is scoped once')
+  const explicit = scopeCss(marker, `${marker} .thing { color: red }`)
+  equal((explicit.match(/data-ui-project-x/g) ?? []).length, 1, 'an exact marker is left alone')
+
+  // And no emitted rule in the shipped sheet carries the marker twice.
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  const doubled = /\[data-ui-project-[a-z0-9-]+[^\]]*\][^\s>+~]*\[data-ui-project-/.exec(harness.allCss())
+  equal(doubled, null, 'the shipped sheet contains no doubled marker')
+})
+
+await test('the skin names no CSS-module hash, and reaches shipped surfaces by role', async () => {
+  /*
+   * This test used to assert the OPPOSITE: that `.VOzbGW_panel` still existed in the installed
+   * client, and that the skin's stylesheet named it. That guard made binding to a build-hashed
+   * class survivable — it turned "the hash changed" from a silent regression into a failing test.
+   *
+   * The binding is gone, so the old guard has no subject. What remains worth guarding is the
+   * reverse risk: that a hash-shaped class creeps back in, because that is the failure mode that
+   * costs the most — a frontend rebuild renames it, every rule referencing it stops matching, and
+   * nothing reports a problem. The dialog quietly loses its material and nobody knows why.
+   *
+   * The check runs against the CSS the runtime actually emits for the active project, so it covers
+   * every stylesheet the skin ships.
+   */
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  const css = String(harness.allCss())
+
+  // A CSS-module hash reads like `.Ab3xY_panel`: alphanumerics, an underscore, more
+  // alphanumerics. This plugin's own vocabulary (`.lg-glass`, `.ds-ambient`) and the runtime's
+  // markers (`[data-ui-skin-column]`) contain no underscore, which is what makes the pattern
+  // precise rather than a hopeful grep.
+  const hashShaped = [...css.matchAll(/\.[A-Za-z0-9]{3,}_[A-Za-z0-9]+/g)].map((match) => match[0])
+  equal(
+    hashShaped.length,
+    0,
+    `no build-hashed class appears in the emitted CSS (found: ${JSON.stringify([...new Set(hashShaped)].slice(0, 6))})`,
+  )
+
+  // And the skin does still reach shipped floating surfaces — by ARIA role, which is a published
+  // interface rather than somebody's build output.
+  contains(css, 'role=')
+  equal(/\bdialog\b/.test(css), true, 'shipped floating surfaces are matched by ARIA role, dialog included')
+})
+
+await test('a settings record left over from the removed opacity slider is harmless', async () => {
+  /*
+   * Users of an earlier version have `{opacity: 0}` — and a scale revision — sitting in their
+   * stored settings. The feature that read those keys is gone, so the only requirement is that
+   * stale keys change nothing: the material must come out identical whether or not they are
+   * present.
+   *
+   * That is worth asserting rather than assuming. The stored opacity of 0 is exactly what made a
+   * previous round look like the skin had stopped working, so "a leftover 0 can no longer reach
+   * the material" is the property that retires the bug for good.
+   */
+  /** A localStorage holding one settings record, in the shape `persist.js` writes. */
+  const storageWith = (settings) => {
+    const storage = createStorage()
+    storage.setItem(
+      'dsh.ui-projects.v1',
+      JSON.stringify({ v: 1, initialized: true, enabled: ['liquid-glass'], settings, touched: true }),
+    )
+    return storage
+  }
+
+  const leftovers = await boot({
+    withStorage: storageWith({ 'liquid-glass': { opacity: 0, opacityScale: 1 } }),
+  })
+  await leftovers.runtime.enable('liquid-glass')
+  // Read everything from the first harness BEFORE booting the second: `boot()` tears the previous
+  // instance down, so a harness held across another boot has had its stylesheets removed — which
+  // is what made this comparison read 0 against 26293 and look like a product bug.
+  const leftoverCss = leftovers.allCss()
+  const leftoverStyle = leftovers.dom.document.body.style.getPropertyValue('--lg-material-swap')
+
+  const clean = await boot()
+  await clean.runtime.enable('liquid-glass')
+
+  truthy(leftoverCss.length > 0, 'the leftover record still produces a stylesheet')
+  equal(
+    leftoverCss.length,
+    clean.allCss().length,
+    'and it is identical to the one a fresh record produces',
+  )
+  equal(leftoverStyle, '', 'the leftover opacity never reaches the document')
+})
+
+await test('a scanner never emits a selector that cannot match', async () => {
+  /*
+   * Two scoper bugs, both of which made a rule silently dead or silently global while looking
+   * perfectly reasonable in the source:
+   *
+   *   1. `:where(html)` / `:where(body)` hid the compound from the binding decision, so they
+   *      became `body[marker] :where(body)` — a body INSIDE a body, which matches nothing on
+   *      any page. `overflow: clip` was written that way and never applied.
+   *   2. A functional pseudo-class takes a selector LIST, and only the first branch was scoped:
+   *      `:where([role='dialog'], [role='menu'])` became a rule whose second branch was
+   *      `[role='menu']` — unscoped, so a rule meant for menus applied to the whole document.
+   *
+   * Both are asserted as properties rather than as strings, so a future rewrite of the scoper
+   * keeps passing as long as it is correct.
+   */
+  const marker = 'body[data-ui-project-x="on"]'
+  /** Every compound in the output must carry the marker, and none may ask for a body in a body. */
+  const assertScoped = (/** @type {string} */ input) => {
+    const out = scopeCss(marker, `${input} { color: red }`)
+    excludes(out, `${marker} ${marker}`, `no doubled marker from ${input}`)
+    excludes(out, `${marker} :where(body)`, `no body-inside-body from ${input}`)
+    excludes(out, `${marker} :where(html)`, `no html-inside-body from ${input}`)
+    // Every branch of every `:where(...)` must mention the marker.
+    for (const list of String(out).matchAll(/:where\(([^)]*)\)/g)) {
+      for (const branch of list[1].split(',')) {
+        truthy(branch.includes(marker), `every :where branch carries the marker (${input} → ${branch.trim()})`)
+      }
+    }
+    return out
+  }
+
+  contains(assertScoped(':where(html), :where(body)'), `:where(${marker})`)
+  const dialogList = assertScoped(":where([role='dialog'], [role='menu'], [role='listbox'])")
+  contains(dialogList, `[role='dialog']`)
+  contains(dialogList, `[role='menu']`)
+  contains(dialogList, `[role='listbox']`)
+  assertScoped(':where([data-composer-stats]), :where(.probe)')
+  assertScoped('body[data-ds-dark-theme]')
+  assertScoped(':where(.uip-panel)')
+
+  // And the shipped sheet itself must contain no rule of the impossible kind: the two bug
+  // shapes are checked against what the skin actually emits, not only against examples.
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  const css = harness.allCss()
+  excludes(css, `] :where(body)`, 'the shipped sheet has no body-inside-body selector')
+  excludes(css, `] :where(html)`, 'and no html-inside-body selector')
+  // v3 has no `:where(body)` rule: the `overflow: clip` this assertion guarded is gone,
+  // because `overflow` is a layout property. What remains is a plain `body` selector for the
+  // system background, which the scoper binds directly to the marker — the form that cannot
+  // produce a body-inside-body.
+  contains(css, 'body[data-ui-project-liquid-glass="on"]', 'the sheet binds its body rules to the marker')
+})
+
+await test('the boot page is dismissed once it is genuinely in the way', async () => {
+  /*
+   * The shipped frontend ends with `new Boot(document.getElementById("root")).run()`, which
+   * mounts the application but never removes the page it built. Both are `height: 100%`
+   * children of `#root`, so once the app is up the container's content is about twice the
+   * viewport: the page scrolls to a second screen and the application's own layout is measured
+   * against a box twice the size of the window.
+   *
+   * The removal must be conditional, though. During boot the page is the ONLY child and must be
+   * left alone — so a slow boot is never affected, and the check is the container overflowing,
+   * not the page merely existing.
+   */
+  const harness = await boot()
+  const bootElement = createElement('div')
+  bootElement.setAttribute('data-dsh-boot', '')
+  const root = harness.dom.body.children[0]
+  root.insertBefore(bootElement, root.children[0])
+  root.scrollHeight = 800 // Exactly the viewport: one screen, nothing doubled.
+
+  // One child only, container fits: the page is still doing its job.
+  equal(harness.runtime.dismissBootPage(), false, 'a boot page alone in the container is left alone')
+  equal(bootElement.removed, false, 'and stays in the document')
+
+  // Now the application is up beside it and the container is taller than the window.
+  root.scrollHeight = 1600
+  equal(harness.runtime.dismissBootPage(), true, 'an oversized container with an app in it loses the page')
+  equal(bootElement.removed, true, 'the page is removed')
+
+  // Idempotent: a second call finds nothing and reports nothing.
+  equal(harness.runtime.dismissBootPage(), false, 'a second attempt is a no-op')
+})
+
+await test('every value the skin reads is one the skin or the design system declares', async () => {
+  const shipped = await shippedDesignTokens()
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  const css = harness.allCss()
+
+  // A `var(--…)` with no declaration anywhere is invisible in a stylesheet, in
+  // review, and in a screenshot — the rule just computes to nothing. This is
+  // exactly the silent failure a hand-written skin is prone to, so it is checked
+  // against the installed design system, not just against this package.
+  const declaredHere = declaredTokens(css)
+  const referenced = new Set(
+    [...String(css).matchAll(/var\(\s*(--[a-z0-9][a-z0-9-]*)/gi)].map((match) => match[1]),
+  )
+  // The design system declares its tokens inside component stylesheets that this
+  // test never loads (the theme plugin injects them at runtime), so a shipped
+  // token counts as declared when the installed client declares it anywhere.
+  const known = (token) => declaredHere.has(token) || shipped.has(token)
+  // A fallback in `var(--x, …)` is fine for a token the client only declares inside
+  // a theme layer; an unknown private token never is.
+  const missing = [...referenced].filter((token) => !known(token)).sort()
+  equal(missing, [], 'no dangling custom-property reference')
+
+  // The skin's private vocabulary must not colonise a shipped namespace.
+  const privateTokens = [...declaredHere].filter((token) => token.startsWith('--lg-'))
+  truthy(privateTokens.length >= 15, `the skin declares its own vocabulary (${privateTokens.length} tokens)`)
+  const foreign = [...declaredHere].filter(
+    (token) => !token.startsWith('--lg-') && !token.startsWith('--dsw-') && !token.startsWith('--dsh-'),
+  )
+  equal(foreign, [], 'every declared token is namespaced `--lg-` or belongs to the client')
+})
+
+await test('the palette only re-binds tokens the shipped client actually declares', async () => {
+  const declared = await shippedDesignTokens()
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+
+  const palette = harness.dom.styles().find((style) => style.textContent.includes('--dsw-alias-bg-base:'))
+  truthy(
+    palette !== undefined,
+    `the palette sheet is present (sheets: ${harness.dom.styles().map((s) => `${s.id || '?'}:${s.textContent.length}`).join(' ')})`,
+  )
+  const bound = declaredTokens(palette.textContent)
+  truthy(
+    bound.size >= 20,
+    `the palette re-binds a meaningful set (${bound.size}); head=${JSON.stringify(palette.textContent.slice(0, 200))}`,
+  )
+
+  const unknown = [...bound].filter((token) => !declared.has(token)).sort()
+  equal(unknown, [], 'no token is invented: every re-bound token exists in the shipped design system')
+
+  // The two tokens this skin must never touch, because they carry text colour and
+  // the AA pairs the design system validated.
+  excludes(palette.textContent, '--dsw-alias-label-primary')
+  excludes(palette.textContent, '--dsw-alias-label-secondary')
+})
+
+await test('the palette follows the shipped dark-theme signal, never a media query', async () => {
+  const harness = await boot()
+  await harness.runtime.enable('liquid-glass')
+  const palette = harness.dom.styles().find((style) => style.textContent.includes('--dsw-alias-bg-base:'))
+  const css = palette.textContent
+
+  // Light values are declared on the marker element itself, and dark ones on the
+  // SAME element under the shipped `body[data-ds-dark-theme]` signal — the attribute
+  // is appended to the marker, not made a descendant of it, because a body cannot
+  // contain a body. How the shipped palette switches is how the skin switches, so a
+  // user's explicit "dark" is honoured even against a light OS.
+  contains(css, 'body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]')
+  const darkAt = css.indexOf('body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]')
+  const darkBlock = css.slice(darkAt, css.indexOf('}', darkAt))
+  contains(darkBlock, '--dsw-alias-bg-layer-1')
+  excludes(darkBlock, '--dsw-alias-bg-layer-1: rgb(255 255 255')
+  // No descendant form may survive: that selector matches nothing at all.
+  excludes(css, 'body[data-ui-project-liquid-glass="on"] body[data-ds-dark-theme]')
+
+  // A base-layer `prefers-color-scheme` block would fight the app's own setting.
+  const beforeDark = css.slice(0, darkAt)
+  excludes(beforeDark, 'prefers-color-scheme')
+})
+
+// ── retired: the sound-reminders suite ───────────────────────────────────────
+//
+// Twelve tests used to sit here, asserting the contract of a sound-reminders
+// feature this plugin no longer carries: one master switch, approval-only
+// ringing, a 900 ms cadence, quiet hours, cross-tab ring claims, notification
+// clicks, the scheduler's fixed grid, and the reminder page's localized copy.
+//
+// That feature was a second subsystem sharing this package's bundle, and it was
+// removed on purpose: `src/client/reminders/**`, the `dsh-reminders` settings
+// namespace this plugin registered on the host, the second `settings.section`
+// entry, and `__internals.reminders`. The package, its name, and every file in
+// it now describe one thing — the UI project system.
+//
+// They are RETIRED rather than retargeted because there is nothing left to
+// retarget them at. "A waiting approval rings until it is answered" has no
+// UI-project equivalent, and repointing the assertions at something else would
+// have produced twelve tests that no longer test what their names claim. The
+// behaviour they covered, if it is wanted again, belongs in its own package with
+// its own suite.
+//
+// What was NOT lost — the shared machinery those tests incidentally exercised —
+// is still asserted above: effect ownership and complete removal (see `dispose()
+// removes every effect it owns`), the stylesheet ledger (`every inserted
+// stylesheet is owned and removable`), durable state through the settings scope
+// (`state uses the dsh settings document when the host offers a scope`), and the
+// single `settings.section` registration.
+
+process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
+if (failures > 0) process.exitCode = 1

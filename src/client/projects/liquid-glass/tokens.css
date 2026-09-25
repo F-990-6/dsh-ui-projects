@@ -1,0 +1,160 @@
+/*
+ * Liquid Glass — palette.
+ *
+ * The shipped client paints almost everything from its own alias tokens
+ * (`--dsw-alias-bg-layer-1`, `--dsw-alias-border-l1`, …). Re-binding those tokens
+ * is the highest-leverage thing a skin can do: every component that already
+ * consumes them — sidebar, cards, menus, dialogs, inputs, buttons — picks up the
+ * new palette without this project knowing a single class name.
+ *
+ * ## How see-through it is, and why that is safe
+ *
+ * The glass is meant to be *seen through*: a surface at roughly half opacity with what
+ * is behind it visibly blurred, so the reader gets depth instead of a flat panel. An
+ * earlier version went fully opaque to fix a readability failure — which removed the
+ * effect rather than the cause.
+ *
+ * The cause is worth naming, so this value is never "fixed" the same way twice: the
+ * application's own background had been made fully transparent, so a decorative
+ * gradient showed through *every* column at once, and the frame's whole-viewport
+ * floating layer was blurred, softening everything on screen together. Content itself
+ * was blurred. That, and only that, is what made it unreadable.
+ *
+ * A `backdrop-filter` blurs what is BEHIND a surface, never the text painted on top of
+ * it, so a translucent column over a blurred backdrop keeps its own words crisp. The
+ * rules that keep this true:
+ *
+ *  - No `filter` and no `backdrop-filter` may sit on an ancestor of the conversation;
+ *    the blur goes on the columns, which are its siblings, not its parents.
+ *  - The conversation column carries no overlay of the skin's making.
+ *  - Layer 3 and the overlay token — menus, popovers, dialogs — stay opaque, because
+ *    those are read directly over arbitrary content.
+ *
+ * Contrast, which the values below are chosen to keep: the shipped label colours are
+ * opaque and are never redefined. A 14px secondary label over a ~55% white fill on a
+ * light backdrop still clears 7:1, and over a ~52% dark fill it clears 6:1.
+ */
+
+/* ── light ─────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* How translucent every surface below is, as a percentage: the opacity slider writes
+     this on the root element and each fill multiplies its own nominal alpha by it. One
+     control therefore moves the whole material, and a drag repaints by changing a single
+     custom property rather than re-emitting this sheet.
+   *
+   * The syntax is `rgb(255 255 255 / calc(<nominal> * var(--lg-material-swap, 1)))`:
+   * space-separated channels (required for `calc()` in an alpha slot) times a unitless
+   * multiplier the runtime derives from the slider. */
+  /* The FRAME is the window, and it stays see-through: that is what puts the ambient
+     field *behind* the glass, so the columns have something to show and to blur. An
+     opaque frame is what made an earlier version look like a flat white panel.
+   *
+   * It is safe because the frame paints nothing but a background: it has no text of
+   * its own, and every surface inside it either carries its own fill or is meant to be
+   * seen through. The columns are the surfaces; the frame is the light behind them. */
+  --dsw-alias-bg-base: rgb(255 255 255 / 0%);
+  --dsw-alias-bg-layer-1: rgb(255 255 255 / 26%);
+  --dsw-alias-bg-layer-2: rgb(255 255 255 / 46%);
+  /* Menus, popovers and dialogs are read directly over arbitrary content, so they keep
+     the nearly-opaque tier. They are still glass — the user asked to see text through the
+     dialog — but far less see-through than a column, because what is behind them can be
+     anything at all. */
+  --dsw-alias-bg-layer-3: rgb(255 255 255 / 62%);
+  --dsw-alias-bg-overlay: rgb(255 255 255 / 62%);
+  --dsw-alias-bg-module-platform: rgb(248 249 255 / 46%);
+  --dsw-alias-bg-skeleton: rgb(15 23 42 / 6%);
+  /* The sidebar is the most see-through of all: it is the surface a reader looks
+     *through* rather than at. Its own component declares this token, so the
+     translucency needs no selector — which matters, because the shipped layout
+     exposes no stable hook for the column element. */
+  --dsw-specific-sidebar-fill: rgb(250 250 254 / 20%);
+
+  /* Hairlines. Slightly stronger than the shipped values: on a translucent edge a
+     hairline is what tells the eye where the glass stops. */
+  --dsw-alias-border-l1: rgb(15 23 42 / 12%);
+  --dsw-alias-border-l2: rgb(15 23 42 / 18%);
+  --dsw-alias-border-l3: rgb(15 23 42 / 10%);
+
+  /* Interaction fills, on the accent's wavelength */
+  --dsw-alias-interactive-bg-hover: rgb(77 107 254 / 10%);
+  --dsw-alias-interactive-bg-active: rgb(77 107 254 / 16%);
+  --dsw-alias-button-tool-bar-fill: rgb(255 255 255 / 55%);
+  --dsw-alias-button-tool-bar-hover: rgb(255 255 255 / 78%);
+  --dsw-alias-button-ghost-active-fill: rgb(77 107 254 / 12%);
+
+  /* Code and inline surfaces stay quiet */
+  --dsw-alias-markdown-code-block: rgb(15 23 42 / 5%);
+  --dsw-alias-markdown-code-block-banner: rgb(15 23 42 / 4%);
+  --dsw-alias-markdown-inline-code: rgb(15 23 42 / 7%);
+  --dsw-alias-tooltip-bg: rgb(23 23 25 / 94%);
+}
+
+/* ── dark: deep blue-black glass, same structure ───────────────────────────── */
+
+body[data-ds-dark-theme] {
+  /* A hint of blue rather than pure black, so the blue-violet accent sits in the same
+     family, with enough luminance separation from the text that 14px labels stay
+     comfortably readable through the glass. */
+  --dsw-alias-bg-base: rgb(20 22 28 / 0%);
+  --dsw-alias-bg-layer-1: rgb(30 33 42 / 30%);
+  --dsw-alias-bg-layer-2: rgb(38 42 53 / 52%);
+  --dsw-alias-bg-layer-3: rgb(35 38 47 / 66%);
+  --dsw-alias-bg-overlay: rgb(35 38 47 / 66%);
+  --dsw-alias-bg-module-platform: rgb(34 38 48 / 52%);
+  --dsw-alias-bg-skeleton: rgb(255 255 255 / 6%);
+  --dsw-specific-sidebar-fill: rgb(22 25 33 / 24%);
+
+  --dsw-alias-border-l1: rgb(255 255 255 / 12%);
+  --dsw-alias-border-l2: rgb(255 255 255 / 18%);
+  --dsw-alias-border-l3: rgb(255 255 255 / 10%);
+
+  --dsw-alias-interactive-bg-hover: rgb(124 92 255 / 18%);
+  --dsw-alias-interactive-bg-active: rgb(124 92 255 / 26%);
+  --dsw-alias-button-tool-bar-fill: rgb(255 255 255 / 10%);
+  --dsw-alias-button-tool-bar-hover: rgb(255 255 255 / 16%);
+  --dsw-alias-button-ghost-active-fill: rgb(124 92 255 / 20%);
+
+  --dsw-alias-markdown-code-block: rgb(255 255 255 / 6%);
+  --dsw-alias-markdown-code-block-banner: rgb(255 255 255 / 5%);
+  --dsw-alias-markdown-inline-code: rgb(255 255 255 / 9%);
+  --dsw-alias-tooltip-bg: rgb(12 14 20 / 96%);
+}
+
+/*
+ * Without backdrop-filter there is nothing to refract, so the last of the
+ * translucency goes too — INCLUDING the window. A see-through frame with no blur is
+ * just an unreadable page, so the frame must go back to opaque here as well.
+ */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root {
+    --dsw-alias-bg-base: #fff;
+    --dsw-alias-bg-layer-1: #fff;
+    --dsw-alias-bg-layer-2: #fff;
+    --dsw-specific-sidebar-fill: #fafafe;
+  }
+
+  body[data-ds-dark-theme] {
+    --dsw-alias-bg-base: #14161c;
+    --dsw-alias-bg-layer-1: #1e212a;
+    --dsw-alias-bg-layer-2: #262a35;
+    --dsw-specific-sidebar-fill: #161921;
+  }
+}
+
+/* An OS-level request for less transparency outranks the skin's own taste. */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --dsw-alias-bg-base: #fff;
+    --dsw-alias-bg-layer-1: #fff;
+    --dsw-alias-bg-layer-2: #fff;
+    --dsw-specific-sidebar-fill: #fafafe;
+  }
+
+  body[data-ds-dark-theme] {
+    --dsw-alias-bg-base: #14161c;
+    --dsw-alias-bg-layer-1: #1e212a;
+    --dsw-alias-bg-layer-2: #262a35;
+    --dsw-specific-sidebar-fill: #161921;
+  }
+}
