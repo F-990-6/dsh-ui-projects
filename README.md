@@ -167,12 +167,51 @@ almost everything from its own alias tokens, so the skin re-binds those tokens
 dialogs, inputs, buttons — becomes glass, without the skin knowing a single class name.
 That is also what makes it robust: a component whose markup changes still reads the token.
 
-A token cannot express refraction, because `backdrop-filter` needs a selector rather than
-a value. For that alone, `surfaces.css` binds to the frame's stable layout data attributes
-(`[data-rightbar-col]`, `[data-shell-overlay]`) inside `:where()`, so the rule carries zero
-specificity and a component's own style always wins. Those selectors can still change with
-a frontend build; the cost of being wrong is bounded on purpose, since the worst case is a
-region keeping the glass *colour* without the blur.
+A token cannot express refraction, because `backdrop-filter` needs a selector rather than a value —
+and the selector is the hard part. So the skin's entire material is **one frost layer on the
+application frame**:
+
+```css
+:where(:has(> [data-ui-skin-column])) { isolation: isolate }
+
+:where(:has(> [data-ui-skin-column]))::before {
+  content: ''; position: absolute; inset: 0; z-index: -1;
+  backdrop-filter: blur(var(--lg-glass-blur)) saturate(var(--lg-glass-saturate));
+}
+```
+
+`:has(> [data-ui-skin-column])` finds the frame because the runtime marks its columns, and the frame
+is the only element whose *direct children* carry that marker — no build-hashed class named, and no
+new marker invented for the purpose. Floating surfaces are reached by ARIA role instead,
+`:where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip'])`, because a WAI-ARIA role
+is a published interface rather than somebody's markup. Every selector sits in `:where()` at zero
+specificity, so a component that wants its own material still wins.
+
+Three constraints decide that shape, and each was measured rather than reasoned about — the probe
+cases are named in `glass.css`:
+
+- **Never on a column**, for two independent reasons. `backdrop-filter` creates a containing block
+  for `position: fixed` descendants, and dsh renders its settings dialog — `position: fixed;
+  inset: 0` — *inside a layout column*: frosting a column captures that dialog and confines it to
+  the column, and the reported symptom was the settings panel collapsing into a narrow strip on the
+  left. The dialog was never the cause, and the skin cannot repair it from the outside. Separately,
+  the shipped columns are `position: static` while the frame is `position: relative`, so an
+  absolutely positioned child written inside a column resolves against the frame anyway — probe
+  case 7 measured a frost on a static 169px column as a **351px** box, the frame's width. On the
+  columns it would have been one frame-sized layer *per column*, stacked over the same area.
+- **The stacking context comes from `isolation`, not from the blur.** `z-index: -1` needs a
+  stacking context to land in, or the layer escapes to an outer one and can end up behind the page
+  background. `isolation: isolate` supplies it — and, unlike `backdrop-filter`, `transform`,
+  `filter`, `perspective` or `contain`, it does **not** create a containing block for
+  `position: fixed` descendants. That is precisely what keeps the settings dialog attached to the
+  viewport while the frame is frosted.
+- **The layer paints between the frame's fill and the columns.** That is what a transparent
+  `--dsw-alias-bg-base` is for, and it is why the text survives: `backdrop-filter` blurs what is
+  behind a surface, never what is painted on it, so a see-through column keeps crisp type while the
+  ambient gradient behind the frame is refracted.
+
+If a browser lacks `:has()`, none of the above matches and the skin degrades to translucent fills
+alone — nothing captured, nothing leaked.
 
 Two rules keep the result readable, and both are asserted by the suite:
 
