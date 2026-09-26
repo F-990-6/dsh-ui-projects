@@ -38,27 +38,43 @@ import { inflateSync } from 'node:zlib'
  * that answers a usage error with a verdict about the skin is worse than one that refuses to start.
  */
 const cliArgs = process.argv.slice(2)
+/**
+ * `--self-check` runs the refusal rule against real payload shapes and exits, without a URL and
+ * without a browser.
+ *
+ * It exists because that rule cannot be verified by reading it: the first version looked reasonable,
+ * passed a self-check of its own, and refused nothing — the self-check was validating an invented
+ * ARRAY payload while the client sends an object. A pure function checked against real shapes is the
+ * only thing that would have caught it, and it needs to be runnable on its own so the check can be
+ * run in the same breath as the edit that changes it.
+ */
+const selfCheckOnly = cliArgs.includes('--self-check')
 const pageUrl = cliArgs.find((argument) => /^https?:\/\//i.test(argument))
-if (pageUrl === undefined) {
+if (pageUrl === undefined && !selfCheckOnly) {
   const shown = cliArgs.length === 0 ? '(none)' : cliArgs.join(' ')
   process.stderr.write(
     `usage: node scripts/browser-verify.mjs "<dsh web url with token>" [--shot out.png] [--no-write]\n` +
+      `       node scripts/browser-verify.mjs --self-check\n` +
       `  arguments given: ${shown}\n` +
       `  the page URL must start with http:// or https:// (a bare host or a flag is not accepted)\n` +
-      "  --no-write  refuse the checklist's settings write, so a run leaves no confirmation behind\n",
+      "  --no-write    refuse every write to the settings document that carries user choices\n" +
+      '  --self-check  check the refusal rule against real payload shapes, then exit\n',
   )
   process.exit(2)
 }
 const shotIndex = cliArgs.indexOf('--shot')
 const shotPath = shotIndex === -1 ? undefined : cliArgs[shotIndex + 1]
 /*
- * `--no-write` keeps the checklist confirmation out of the durable settings document.
+ * `--no-write` keeps a run from changing anything a person chose.
  *
  * The concern is real and not hypothetical: the default run records a confirmation against the
- * current version, which overwrites whatever a person had confirmed by hand and accumulates on
- * every re-run. But a blanket "do not persist" would break this suite's own reload assertions — a
- * skin toggle that does not survive a reload fails the test that checks it — so the refusal is
- * narrowed to the one write that matters: a settings mutation whose payload carries `checks`.
+ * current version, which overwrites whatever a person had confirmed by hand and accumulates on every
+ * re-run. But a blanket "do not persist" would break this suite's own reload assertions — a skin
+ * toggle that does not survive a reload fails the test that checks it — so the refusal is aimed at
+ * the keys that carry USER CHOICES and nothing else: this plugin's `settings` record (where a
+ * checklist confirmation lives) and the theme plugin's namespace (where the appearance preference
+ * lives). `enabled`, `initialized`, `touched` and `v` still persist, because the reload assertions
+ * and the record's own bookkeeping depend on them.
  *
  * The write path is HTTP, which is what makes this possible at all: every api call is a
  * `POST /api/<service>/<operation>` (see the connection layer's rpc), so the operation is in the URL
@@ -66,7 +82,339 @@ const shotPath = shotIndex === -1 ? undefined : cliArgs[shotIndex + 1]
  * is simply refused in flight, which is also why the plugin's in-memory state still changes and the
  * test can assert the difference between the two.
  */
-const noWrite = cliArgs.includes('--no-write')
+/**
+ * `--verify-refusal` runs the gate and nothing else.
+ *
+ * The gate is the first thing the suite does under `--no-write` anyway; this mode exists so it can be
+ * run on its own, before a full run, on a machine whose settings document matters. It launches Chrome,
+ * proves the rule against real payloads, prints the verdict and stops — and because the gate refuses
+ * every write while it runs, it cannot change what it is protecting. It implies `--no-write`, because a
+ * gate that did not install its interceptor would prove nothing.
+ */
+const verifyRefusalOnly = cliArgs.includes('--verify-refusal')
+const noWrite = cliArgs.includes('--no-write') || verifyRefusalOnly
+/** Thrown to end a `--verify-refusal` run after the gate, once its verdict has been recorded. */
+const GATE_ONLY = 'gate-only: the refusal gate is the whole run'
+
+/**
+ * The namespaces whose writes carry user choices, and the reason to report for each.
+ *
+ * `ui-projects` is refused on the `settings` path only — its `enabled` and bookkeeping keys are the
+ * suite's own business and must persist. `ui-theme` is refused whole: every key in it is a
+ * preference somebody set, and the suite has no assertion that depends on one surviving.
+ */
+const PROTECTED_NAMESPACES = { 'ui-projects': 'settings', 'ui-theme': 'theme' }
+
+/**
+ * Why a settings write should be refused under `--no-write`, or null to let it through.
+ *
+ * THE SHAPE IS FROM THE SOURCE, NOT FROM A GUESS, and the previous version of this rule is why that
+ * sentence is in capitals. It was written against an ARRAY payload that nothing ever sends, so
+ * `Array.isArray(args)` was false, `namespace` was undefined, and it refused NOTHING — while its own
+ * self-check passed, because the self-check had invented the same array shape. A real confirmation
+ * was deleted from a real settings document by a run that promised to leave no trace.
+ *
+ * The chain, with the file each step was read from:
+ *
+ *   1. `SettingsScopeController.set(field, value)` → `mutate([{op: 'set', path: [field], value}])`
+ *      — `@deepseek-ai/dsh-client-ui-settings/lib/client.js`
+ *   2. `mutate` → `ctx.remote.settings.mutate(namespace, ops, revision)`
+ *   3. the api gateway marshals POSITIONAL arguments into an OBJECT keyed by wire name —
+ *      `args[parameter.wire] = value` — `@deepseek-ai/dsh-api-gateway/lib/client.js`
+ *   4. the wire names are `namespace`, `ops`, `expectedRevision`
+ *      — `@deepseek-ai/dsh-api-settings-controller/lib/typert.remote-client.js`
+ *   5. the connection POSTs `{type: 'client-request', rpcId, method, payload}` with that object as
+ *      `payload` — `@deepseek-ai/dsh-client-connection/lib/client.js`
+ *   6. AND THE PAYLOAD WRAPS THE ARGUMENTS ONE LEVEL DEEPER: the host gateway refuses anything whose
+ *      payload is not exactly `{args: <plain object>}` —
+ *      "Remote payload must contain exactly one plain-object args field"
+ *      — `@deepseek-ai/dsh-api-gateway/lib/index.js`
+ *
+ * Step 6 is where the second version of this rule died, and it died the same way as the first: it read
+ * `payload.namespace` when the namespace lives at `payload.args.namespace`, so it refused nothing —
+ * again. What found it was not another reading of the code but the run's own log, which printed the
+ * bodies it was actually receiving. A diagnostic that prints the real thing is worth more than a
+ * second careful reading.
+ *
+ * @param {{ payload: string, isWrite: boolean }} input
+ * @returns {'settings' | 'theme' | null}
+ */
+function refusalReason({ payload, isWrite }) {
+  if (!isWrite) return null
+  let body
+  try {
+    body = JSON.parse(payload)
+  } catch {
+    return null
+  }
+  const envelope = body?.payload
+  // An object, not an array, and never a bare `settings` property. The array form is rejected on
+  // purpose — it is the shape this rule once believed in.
+  if (envelope === null || typeof envelope !== 'object' || Array.isArray(envelope)) return null
+  // Step 6: the arguments live under `args`, and the host rejects any other shape.
+  const args = envelope.args
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return null
+  /*
+   * THE FIELD IS 
+s, and the wire descriptor says 
+amespace. The gate found that out by printing
+   * the bodies the client really sends — a body is the only authority on what a body contains — and
+   * this accepts either spelling so that a descriptor that catches up does not silently stop matching.
+   */
+  const namespace = args.ns ?? args.namespace
+  const reason = PROTECTED_NAMESPACES[namespace]
+  if (reason === undefined) return null
+  // A whole namespace that exists only to hold preferences.
+  if (reason === 'theme') return 'theme'
+  /*
+   * `ui-projects` is refused on its `settings` path only: that key is the plugin's record of what the
+   * user chose, in EITHER direction and whatever value it carries — creating a confirmation,
+   * overwriting one, and deleting one are the same act as far as somebody's data is concerned. The
+   * `enabled` key and the record's bookkeeping keys still persist, because the suite's reload
+   * assertions and its own restore depend on them.
+   */
+  const ops = Array.isArray(args.ops) ? args.ops : []
+  return ops.some((op) => Array.isArray(op?.path) && op.path[0] === 'settings') ? 'settings' : null
+}
+
+/** One payload in the shape the client really sends: the envelope, the `args` wrapper, the revision. */
+const wireBody = (args) =>
+  JSON.stringify({ type: 'client-request', rpcId: 'rpc-1', method: 'settings/mutate', payload: { args } })
+/** One op list for a namespace, marshalled the way the gateway marshals it. */
+const wireMutate = (ns, ops, expectedRevision = 12) => wireBody({ ns, ops, expectedRevision })
+
+/**
+ * One line describing a write, in the shape the client really sends.
+ *
+ * Values are reported by SIZE rather than content: a checklist record is somebody's data and this is a
+ * log, not a dump. The KEYS are printed too — the shape is the thing that has been wrong twice here, so
+ * the log states it instead of implying it.
+ * @param {string} payload
+ */
+function describeWrite(payload) {
+  let body
+  try {
+    body = JSON.parse(payload)
+  } catch {
+    return 'body=<unparseable>'
+  }
+  const envelope = body?.payload
+  if (envelope === null || typeof envelope !== 'object') return 'payload=<not an object>'
+  const args = envelope.args
+  if (args === null || typeof args !== 'object') {
+    return `method=${String(body?.method)} payload.keys=[${Object.keys(envelope).join(',')}] args=<missing>`
+  }
+  const ops = Array.isArray(args.ops) ? args.ops : []
+  const described = ops.map(
+    (op) =>
+      `${String(op?.op)}:${Array.isArray(op?.path) ? op.path.join('.') : '?'}(${JSON.stringify(op?.value ?? null).length}B)`,
+  )
+  return `method=${String(body?.method)} ns=${String(args.ns ?? args.namespace)} ops=[${described.join(' ')}] revision=${String(args.expectedRevision)}`
+}
+
+/**
+ * Whether a payload carries a key this run promised not to touch.
+ *
+ * Deliberately written out again rather than reusing `refusalReason`: this is the anomaly detector for
+ * that rule, and one that asked the same function whether the function was right would be no detector
+ * at all.
+ * @param {string} payload
+ */
+function touchesProtectedKey(payload) {
+  let args
+  try {
+    args = JSON.parse(payload)?.payload?.args
+  } catch {
+    return false
+  }
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return false
+  const namespace = args.ns ?? args.namespace
+  if (namespace === 'ui-theme') return true
+  if (namespace !== 'ui-projects') return false
+  const ops = Array.isArray(args.ops) ? args.ops : []
+  return ops.some((op) => Array.isArray(op?.path) && op.path[0] === 'settings')
+}
+
+/**
+ * The refusal rule, checked against real payload shapes.
+ *
+ * Every payload below is written the way the client writes it — including `expectedRevision`, which
+ * the gateway includes and the previous self-check had never heard of. A check that constructs its own
+ * idea of the shape proves only that the rule agrees with itself.
+ * @returns {number} how many cases disagreed with the expectation
+ */
+function runSelfCheck() {
+  const settingsWrite = (value) =>
+    wireMutate('ui-projects', [{ op: 'set', path: ['settings'], value }])
+  const cases = [
+    ['a confirmation being written', settingsWrite({ 'liquid-glass': { checks: { version: '3.0.0', items: {} } } }), 'settings'],
+    ['the same record being deleted', settingsWrite({}), 'settings'],
+    ['the settings key being unset', wireMutate('ui-projects', [{ op: 'unset', path: ['settings'] }]), 'settings'],
+    ['a batch that carries it among others', wireMutate('ui-projects', [
+      { op: 'set', path: ['enabled'], value: ['liquid-glass'] },
+      { op: 'set', path: ['settings'], value: {} },
+    ]), 'settings'],
+    ['the appearance preference', wireMutate('ui-theme', [{ op: 'set', path: ['preference'], value: 'dark' }]), 'theme'],
+    ['the skin toggle itself', wireMutate('ui-projects', [{ op: 'set', path: ['enabled'], value: ['liquid-glass'] }]), null],
+    ['the record bookkeeping', wireMutate('ui-projects', [{ op: 'set', path: ['initialized'], value: true }]), null],
+    ['a read', wireBody({ namespace: 'ui-projects', ops: [] }), null, false],
+    ['a body that is not JSON', 'not json at all', null],
+    ['the ARRAY shape this rule once believed in', JSON.stringify({
+      type: 'client-request',
+      rpcId: 'rpc-1',
+      method: 'settings/mutate',
+      payload: ['ui-projects', [{ op: 'set', path: ['settings'], value: {} }]],
+    }), null],
+    ['the shape WITHOUT the `args` wrapper (the second wrong guess)', JSON.stringify({
+      type: 'client-request',
+      rpcId: 'rpc-1',
+      method: 'settings/mutate',
+      payload: { ns: 'ui-projects', ops: [{ op: 'set', path: ['settings'], value: {} }] },
+    }), null],
+  ]
+  let failures = 0
+  for (const [label, payload, expected, isWrite = true] of cases) {
+    const actual = refusalReason({ payload, isWrite })
+    const ok = actual === expected
+    if (!ok) failures += 1
+    process.stdout.write(
+      `  ${ok ? 'ok  ' : 'FAIL'} ${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}\n`,
+    )
+  }
+  return failures
+}
+
+/**
+ * The `settings:` BLOCK of the plugin's record in the settings document, read-only.
+ *
+ * NOT one line. `settings:` holds a nested object and a writer is free to render it either way:
+ *
+ *     settings: {}                                     ← no record
+ *     settings: { liquid-glass: { checks: { … } } }     ← a record, inline
+ *     settings:                                         ← a record, as a block
+ *       liquid-glass:
+ *         checks:
+ *           version: '3.0.0'
+ *
+ * A single-line read cannot tell the first from the second, which is exactly the difference this gate
+ * exists to detect. THE BLOCK RULE: start at the line whose indentation is `settingsIndent` and whose
+ * key is `settings:`, and end before the next non-blank line with indentation less than or equal to
+ * that — i.e. the next sibling key of `ui-projects`, or the end of the file. Blank lines inside are
+ * kept; trailing whitespace is trimmed and runs of whitespace collapsed, because a writer may re-indent
+ * without changing what it wrote, and a gate that reports that as data loss would be crying wolf.
+ *
+ * READ-ONLY, and it has to be: this file belongs to whoever is running the harness. The gate compares
+ * two readings; it never writes one.
+ * @returns {Promise<{ ok: true, text: string, path: string } | { ok: false, why: string }>}
+ */
+async function readSettingsSubtree() {
+  const { readFile } = await import('node:fs/promises')
+  const { homedir } = await import('node:os')
+  const { join } = await import('node:path')
+  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  const path = join(home, 'settings.yaml')
+  let text
+  try {
+    text = await readFile(path, 'utf8')
+  } catch (err) {
+    return { ok: false, why: `cannot read ${path}: ${String(err?.message ?? err)}` }
+  }
+  const lines = text.split('\n')
+  const projectAt = lines.findIndex((line) => /^ui-projects:\s*$/.test(line))
+  if (projectAt === -1) return { ok: false, why: 'no `ui-projects:` section in the document' }
+  const settingsAt = lines.findIndex((line, index) => index > projectAt && /^\s+settings:/.test(line))
+  if (settingsAt === -1) return { ok: true, text: '(no settings key)', path }
+  const indent = lines[settingsAt].length - lines[settingsAt].trimStart().length
+  let end = settingsAt + 1
+  while (end < lines.length) {
+    const line = lines[end]
+    if (line.trim() !== '' && line.length - line.trimStart().length <= indent) break
+    end += 1
+  }
+  const block = lines.slice(settingsAt, end).join('\n')
+  return { ok: true, text: block.replace(/\s+/g, ' ').trim(), path }
+}
+
+/**
+ * Drive the checklist to a confirmation, the way a person does: open the disclosure, tick every box,
+ * wait for the button to accept input, click it. Shared by the gate and by the withdrawal test, so
+ * there is one place that knows how this control is driven.
+ * @param {{ send: Function }} session
+ * @returns {Promise<{ ok: boolean, why?: string }>}
+ */
+async function driveChecklistConfirm(session) {
+  const opened = await evaluate(
+    session,
+    `(() => {
+      const details = document.querySelector('details.uip-tests[data-project="liquid-glass"]')
+      if (details === null) return { ok: false, why: 'no disclosure' }
+      details.open = true
+      const boxes = Array.from(details.querySelectorAll('input[type=checkbox]'))
+      if (boxes.length === 0) return { ok: false, why: 'no boxes' }
+      for (const box of boxes) if (!box.checked) box.click()
+      return { ok: true, boxes: boxes.length }
+    })()`,
+  )
+  if (opened.ok !== true) return { ok: false, why: JSON.stringify(opened) }
+  try {
+    await waitFor(
+      session,
+      `(() => {
+        const button = document.querySelector('details.uip-tests[data-project="liquid-glass"] button[data-uip-action="confirm-checks"]')
+        return button !== null && !button.disabled
+      })()`,
+      'the confirm button to accept input',
+    )
+  } catch (err) {
+    return { ok: false, why: String(err?.message ?? err) }
+  }
+  await evaluate(
+    session,
+    `document.querySelector('details.uip-tests[data-project="liquid-glass"] button[data-uip-action="confirm-checks"]').click()`,
+  )
+  return { ok: true }
+}
+
+/** Click the withdrawal control, if it is offered. */
+async function driveChecklistWithdraw(session) {
+  return evaluate(
+    session,
+    `(() => {
+      const button = document.querySelector('details.uip-tests[data-project="liquid-glass"] button[data-uip-action="clear-checks"]')
+      if (button === null) return { ok: false, why: 'no withdrawal offered' }
+      button.click()
+      return { ok: true }
+    })()`,
+  )
+}
+
+/**
+ * Whether a payload carries a write to the `settings` key of the plugin's own namespace.
+ *
+ * The gate's wait condition, and deliberately its own reading of the body rather than a call into the
+ * rule: the gate's job is to find out whether the rule agrees with reality, so what it waits for must
+ * not depend on the rule being right.
+ * @param {string} payload
+ */
+function carriesSettingsPath(payload) {
+  let args
+  try {
+    args = JSON.parse(payload)?.payload?.args
+  } catch {
+    return false
+  }
+  if (args === null || typeof args !== 'object') return false
+  if ((args.ns ?? args.namespace) !== 'ui-projects') return false
+  const ops = Array.isArray(args.ops) ? args.ops : []
+  return ops.some((op) => Array.isArray(op?.path) && op.path[0] === 'settings')
+}
+
+if (selfCheckOnly) {
+  process.stdout.write('dsh-ui-projects: --no-write refusal rule, against payloads the client really sends\n')
+  const failures = runSelfCheck()
+  process.stdout.write(failures === 0 ? '\nthe refusal rule covers every protected write\n' : `\n${failures} case(s) disagreed\n`)
+  process.exit(failures === 0 ? 0 : 1)
+}
 
 /**
  * The mobile radius: its token name, and the value read from it.
@@ -721,6 +1069,14 @@ let page
  * block is not in scope there.
  */
 let startedWithSkinOn = false
+/**
+ * The checklist record the instance had before this run; the closing guard compares against it.
+ *
+ * Declared out here for the same reason `startedWithSkinOn` is: the guard lives in the `finally`, and
+ * a `let` inside the `try` is not in scope there. It was inside first, and the guard threw a
+ * ReferenceError instead of reporting anything — in the one code path whose whole job is to report.
+ */
+let checksAtStart = null
 try {
   const version = await (await fetch(`http://127.0.0.1:${chrome.port}/json/version`)).json()
   cdp = new Cdp(version.webSocketDebuggerUrl)
@@ -777,49 +1133,20 @@ try {
   /** How many checklist writes `--no-write` refused, so the test can prove it refused something. */
   let refusedWrites = 0
   /**
-   * The checklist record the instance had before this run, and how many writes were refused for
-   * trying to DELETE it. Declared out here because the Fetch handler below needs both, and it runs
-   * from the first navigation onwards.
-   */
-  let checksAtStart = null
-  let protectedRemovals = 0
-  /**
-   * Why a settings write should be refused under `--no-write`, or null to let it through.
+   * The gate's mode, and it DEFAULTS TO THE SAFE ONE.
    *
-   * Extracted as a pure function so it can be checked against real payload shapes without a browser,
-   * which matters because the first version of the removal rule was WRONG in a way no run revealed:
-   * it looked for a `settings` property at the top level of the request body, and the real
-   * operation is `settings/mutate`, whose arguments are `[namespace, ops]` with each op shaped
-   * `{op: 'set', path: [...], value: ...}`. It therefore refused nothing, and the run that was
-   * supposed to leave no trace deleted the confirmation it found.
-   * @param {{ payload: string, isWrite: boolean, checksAtStart: string | null }} input
-   * @returns {'checks' | 'removal' | null}
+   * `blanket` refuses every write to the settings API without consulting the rule at all, so during the
+   * gate the document is safe BY CONSTRUCTION — whether or not `refusalReason` is right. That is the
+   * entire point: this rule has now been wrong three times, and each time a run deleted somebody's
+   * confirmation while the rule was being debugged. Fail-safe by default, and only the gate may switch.
+   *
+   * `rule` is the normal mode, reached only after the gate has proved the rule against bodies the
+   * client really sent.
    */
-  const refusalReason = ({ payload, isWrite, checksAtStart: had }) => {
-    if (!isWrite) return null
-    // The checklist write itself: the second of the two ways a record can be lost.
-    if (payload.includes('checks')) return 'checks'
-    if (had === null) return null
-    /*
-     * The removal: the plugin persists its record key by key, so the `settings` key is written on its
-     * own and, once the record is gone from memory, its value carries nothing this can match on. The
-     * path is what identifies it.
-     */
-    try {
-      const body = JSON.parse(payload)
-      const args = body?.payload ?? body
-      const [namespace, ops] = Array.isArray(args) ? args : []
-      if (namespace !== 'ui-projects' || !Array.isArray(ops)) return null
-      for (const op of ops) {
-        if (op?.op !== 'set' || !Array.isArray(op.path) || op.path[0] !== 'settings') continue
-        const value = op.value
-        if (value === null || typeof value !== 'object' || value['liquid-glass']?.checks === undefined) return 'removal'
-      }
-    } catch {
-      /* a body this cannot parse falls back to the rule above */
-    }
-    return null
-  }
+  let refusalMode = 'blanket'
+  /** Bodies the blanket phase refused: real payloads, for the rule to be checked against afterwards. */
+  const gateBodies = []
+  let gateRefusals = 0
   if (noWrite) {
     await session.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/settings/*', requestStage: 'Request' }] })
     page.on('Fetch.requestPaused', (params) => {
@@ -847,17 +1174,54 @@ try {
        * handler that threw would present as a frozen application rather than as a failed assertion.
        */
       try {
-        const isWrite = /settings\/(mutate|replace|update)(\?|$)/.test(String(params.request.url))
-        const reason = refusalReason({
-          payload: String(params.request.postData ?? ''),
-          isWrite,
-          checksAtStart,
-        })
-        if (reason !== null) {
-          if (reason === 'removal') protectedRemovals += 1
-          else refusedWrites += 1
+        const url = String(params.request.url)
+        const isWrite = /settings\/(mutate|replace|update)(\?|$)/.test(url)
+        const payload = String(params.request.postData ?? '')
+        /*
+         * EVERY write is logged, in the shape it actually has, before any decision is taken.
+         *
+         * This is the diagnostic the plan promised and the first implementation did not deliver: it
+         * logged only refusals, so a run that refused nothing printed nothing and could not say
+         * whether the rule had failed to match or the request had never arrived. Two runs were spent
+         * on that difference. The raw body goes out too, because the whole lesson of this file is that
+         * a payload shape guessed from a type declaration is not a payload shape.
+         */
+        if (isWrite) {
+          process.stderr.write(
+            `[no-write] write ${describeWrite(payload)}\n[no-write]   raw ${payload.slice(0, 240)}\n`,
+          )
+        }
+        const reason = refusalReason({ payload, isWrite })
+        /*
+         * THE GATE'S BLANKET PHASE. No classification, no rule, no judgement: every write to the
+         * settings API is refused while the gate runs, and its body is kept. The document cannot change
+         * in this phase even if `refusalReason` is completely wrong — which is the property that was
+         * missing on the three occasions a wrong rule ran first and data was lost.
+         */
+        if (isWrite && refusalMode === 'blanket') {
+          gateRefusals += 1
+          gateBodies.push(payload)
+          process.stderr.write(`[gate] REFUSED (blanket) ${describeWrite(payload)}\n`)
           void answer('Fetch.failRequest', { requestId: params.requestId, errorReason: 'Aborted' })
           return
+        }
+        if (reason !== null) {
+          refusedWrites += 1
+          process.stderr.write(`[no-write] REFUSED (${reason})\n`)
+          void answer('Fetch.failRequest', { requestId: params.requestId, errorReason: 'Aborted' })
+          return
+        }
+        /*
+         * An ALLOWED write that carries a protected key means this rule is broken, and it is worth
+         * more than a failed assertion later: the settings document is about to change under somebody.
+         * Told loudly, with the payload, and the run's exit code is set by the closing guard.
+         */
+        if (isWrite && touchesProtectedKey(payload)) {
+          process.stderr.write(
+            `[no-write] FATAL: a protected write was ALLOWED through — the refusal rule is broken.\n` +
+              `[no-write] ${describeWrite(payload)}\n` +
+              `[no-write] ${payload.slice(0, 400)}\n`,
+          )
         }
       } catch {
         /* fall through to continuing the request */
@@ -878,43 +1242,13 @@ try {
 
   if (noWrite) {
     /*
-     * The refusal rule, checked against payloads in the shape the client really sends.
-     *
-     * This exists because the first version of the removal rule was silently wrong: it looked for a
-     * `settings` property on the request body, while the operation is `settings/mutate` with
-     * `[namespace, ops]` arguments. No run could reveal that — a rule that refuses nothing looks
-     * exactly like a rule whose case never came up — and it cost the instance a confirmation it had
-     * recorded. A pure function can be checked without a browser, so now it is.
+     * The refusal rule is checked ABOVE, before Chrome is launched, against payloads in the shape the
+     * client really sends — the same `runSelfCheck` this file runs under `--self-check`. It used to be
+     * checked here, from inside the session, with payloads written as arrays that nothing sends, which
+     * is why a rule that refused nothing looked verified.
      */
-    const settingsWrite = (value) =>
-      JSON.stringify({
-        type: 'client-request',
-        rpcId: 1,
-        method: 'mutate',
-        payload: ['ui-projects', [{ op: 'set', path: ['settings'], value }]],
-      })
-    const withRecord = settingsWrite({ 'liquid-glass': { checks: { version: '3.0.0', items: {} } } })
-    const withoutRecord = settingsWrite({})
-    const enabledWrite = JSON.stringify({
-      type: 'client-request',
-      rpcId: 2,
-      method: 'mutate',
-      payload: ['ui-projects', [{ op: 'set', path: ['enabled'], value: ['liquid-glass'] }]],
-    })
-    const otherNamespace = JSON.stringify({
-      type: 'client-request',
-      rpcId: 3,
-      method: 'mutate',
-      payload: ['ui-theme', [{ op: 'set', path: ['preference'], value: 'dark' }]],
-    })
-    const reason = (payload, had = 'current') => refusalReason({ payload, isWrite: true, checksAtStart: had })
-    equal(reason(withRecord), 'checks', 'a write that carries the record is refused')
-    equal(reason(withoutRecord), 'removal', 'a write that would drop a record this run found is refused')
-    equal(reason(withoutRecord, null), null, 'and an instance with no record keeps its freedom to write settings')
-    equal(reason(enabledWrite), null, 'the enabled list is not blocked, or the reload assertions would break')
-    equal(reason(otherNamespace), null, 'another namespace is not this flag’s business')
-    equal(refusalReason({ payload: withoutRecord, isWrite: false, checksAtStart: 'current' }), null, 'reads are never refused')
-    equal(reason('not json at all'), null, 'an unparseable body falls back rather than throwing')
+    const failures = runSelfCheck()
+    equal(failures, 0, 'the refusal rule agrees with real payload shapes before anything is touched')
   }
 
   await test('the Settings › UI section opens from the sidebar', async () => {
@@ -924,6 +1258,125 @@ try {
     truthy(section.ok, `UI section (${JSON.stringify(section)})`)
     await waitFor(session, "document.querySelectorAll('.uip-root').length > 0", 'the UI panel')
   })
+
+  /*
+   * ── THE GATE ───────────────────────────────────────────────────────────────
+   *
+   * Three runs of this suite deleted a confirmation from a real settings document, because a rule that
+   * refuses nothing looks exactly like a rule whose case never came up. Each time the fix was to read
+   * the source more carefully and try again, and each time the next run paid for the mistake.
+   *
+   * So the rule no longer runs first. This gate runs first, in `blanket` mode, where every write to the
+   * settings API is refused WITHOUT CONSULTING THE RULE — the document is safe whether the rule is
+   * right or wrong — and the bodies it refuses are kept. Then, and only then, the rule is asked to
+   * classify those REAL payloads. A rule that disagrees with what the client actually sends fails here,
+   * with the document untouched and the log showing exactly what arrived.
+   *
+   * Two triggers, not one, because one capture proves one shape: a confirmation writes the `settings`
+   * key carrying a record, and a withdrawal writes it without one. Both are refused in this phase, so
+   * the run leaves the checklist as it found it and the UI's in-memory state is discarded by the reload
+   * below.
+   */
+  const gateStartFailures = failures
+  if (!noWrite) {
+    process.stdout.write('         note  the refusal gate only runs under --no-write; skipping it\n')
+  }
+  if (noWrite) await test('the refusal rule is proved against real payloads first', async () => {
+    const before = await readSettingsSubtree()
+    if (!before.ok) {
+      process.stdout.write(`         note  the document could not be read (${before.why}); the state check is skipped\n`)
+    }
+
+    await navigate(pageUrl)
+    await ensurePanel(session)
+    /*
+     * The state this run found, read here rather than in the phase that normally reads it: in
+     * `--verify-refusal` mode the run ends before that phase, and the closing restore would otherwise
+     * act on a value that was never observed.
+     */
+    startedWithSkinOn = await skinIsOn(session)
+    const confirmed = await driveChecklistConfirm(session)
+    truthy(confirmed.ok, `the gate could drive a confirmation (${JSON.stringify(confirmed)})`)
+    const withdrew = await driveChecklistWithdraw(session)
+    // Not an assertion: whether a withdrawal is offered depends on whether the instance has a record,
+    // and a gate that demanded one would fail on a machine with nothing to protect.
+    process.stdout.write(`         note  the withdrawal trigger: ${JSON.stringify(withdrew)}\n`)
+
+    /*
+     * WAIT FOR THE WRITES, because they are sent a moment after the click: a record write is one field
+     * write per key, queued, and the gate's first version judged on whatever had arrived by then — a
+     * single `enabled` write — and reported a rule failure that was really a timing failure. It waits
+     * for the write that matters: a body carrying the `settings` path, which is the one this whole
+     * exercise is about. A timeout is a different failure from a rule that misclassifies, and the
+     * message says which.
+     */
+    const settingsDeadline = Date.now() + 8000
+    while (Date.now() < settingsDeadline && !gateBodies.some((body) => carriesSettingsPath(body))) {
+      await sleep(100)
+    }
+
+    truthy(gateRefusals > 0, `the interceptor saw and refused at least one write (${gateRefusals})`)
+    truthy(gateBodies.length > 0, `and kept its body (${gateBodies.length})`)
+    truthy(
+      gateBodies.some((body) => carriesSettingsPath(body)),
+      `a write carrying the settings key was attempted within 8s (${gateBodies.map(describeWrite).join(' | ')})`,
+    )
+
+    /*
+     * The rule, against bodies the client really sent. Every captured body is classified, and the
+     * classification is cross-checked against the independent detector: a body either carries a
+     * protected key and is refused, or carries none and is allowed. A disagreement in EITHER direction
+     * is a broken rule, and this is the assertion that would have caught all three of the wrong shapes
+     * before a single byte was at risk.
+     */
+    const verdicts = gateBodies.map((body) => ({
+      described: describeWrite(body),
+      reason: refusalReason({ payload: body, isWrite: true }),
+      carriesProtected: touchesProtectedKey(body),
+    }))
+    for (const verdict of verdicts) {
+      process.stdout.write(
+        `         gate  ${JSON.stringify(verdict.reason)} carriesProtectedKey=${verdict.carriesProtected} ${verdict.described}\n`,
+      )
+    }
+    const contradictions = verdicts.filter((verdict) => (verdict.reason !== null) !== verdict.carriesProtected)
+    equal(
+      contradictions.map((verdict) => verdict.described),
+      [],
+      'the rule and the detector agree on every body the client actually sent',
+    )
+    truthy(
+      verdicts.some((verdict) => verdict.reason === 'settings'),
+      `at least one real body is refused as a settings write (${JSON.stringify(verdicts.map((v) => v.reason))})`,
+    )
+
+    if (before.ok) {
+      const after = await readSettingsSubtree()
+      truthy(after.ok, `the document is still readable after the gate (${after.why ?? ''})`)
+      equal(after.text, before.text, 'and its settings block is byte-for-byte what it was')
+    }
+  })
+
+  if (noWrite) {
+    const gateFailures = failures - gateStartFailures
+    if (gateFailures > 0) {
+      throw new Error(
+        `the refusal gate failed (${gateFailures} assertion(s)): this build's --no-write cannot be ` +
+          `trusted with the settings document, so the run stops here. The gate itself was in blanket ` +
+          `mode, which refuses every write without consulting the rule, so nothing was changed.`,
+      )
+    }
+    /*
+     * Only now does the rule take over. And the page is reloaded first, because the gate drove a
+     * confirmation whose write was refused: the panel holds an in-memory record that the document does
+     * not have, and every phase below would be reading that contradiction instead of the truth.
+     */
+    refusalMode = 'rule'
+    await navigate(pageUrl)
+    await ensurePanel(session)
+    process.stdout.write('         note  the gate passed; the refusal rule is now in charge\n')
+  }
+  if (verifyRefusalOnly) throw new Error(GATE_ONLY)
 
   /*
    * Start from the state the phases below assume, and remember what it was.
@@ -1648,12 +2101,32 @@ try {
     equal(await skinIsOn(session), false, 'and the reset returned the skin to its shipped default, which is off')
     await setSkin(session, true)
 
-    // If the instance had a record to protect, the protection must have engaged — and the count is
-    // the proof, because a rule that matched nothing would look exactly like a rule that worked.
-    if (noWrite && checksAtStart !== null) {
-      truthy(
-        protectedRemovals > 0,
-        `the run refused to delete the record it found (${protectedRemovals} write(s) refused)`,
+    if (noWrite) {
+      /*
+       * In refusal mode the write never lands, so the document still says what it said at the start —
+       * which is the whole promise of the flag, and the opposite of what a write-mode run shows.
+       *
+       * The expected value is the state the run INHERITED, not "gone": on an instance that had a
+       * record, the record must still be there after the reload, and on one that had none, it must
+       * still be absent. Asserting "gone" here would be asserting something refusal mode makes
+       * impossible — and it is what the old form did, which is why it could only pass on a machine
+       * with nothing to lose.
+       */
+      truthy(refusedWrites > 0, `the settings write was refused (${refusedWrites} request(s))`)
+      await navigate(pageUrl)
+      await ensurePanel(session)
+      const afterWithdrawal = await evaluate(
+        session,
+        `(() => {
+          const details = document.querySelector('details.uip-tests[data-project="liquid-glass"]')
+          const record = details === null ? null : details.querySelector('[data-uip-checks]')
+          return record === null ? false : record.getAttribute('data-uip-checks')
+        })()`,
+      )
+      equal(
+        afterWithdrawal === false ? null : afterWithdrawal,
+        checksAtStart,
+        'the record after a reload is exactly the one the run found',
       )
     }
   })
@@ -2136,6 +2609,19 @@ try {
       `a page console.error reaches the collector (${pageErrors.length} message(s) collected)`,
     )
   })
+} catch (err) {
+  /*
+   * `--verify-refusal` ends by design; anything else ends the way it should — loudly, with the exit
+   * code the recorded failures already set.
+   */
+  if (err instanceof Error && err.message === GATE_ONLY) {
+    process.stdout.write('\n[gate] the refusal gate is the whole run; stopping here by design.\n')
+  } else if (verifyRefusalOnly) {
+    process.stderr.write(`\n[gate] the gate could not be completed: ${String(err?.message ?? err)}\n`)
+    process.exitCode = 1
+  } else {
+    throw err
+  }
 } finally {
   /*
    * Put the skin back the way this run found it.
@@ -2146,7 +2632,14 @@ try {
    * a run that started with it on already ends in the state it began with, and a redundant toggle
    * would be a write for nothing.
    */
-  if (startedWithSkinOn === false && page !== undefined) {
+  if (startedWithSkinOn === false && page !== undefined && !verifyRefusalOnly) {
+    /*
+     * NOT in `--verify-refusal` mode. That mode ends inside the gate, before the phase that reads the
+     * starting state — so `startedWithSkinOn` still holds its initial `false`, and the restore would
+     * "put back" a state the run never found: it switched the skin off on an instance that had it on.
+     * The gate itself never touches the skin (it drives the checklist, not the switch), so there is
+     * nothing to restore in that mode either way.
+     */
     try {
       await page.send('Page.navigate', { url: pageUrl })
       await waitFor(page, "document.querySelectorAll('#root *').length > 40", 'the app to mount', 45000)
@@ -2156,6 +2649,51 @@ try {
       process.stdout.write(`         note  could not restore the skin state: ${String(err)}\n`)
     }
   }
+
+  /*
+   * The closing guard, and it belongs HERE — inside the `finally`, BEFORE the page is closed.
+   *
+   * `--no-write` promises that a run cannot change what a person chose. `refusedWrites > 0` proves the
+   * rule fired at least once, which is not the same claim: if the rule were wrong in the way it was
+   * wrong before, the writes would have gone through and the count would simply be zero with nothing
+   * to notice. So the document's own state is read back — through the running client, which is the
+   * only thing that can read it — and a difference is reported as FATAL rather than as a failed
+   * assertion, because it means somebody's data changed and the run should not read as merely "not
+   * green". Reading it after `page.close()` would throw instead of reporting anything.
+   */
+  if (noWrite && checksAtStart !== null && page !== undefined) {
+    try {
+      await page.send('Page.navigate', { url: pageUrl })
+      await waitFor(page, "document.querySelectorAll('#root *').length > 40", 'the app to mount', 45000)
+      await ensurePanel(page)
+      const after = await page.send('Runtime.evaluate', {
+        expression: `(() => {
+          const details = document.querySelector('details.uip-tests[data-project="liquid-glass"]')
+          const record = details === null ? null : details.querySelector('[data-uip-checks]')
+          return record === null ? null : record.getAttribute('data-uip-checks')
+        })()`,
+        returnByValue: true,
+        awaitPromise: true,
+      })
+      const finalState = after?.result?.value ?? null
+      if (finalState !== checksAtStart) {
+        process.stderr.write(
+          `\n[no-write] FATAL: this run changed the checklist record it found (${checksAtStart} → ${String(finalState)}).\n` +
+            `[no-write] The settings key was supposed to be untouchable. The REFUSED/ALLOWED log above says\n` +
+            `[no-write] what the interceptor saw. Do not treat this run's result as valid.\n`,
+        )
+        process.exitCode = 1
+        failures += 1
+      } else {
+        process.stdout.write(`         note  the record this run found is unchanged after it (${finalState})\n`)
+      }
+    } catch (err) {
+      process.stderr.write(`[no-write] FATAL: could not verify the record survived: ${String(err)}\n`)
+      process.exitCode = 1
+      failures += 1
+    }
+  }
+
   page?.close()
   cdp?.close()
   chrome.child.kill()

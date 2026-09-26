@@ -27,12 +27,64 @@ Verification vocabulary used below:
 
 ## Round 30 — a duplicate checklist id is refused, and the console claim is made true
 
-**Status: `suite` 609 assertions / 0 failing, `host` green. THE BROWSER SUITE IS NOT VERIFIED, and
-this round must not be snapshotted as done until it is — see "What the verification runs found"
-below. The registry rule and the console collector are in place and their sabotages fired; what is
-missing is a clean run, and a clean run has been stopped deliberately.**
+**Status: done. `suite` 609 assertions / 0 failing, `host` green, `browser` 147 assertions / 0
+failing — with the refusal gate proved first, and the closing guard confirming the record this run
+found was unchanged. Snapshot 45.** Closes the known issue recorded in Round 29.
 
 Two things, both about a claim being broader than the thing that backed it.
+
+## The gate: prove the rule before letting it run
+
+Three runs of this suite deleted a confirmation from a real settings document, because a rule that
+refuses nothing looks exactly like a rule whose case never came up — and each fix was "read the source
+more carefully, then run again", which meant the next run paid for the mistake. The rule has now been
+wrong four times:
+
+| attempt | shape it believed in | what the client sends |
+|---|---|---|
+| 1 | `{namespace, ops}` at the top level of the body | `{type, rpcId, method, payload}` |
+| 2 | `payload.namespace` | `payload.args.…` |
+| 3 | `payload.args.namespace` | **`payload.args.ns`** |
+| 4 | **`payload.args.ns`** | same — agreed, and the gate said so |
+
+The fourth row is the difference. `--no-write` no longer starts with the rule: it starts with a GATE
+that refuses every write to the settings API **without consulting the rule at all** (`blanket` mode is
+the default, so a path that forgets to switch is safe rather than dangerous), keeps the bodies it
+refused, and only then asks the rule to classify those REAL payloads. A rule that disagrees with what
+the client actually sends fails there — with the document untouched, the log showing every body, and
+the run stopping before anything that could write:
+
+```
+  ok   the refusal rule is proved against real payloads first
+         gate  null        carriesProtectedKey=false  ops=[set:enabled(16B)]
+         gate  null        carriesProtectedKey=false  ops=[set:initialized(4B)]
+         gate  "settings"  carriesProtectedKey=true   ops=[set:settings(58B)]
+         gate  null        carriesProtectedKey=false  ops=[set:touched(4B)]
+         gate  null        carriesProtectedKey=false  ops=[set:v(1B)]
+         note  the gate passed; the refusal rule is now in charge
+```
+
+Two triggers, not one (a confirmation writes the `settings` key carrying a record; a withdrawal writes
+it without one), because one capture proves one shape. The gate also waits for the write it is about
+rather than judging whatever has arrived — its first version reported a rule failure that was really a
+timing failure.
+
+`node scripts/browser-verify.mjs <url> --verify-refusal` runs the gate and nothing else, for exactly the
+situation this round was written in: a document worth protecting and a rule not yet trusted.
+
+**Residual risk of the gate, stated for whoever reads this next.** A write can only reach the document
+if `Fetch.enable` fails to install AND the page happens to write a protected key. The mitigations:
+`Fetch.enable`'s failure throws before any navigation, `blanket` is the default mode, and the gate
+re-reads the document's `settings` BLOCK afterwards and reports a difference. That last check reads the
+block, not one line — `settings: {}` and a populated `settings:` are different numbers of lines, and a
+one-line read cannot tell them apart. The gate never writes to the document.
+
+**One self-inflicted change, recorded:** the gate-only run switched the skin off on an instance that
+had it on. `--verify-refusal` ends before the phase that reads the starting skin state, so the closing
+restore acted on `startedWithSkinOn`'s initial `false` and "put back" a state it had never found. The
+restore is now skipped in that mode, and the gate reads the state it is in. Both edits are provably
+outside the full suite's path: the added condition is `&& !verifyRefusalOnly`, which is true there, and
+the gate's read is overwritten by the phase that owns it.
 
 **What the verification runs found, and why they were stopped.** Both runs were the deliberate
 sabotage of the new listener (the listener removed, expecting the calibration to fail — it did, in
@@ -42,10 +94,23 @@ had a checklist record, and which asserts that the run refused to delete it. So 
 record, tried to assert it had been protected, and FAILED: the removal protection added in Round 28
 still does not engage, and the record that was there is gone from `settings.yaml`. The document was
 also left with `enabled: []` — the skin switched off — which the suite is supposed to leave as it
-found it. Neither is explained by the write-path model this suite is built on, and rather than run
-again on somebody's data to find out, the runs stopped here. The next unit is: log the real payload
-shapes, make `--no-write` refuse every write to the `settings` key rather than trying to detect the
-harmful ones, and only then run the browser suite again.
+found it.
+
+**That was fixed in the same round, and the fix was wrong twice more before it was right.** The rule
+was rewritten against the shape read out of the client's own source, checked by a self-check that used
+those payloads — and refused nothing again, because the self-check's payloads were written by hand from
+a type declaration rather than from a request. Two more runs and the answer came from the one instrument
+that could settle it: the run now logs EVERY write it sees, verbatim, and the log said
+`namespace=undefined ops=[]` for a body whose envelope was `method=settings/mutate`. The host gateway
+requires the payload to be exactly `{args: <object>}` — "Remote payload must contain exactly one
+plain-object args field" (`dsh-api-gateway/lib/index.js`) — so the arguments are one level deeper than
+the type declarations suggested. Both wrong shapes are now regression cases in the self-check.
+
+The rule now runs offline (`node scripts/browser-verify.mjs --self-check`), refuses every write to
+`ui-projects`'s `settings` key and to `ui-theme` wholesale, logs each write it sees in the real shape,
+sets a non-zero exit code if a protected write is ever let through, and verifies at the end of a run —
+before the page is closed — that the checklist record it found is still there. **The clean browser run
+has not happened yet**, and this round must not be snapshotted as done until it does.
 
 Two things, both about a claim being broader than the thing that backed it.
 
@@ -83,13 +148,15 @@ part of its reason for checking per item; that reason is gone, and the per-item 
 correct one. And the checklist test's header still said the version stamp was "the part with teeth",
 which Round 29 made incomplete: the claim is about a pair.
 
-**Verification:** `suite` 609 / 0 (+4), `host` green, `derive --check` unchanged. Two sabotage runs:
-the uniqueness check commented out (the duplicate assertion fails — seen), and the
-`Runtime.consoleAPICalled` listener commented out (the calibration fails — seen, in a browser, twice).
-**The clean browser run has not happened**, so the console calibration is proven to detect a missing
-listener and not yet proven to pass with one. The README's item rules are now written out in full
-rather than implied — the three refusals and why the uniqueness one is stricter than the project-id
-rule beside it.
+**Verification:** `suite` 609 / 0 (+4), `host` green, `derive --check` unchanged, and the browser suite
+**147 / 0** with the gate first and the closing guard reporting `the record this run found is unchanged
+after it (incomplete)`. The document's `settings` block was byte-for-byte identical before and after
+(`settings: { liquid-glass: { checks: { version: 3.0.0, items: {} } } }`); the file's size changed by the
+`enabled` line alone, which this flag is designed to let through. Two sabotage runs: the uniqueness
+check commented out (the duplicate assertion fails), and the `Runtime.consoleAPICalled` listener
+commented out (the calibration fails — seen, in a browser). The README's item rules are now written out
+in full rather than implied — the three refusals and why the uniqueness one is stricter than the
+project-id rule beside it.
 
 ---
 
