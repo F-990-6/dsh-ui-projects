@@ -112,6 +112,29 @@ if (cordisPath === undefined) {
 const cordisPkg = JSON.parse(readFileSync(join(cordisPath, 'package.json'), 'utf8'))
 process.stdout.write(`== load check: cordis ${cordisPkg.version} at ${cordisPath} ==\n`)
 
+/*
+ * WHICH Cordis is under test, checked rather than assumed.
+ *
+ * The tracker contract asserted at the end of this file is a statement about Cordis internals, and
+ * it only means anything if this is the SAME Cordis the host process loads. Discovery picks the
+ * newest copy in the npx cache, which is a guess; `@deepseek-ai/dsh` pins the version it actually
+ * resolves. So the two are compared, and a mismatch fails here — before a single assertion is made
+ * about a framework nobody runs.
+ */
+const dshManifest = join(cordisPath, '..', 'dsh', 'package.json')
+if (existsSync(dshManifest)) {
+  const pinned = JSON.parse(readFileSync(dshManifest, 'utf8')).dependencies?.['@deepseek-ai/cordis']
+  if (pinned !== undefined && pinned !== cordisPkg.version) {
+    process.stdout.write(
+      `  FAIL the discovered Cordis (${cordisPkg.version}) is not the one dsh pins (${pinned}).\n` +
+        "       Pass --cordis <the deployment's @deepseek-ai/cordis>: a different version makes the\n" +
+        '       tracker contract below a statement about a framework nobody runs.\n',
+    )
+    process.exit(1)
+  }
+  process.stdout.write(`  dsh pins @deepseek-ai/cordis ${pinned ?? '(none)'}; discovered ${cordisPkg.version}\n`)
+}
+
 const cordis = await import(pathToFileURL(join(cordisPath, 'lib', 'index.js')).href)
 const Context = cordis.Context ?? cordis.default?.Context
 if (typeof Context !== 'function') {

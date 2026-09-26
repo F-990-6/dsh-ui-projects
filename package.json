@@ -34,7 +34,10 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "node scripts/verify.mjs",
-    "test:host": "node scripts/host-check.mjs"
+    "test:host": "node scripts/host-check.mjs",
+    "test:load": "node scripts/load-check.mjs",
+    "test:conformance": "node scripts/check-installed.test.mjs",
+    "check:installed": "node scripts/check-installed.mjs"
   },
   "engines": {
     "node": ">=20"

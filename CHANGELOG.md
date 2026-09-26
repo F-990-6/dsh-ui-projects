@@ -25,7 +25,90 @@ Verification vocabulary used below:
 
 ---
 
-## Round 31 — the project system becomes a platform: two services, a generated manifest, and a second package
+## Round 32 — the conformance checker: what is installed, and could we run it
+
+**Status: done. `suite` 613 assertions / 0 failing, `host` green, `load` 40 / 0 (now also proving
+which Cordis it drove), `conformance` 49 / 0, `check:installed` run against the real profile —
+read-only, with the profile directory and `node_modules` byte-identical before and after. No browser
+run: nothing in this round is visible in a page.**
+
+Step 3 of phase 2. The loader itself is dsh's; what this round adds is the ability to look at a
+profile and say what is in it, whether it is composed, and whether we could run it — before anything
+is installed, and without the possibility of writing anything.
+
+### What was added
+
+| File | What it is |
+|---|---|
+| `src/host/manifest-schema.js` | the one field table for `dsh.uiProject`, its enumerations, and `validateManifest` |
+| `src/host/conformance.js` | pure checks: seven problem codes, each naming a field, a value and a fix |
+| `src/host/profile-scan.js` | read-only profile scan: dependencies, bundles, in-box bundles, orphans, and the command preview |
+| `scripts/check-installed.mjs` | the CLI, including `--candidate` previews and `--json` |
+| `scripts/check-installed.test.mjs` | 49 assertions over fixtures, plus two structural guards |
+
+### `patch-file-missing`: we are stricter than the loader, on purpose
+
+The loader's admission predicate checks only that the property exists —
+`readProfileManifest(dir).dsh?.bundle?.patch !== void 0`. A package that names a patch file it does
+not ship therefore joins the layer stack and fails when the stack is built, which is a boot failure
+rather than a package problem. We require the file to exist and to be readable under the package
+root. This is contract validation, not sandboxing: a bundle's patch and its `lib/` are executed by
+dsh at composition time, and nothing here changes that — what it changes is that "installed and
+dead" is reported as such instead of arriving as a GUI that will not start.
+
+### Two facts kept apart, because conflating them is the mistake this exists to avoid
+
+`installed` (in `dependencies`, resolvable under `node_modules`) and `composed` (in
+`dsh.profile.bundles` **and** declaring `dsh.bundle.patch`) are different sets, and neither contains
+the other: `dsh.profile.bundles` also lists the profile template's in-box bundles, which are not
+dependencies — the loader's own words are "in-box bundles from the profile template are not
+dependencies and are never touched". The real profile shows both: two in-box bundles, two
+dependency bundles.
+
+`orphanedBindings` therefore means something narrower than "in `dependencies` but not in the stack":
+it means a dependency that **declares a bundle** and is missing from the stack. A plain library is
+not an orphan — the loader itself notes that "a plain library is fine" — and `zod` in a real profile
+is the case that would have made the wider definition cry wolf.
+
+### Negative results, recorded
+
+- **A test helper hid nine failures behind one bug.** `uiProjectDsh({ uiProject: { id: 'Bad_Id!' } })`
+  spread its overrides LAST, so each "one field is wrong" fixture was really "eight fields are
+  missing" — nine assertions failed, all for the same reason, and none of them for the field under
+  test. The helper now merges into the well-formed project instead of replacing it.
+- **`--list-profiles` listed `profiles/node_modules` as a profile.** Found by running the CLI against
+  the real profile, not by any fixture: the predicate was "a directory that is not hidden". It is now
+  "a directory with a package.json", which is the definition the rest of the scanner already used.
+- **`schemaVersion` was called advisory in step 1, and that was wrong.** `dshVersionHint` is a claim
+  about dsh and can be advisory; `schemaVersion` is our own contract version, and a version we do not
+  implement means we cannot read the document — including the fields we would drop silently. It is an
+  error, and `conformance.js` says why in the code.
+
+### Recorded, not to be forgotten: before step 5
+
+```
+步骤 5 前必须核实（否则栏目无法读取宿主清单）
+1. @deepseek-ai/dsh-host-webserver 是否给行提供"注册只读路由"的 API
+2. 若否：核实 @deepseek-ai/dsh-client-connection 的 `connection` 服务接口面（能否通用请求）
+不阻塞步骤 3；两条都未核实前不得开始步骤 5 的栏目 UI。
+```
+
+### Verified against the real profile
+
+```
+DEPENDENCIES (2)   dsh-cost-meter 1.7.23 bundle composed store
+                   dsh-ui-projects 0.1.0 bundle composed link → E:\dsh\plugins\dsh-ui-projects
+BUNDLES (4)        @deepseek-ai/dsh-base [in-box] · @deepseek-ai/dsh-web-app [in-box]
+                   dsh-cost-meter [dependency] · dsh-ui-projects [dependency]
+UI PROJECT PACKAGES (0)   (none — the framework does not declare one yet)
+PROBLEMS (0)
+PREVIEW            dsh-cost-meter  → remove / update / rollback dsh-cost-meter@1.7.23
+                   dsh-ui-projects → remove / update / n/a (a link: dependency has no published version)
+```
+
+---
+
+
 
 **Status: done. `suite` 613 assertions / 0 failing, `host` green, `load` 32 assertions / 0 failing
 against the deployment's own Cordis 4.0.2, `skeleton` check 13 / 0, `derive-boot-css --check` and

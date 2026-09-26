@@ -55,35 +55,29 @@ if (declared === undefined) {
   process.exit(process.exitCode ?? 0)
 }
 
-/** Field order is fixed so the file is stable across runs and diffable. */
-const ORDER = [
-  'schemaVersion',
-  'pluginApiVersion',
-  'id',
-  'name',
-  'description',
-  'type',
-  'scope',
-  'defaultEnabled',
-  'supports',
-  'perfLevel',
-  'priority',
-  'modifies',
-  'requires',
-  'testItems',
-  'preview',
-  'previewLabel',
-  'controls',
-  'dshVersionHint',
-  'runtimeDependencies',
-]
-
+/*
+ * The field table comes from `src/host/manifest-schema.js` — the ONE place that says what a
+ * manifest may contain, read here and by the conformance checker. A second list in this file would
+ * be a second answer to the same question, and the two would disagree the first time a field was
+ * added. Loaded dynamically because it sits next to the table it replaces, in a script whose other
+ * imports are at the top.
+ */
+const { MANIFEST_FIELDS, validateManifest } = await import('../src/host/manifest-schema.js')
+const ORDER = MANIFEST_FIELDS.map((entry) => entry.field)
 const entries = ORDER.filter((key) => declared[key] !== undefined).map((key) => [key, declared[key]])
-const unknown = Object.keys(declared).filter((key) => !ORDER.includes(key))
-if (unknown.length > 0) {
+
+/*
+ * The same validation the checker applies to an installed package, applied here at build time.
+ * Generating a manifest the checker would refuse is a package that cannot be installed, and build
+ * time is the cheapest place on earth to hear about a typo.
+ */
+const issues = validateManifest(declared)
+if (issues.length > 0) {
   throw new Error(
-    `[derive-manifest] ${pkg.name}: unknown dsh.uiProject field(s): ${unknown.join(', ')}\n` +
-      '[derive-manifest] The loader validates manifests against this list; a typo would otherwise be ignored.',
+    `[derive-manifest] ${pkg.name}: dsh.uiProject does not validate:\n` +
+      issues
+        .map((issue) => `[derive-manifest]   ${issue.field}: ${issue.message}\n[derive-manifest]     fix: ${issue.action}`)
+        .join('\n'),
   )
 }
 
