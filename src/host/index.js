@@ -16,37 +16,26 @@
  *     Host document that survives a browser-profile reset. Without this
  *     registration the browser half's preferred transport reports `unavailable`,
  *     and `src/client/persist.js` silently falls back to `localStorage` instead.
- *  4. **First paint.** It answers `webserver/index-inject` with the skin's
- *     first-paint stylesheet and its data attribute. THIS half owns that because
- *     the first frame happens before the client bundle is even fetched: the head
- *     must already carry the critical CSS and the body must already carry the
- *     marker, or the page paints in the default look and then switches — the flash
- *     the specification forbids. The stylesheet is `src/host/boot.css`, a verbatim
- *     subset of what the client emits; `scripts/build.mjs` fails the build if the
- *     two ever disagree.
+ *  4. **The first-paint contract.** It provides `uiProjectsHost`, the service every
+ *     UI project package asks for its `webserver/index-inject` rows. The contract
+ *     itself — the marker attribute, the presence announcement, the fragment tag,
+ *     and "read the settings document at emit time" — lives in `./service.js`, so
+ *     it is written once for every package rather than once per package.
  *
- * It owns no Service, no route and no business state of its own. The one Event it listens to is
- * the index injection above, and the client half is still where the product lives.
+ * The project shipped inside this package uses that same service rather than a private copy of
+ * the contract. When it moves out to its own package (the extraction that makes this framework
+ * skin-agnostic), this file keeps reasons 1–4 and loses every mention of a project id.
  */
 
 import z from '@deepseek-ai/schemastery'
 
 import { BOOT_CSS } from './boot-css.js'
+import { UI_PROJECTS_SETTINGS_NAMESPACE, createHostService } from './service.js'
+
+export { UI_PROJECTS_SETTINGS_NAMESPACE }
 
 /** The browser bundle this row makes reachable. */
 export const CLIENT_MODULE_ID = 'dsh-ui-projects'
-
-/**
- * Durable settings namespace for the UI project registry.
- *
- * This value is one half of a contract whose other half is `SETTINGS_NS` in
- * `src/client/persist.js` — the browser half binds exactly this namespace
- * through `ctx.settingsScope`. The two exist as separate copies because the two
- * halves are separate bundles that cannot import from one another, which is also
- * why changing one without the other silently moves the durable state to
- * `localStorage` instead of failing loudly.
- */
-export const UI_PROJECTS_SETTINGS_NAMESPACE = 'ui-projects'
 
 /**
  * The settings document schema.
@@ -83,56 +72,13 @@ export const UI_PROJECTS_SETTINGS_SCHEMA = z.object({
 })
 
 /**
- * The shipped skin's project id.
+ * The project shipped inside this package.
  *
- * The host half needs exactly one id, and only for the first paint: a project registers its own
- * id in the browser, and everything else here is generic. This is the one place the two halves
- * name a project, so it is named once.
+ * The host half needs exactly one id, and only for the first paint: a package's own host half
+ * names its own project, and everything else here is generic. This is the one place this package
+ * names a project, and it disappears with the project when the skin moves out.
  */
 const SHIPPED_SKIN_ID = 'liquid-glass'
-
-/**
- * The project ids the settings document currently says are on.
- *
- * Read through the same document the browser half writes, so the first frame and the runtime
- * cannot disagree about what is enabled. Every failure mode returns an empty list rather than
- * throwing: no settings service composed, no section yet (the normal first run), or a section
- * written by an older version. In all of those the answer "nothing is on" is safe — the first
- * frame paints the default look, exactly as it did before this existed.
- *
- * Read at EMIT time rather than cached at mount: the injection table is collected fresh for every
- * index render, so a toggle is reflected by the next reload with nothing to invalidate.
- * @param {import('@deepseek-ai/cordis').Context} ctx
- * @returns {string[]}
- */
-function readEnabledIds(ctx) {
-  const settings = ctx.get('settings')
-  if (settings === undefined || typeof settings.get !== 'function') return []
-  const section = settings.get(UI_PROJECTS_SETTINGS_NAMESPACE)
-  if (section === null || typeof section !== 'object') return []
-  return Array.isArray(section.enabled) ? section.enabled : []
-}
-
-/**
- * The first-paint row that marks the document, as an injection row.
- *
- * `placement: 'body'` is required rather than stylistic: the marker lives on `<body>`, and body
- * rows are rendered immediately after the opening body tag — before the application is mounted
- * and before the first paint. The same placement ui-theme uses for its own bootstrap, for the
- * same reason.
- * @param {string} projectId
- * @returns {import('@deepseek-ai/dsh-host-webserver').IndexInjection}
- */
-function bootMarkerRow(projectId) {
-  return {
-    kind: 'script',
-    placement: 'body',
-    text: `(() => {
-  document.body.setAttribute(${JSON.stringify(`data-ui-project-${projectId}`)}, 'on')
-  document.documentElement.setAttribute('data-ui-skin', ${JSON.stringify(projectId)})
-})()`,
-  }
-}
 
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
@@ -141,6 +87,15 @@ export function apply(ctx) {
   ctx.logger?.info?.(
     `[dsh-ui-projects] host row mounted; the UI project registry and its settings page are served to the web client as "${CLIENT_MODULE_ID}"`,
   )
+
+  /*
+   * Provided unconditionally, before anything that could fail. Every UI project package's host
+   * half declares `inject: ['uiProjectsHost']`, so a service that appeared late — or not at all,
+   * because an optional dependency was missing — would park those rows and cost the page its
+   * first-paint CSS. `service.js` explains why at length.
+   */
+  const hostService = createHostService(ctx)
+  ctx.provide('uiProjectsHost', hostService)
 
   // `settings` is an OPTIONAL dependency, reached through `ctx.inject` rather
   // than declared in `inject` on the plugin object. Declaring it would hold this
@@ -165,19 +120,14 @@ export function apply(ctx) {
   })
 
   /*
-   * First paint — see reason 4 in the file header.
+   * First paint — see reason 4 in the file header, and `service.js` for the contract.
    *
-   * The stylesheet goes in unconditionally. Every selector in it carries the project marker, so
-   * with the skin off the whole sheet is inert; pushing it always means the host needs no branch
-   * here, and there is one less way for "the skin is off" to go wrong.
-   *
-   * The marker is written only when the document says the skin is on, by a script that runs while
-   * the parser is still opening `<body>`. It fails soft by construction: if the settings document
-   * cannot be read, no script is emitted, no marker is set, and the page paints the default look.
+   * This package is its own first client of the service, which is deliberate: it is the same
+   * three lines a third-party UI project package writes, so the framework cannot quietly depend
+   * on anything a package does not have.
    */
   ctx.on('webserver/index-inject', (table) => {
-    table.push({ kind: 'style', text: BOOT_CSS })
-    if (readEnabledIds(ctx).includes(SHIPPED_SKIN_ID)) table.push(bootMarkerRow(SHIPPED_SKIN_ID))
+    table.push(...hostService.bootRows(SHIPPED_SKIN_ID, BOOT_CSS))
   })
 }
 

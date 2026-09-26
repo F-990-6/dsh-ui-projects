@@ -1580,6 +1580,8 @@ await test('the project modules register only once the settings slot is declared
 
   /** @type {Array<() => any>} */
   const injections = []
+  /** Services provided through this stub context, by name. */
+  const provided = new Map()
   /** @type {any} */
   let registeredSection
   const ctx = {
@@ -1604,6 +1606,15 @@ await test('the project modules register only once the settings slot is declared
     inject: (/** @type {string[]} */ names, /** @type {(scoped: any) => any} */ callback) =>
       names.includes('remote') ? callback(ctx) : () => {},
     on: () => () => {},
+    /*
+     * The registration surface the client half now provides. Modelled rather than ignored because
+     * a context without it takes the whole plugin down: `apply` calls `ctx.provide` before it does
+     * anything else, so this stub is what keeps this probe faithful.
+     */
+    provide: (/** @type {string} */ name, /** @type {unknown} */ value) => {
+      provided.set(name, value)
+      return () => provided.delete(name)
+    },
     effect: (/** @type {() => any} */ callback) => {
       const result = callback()
       return typeof result === 'function' ? result : () => {}
@@ -1626,6 +1637,28 @@ await test('the project modules register only once the settings slot is declared
     // One settings section: the UI project manager. It waits for the slot
     // declaration, so it does not register before the slot exists.
     equal(injections.length, 1, 'the section registration waits for the slot declaration')
+    /*
+     * The registration surface, and the one thing it can say about the host plane.
+     *
+     * This probe runs with `window` present and `window.__dshUiProjectRows` absent — which is
+     * exactly the shape of a page served without any UI project package's host half. The service
+     * must report that as `absent` rather than as an error, because it is a valid composition and
+     * the panel's job is to say so on the card, not to refuse to render.
+     */
+    const service = provided.get('uiProjects')
+    equal(typeof service?.register, 'function', 'the client half provides the uiProjects registration service')
+    const diagnosis = service.diagnostics()
+    equal(diagnosis.hostPlane, 'absent', 'with no host announcement the host plane is reported as absent, not as a failure')
+    equal(Array.isArray(diagnosis.projects), true, 'the diagnosis lists the projects it covers')
+    /*
+     * `liquid-glass` is NOT in that list, and that is the shape of the transition rather than a
+     * gap: the project shipped inside THIS package is registered straight into the registry
+     * (`installBuiltInProjects`), because a package cannot hand itself a manifest it does not have
+     * yet. Every package that arrives through `dsh.uiProject` registers through the service —
+     * which is what makes `source` complete for them — and the built-in one joins them when it
+     * moves out to its own package.
+     */
+    equal(diagnosis.projects.length, 0, 'no project is service-registered until a package registers one')
     equal(registeredSection, undefined, 'and it does not register before it')
 
     injections[0]()

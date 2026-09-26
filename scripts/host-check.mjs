@@ -70,9 +70,12 @@ function makeContext(register, section) {
   const calls = []
   /** @type {Map<string, (arg: any) => void>} */
   const handlers = new Map()
+  /** Services the row provided, by name — `uiProjectsHost` among them. */
+  const provided = new Map()
   return {
     calls,
     handlers,
+    provided,
     ctx: {
       logger: { info: (line) => calls.push(`info:${line}`), warn: (line) => calls.push(`warn:${line}`) },
       inject: (deps, callback) => {
@@ -83,6 +86,17 @@ function makeContext(register, section) {
         calls.push(`on:${event}`)
         handlers.set(event, handler)
         return () => handlers.delete(event)
+      },
+      /*
+       * The row provides `uiProjectsHost` — the service every UI project package's host half
+       * injects for its first-paint rows. A stub context without `provide` does not fail a little:
+       * `apply` throws, and with it the loader entry. Recorded rather than ignored, so a test can
+       * ask what was provided.
+       */
+      provide: (name, value) => {
+        calls.push(`provide:${name}`)
+        provided.set(name, value)
+        return () => provided.delete(name)
       },
       get: (service) =>
         service === 'settings' && section !== undefined
@@ -205,7 +219,27 @@ if (enabledTable === undefined) {
 } else {
   ok('answers webserver/index-inject')
   const styles = enabledTable.filter((row) => row.kind === 'style')
-  const scripts = enabledTable.filter((row) => row.kind === 'script')
+  /*
+   * Two scripts, with two different jobs, told apart by what they write.
+   *
+   * The presence announcement is new, and it is the ONLY evidence the browser half can have that
+   * this package's host row mounted on this page load — the two halves run in different runtimes
+   * and share no service, so the rendered document is the one channel they have (see
+   * `src/client/boot-presence.js`). It is emitted whether or not the project is on, which is what
+   * lets "the host half is missing" be told apart from "the project is off". The marker is the row
+   * that decides the first frame.
+   */
+  const presence = enabledTable.filter(
+    (row) => row.kind === 'script' && (row.text ?? '').includes('__dshUiProjectRows'),
+  )
+  const markers = enabledTable.filter((row) => row.kind === 'script' && (row.text ?? '').includes('data-ui-project-'))
+
+  if (presence.length === 1) ok('announces the package once, for the browser half to read')
+  else fail(`expected 1 presence row, saw ${presence.length}`)
+  if (presence[0]?.placement === 'body') ok("the presence row is placed 'body' — read before the client bundle")
+  else fail(`presence placement is ${JSON.stringify(presence[0]?.placement)}, expected 'body'`)
+  if ((presence[0]?.text ?? '').includes('liquid-glass')) ok('the presence row names the project it speaks for')
+  else fail('the presence row does not name the project id')
 
   if (styles.length === 1) {
     ok('inlines exactly one first-paint stylesheet')
@@ -219,34 +253,54 @@ if (enabledTable === undefined) {
   } else {
     fail('the first-paint stylesheet carries no project marker — it would restyle the default UI')
   }
+  /*
+   * The tag is how the browser half answers "did my first-paint fragment reach this page?" with no
+   * cross-plane channel at all: it scans the document's stylesheets for this exact line. The build
+   * strips comments from the payload it inlines, so the tag is prepended by the service rather than
+   * written into `boot.css` — which makes this assertion the only thing keeping the two in step.
+   */
+  if (css.startsWith('/* ui-project:liquid-glass boot-fragment v1 */')) {
+    ok('the stylesheet opens with the fragment tag the browser half scans for')
+  } else {
+    fail(`the first-paint stylesheet does not open with its fragment tag: ${JSON.stringify(css.slice(0, 60))}`)
+  }
   // Inlined verbatim into an element: a "<" could close it early and spill CSS into the document.
   if (!css.includes('<')) ok('the stylesheet contains no "<" (safe to inline)')
   else fail('the stylesheet contains "<", which can close the element it is inlined into')
 
-  if (scripts.length === 1) {
+  if (markers.length === 1) {
     ok('marks the document when the record says the skin is on')
   } else {
-    fail(`expected 1 marker script for an enabled skin, saw ${scripts.length}`)
+    fail(`expected 1 marker script for an enabled skin, saw ${markers.length}`)
   }
-  if (scripts[0]?.placement === 'body') {
+  if (markers[0]?.placement === 'body') {
     ok("the marker script is placed 'body'")
   } else {
-    fail(`marker placement is ${JSON.stringify(scripts[0]?.placement)}, expected 'body' — the marker is on <body>`)
+    fail(`marker placement is ${JSON.stringify(markers[0]?.placement)}, expected 'body' — the marker is on <body>`)
   }
-  const script = scripts[0]?.text ?? ''
+  const script = markers[0]?.text ?? ''
   if (script.includes('data-ui-project-liquid-glass')) ok('the script sets the project marker')
   else fail('the marker script does not set the project marker')
   if (!script.includes('<')) ok('the script contains no "<" (safe to inline)')
   else fail('the script contains "<", which can close the element it is inlined into')
 
-  // Off, and unsaid. Both must paint the default look with nothing to undo.
+  // Off, and unsaid. Both must paint the default look with nothing to undo — and the presence row
+  // is still emitted, because "off" and "not mounted" are different states.
   const offTable = collectInjections({ ...ON_RECORD, enabled: [] }) ?? []
-  if (offTable.every((row) => row.kind !== 'script')) ok('an enabled=[] record emits no marker script')
-  else fail('a disabled skin still emitted a marker script')
+  // Script rows only: the inert stylesheet legitimately carries the marker inside its selectors,
+  // which is exactly what makes it inert when the project is off.
+  const offMarkers = offTable.filter((row) => row.kind === 'script' && (row.text ?? '').includes('data-ui-project-'))
+  if (offMarkers.length === 0) ok('an enabled=[] record emits no marker script')
+  else fail(`a disabled skin still emitted ${offMarkers.length} marker script(s)`)
+  if (offTable.some((row) => (row.text ?? '').includes('__dshUiProjectRows'))) {
+    ok('a disabled skin still announces its host half, so the panel can tell it apart from a missing one')
+  } else {
+    fail('a disabled skin stopped announcing itself — a missing host half would look identical')
+  }
 
   const bareTable = collectInjections(undefined) ?? []
-  if (bareTable.length === 1 && bareTable[0].kind === 'style') {
-    ok('with no settings service, only the inert stylesheet is emitted')
+  if (bareTable.length === 2 && bareTable[0].kind === 'script' && bareTable[1].kind === 'style') {
+    ok('with no settings service: the presence row and the inert stylesheet, and no marker')
   } else {
     fail(`with no settings service the table is ${JSON.stringify(bareTable.map((row) => row.kind))}`)
   }

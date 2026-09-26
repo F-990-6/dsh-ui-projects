@@ -29,6 +29,8 @@
  */
 const { UiProjectRegistry } = require('./registry.js')
 const { createPersist, LOCAL_KEY, SETTINGS_NS } = require('./persist.js')
+const { createUiProjectsService } = require('./service.js')
+const { readHostRowsAtBoot, bootFragmentPresent, bodyMarkerPresent } = require('./boot-presence.js')
 const { createRuntime } = require('./runtime.js')
 const { createStore, detectLocale, onLocaleChange } = require('./store.js')
 const { collectDiagnostics, mountDiagnostics } = require('./diagnostics.js')
@@ -75,6 +77,16 @@ function insertStyle(id, css) {
  */
 function apply(ctx) {
   const target = sharedRegistry
+  /*
+   * What the host plane announced for THIS page load, read once, here, before anything else.
+   *
+   * It has to be read synchronously and only once: the host's presence rows are body rows, which
+   * the server renders immediately after `<body>` opens and therefore strictly before the boot
+   * tail that loads this bundle. Everything downstream — the panel's three-state diagnosis, the
+   * "host half did not mount" warning — is a statement about the document that was just served,
+   * so a later re-read would be evidence about something else.
+   */
+  const presenceAtBoot = readHostRowsAtBoot()
   /** Settlement of the initial state application, published for observers. */
   let ready = Promise.resolve()
 
@@ -93,6 +105,35 @@ function apply(ctx) {
   }, 'ui-projects: core styles')
 
   const persist = createPersist(ctx)
+
+  /*
+   * The registration surface every UI project package uses.
+   *
+   * Provided before the persisted state is applied, so a package whose client half mounts later
+   * in the same composition finds it immediately rather than waiting for a second boot. A skin's
+   * client entry declares `inject: ['uiProjects']` and calls `register(manifest, { apply,
+   * cleanup })`; `service.js` owns what that means, including the lifetime binding that makes an
+   * unloaded package withdraw its projects.
+   *
+   * `enabledIds` reads the same record the host half reads at emit time — the settings document —
+   * so a diagnosis of "the document says it is on, but nothing registered it" is a comparison of
+   * two views of one truth rather than of two caches.
+   */
+  ctx.provide(
+    'uiProjects',
+    createUiProjectsService({
+      registry: target,
+      enabledIds: () => persist.read().enabled,
+      hostRowsAtBoot: presenceAtBoot,
+      bootFragmentPresent,
+      bodyMarkerPresent,
+      notify: () => {
+        panelRevision += 1
+        sharedRegistry.notify()
+      },
+    }),
+  )
+
   const runtime = createRuntime({
     registry: target,
     persist,

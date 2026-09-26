@@ -25,7 +25,73 @@ Verification vocabulary used below:
 
 ---
 
-## Round 30 — a duplicate checklist id is refused, and the console claim is made true
+## Round 31 — the project system becomes a platform: two services, a generated manifest, and a second package
+
+**Status: done. `suite` 613 assertions / 0 failing, `host` green, `load` 32 assertions / 0 failing
+against the deployment's own Cordis 4.0.2, `skeleton` check 13 / 0, `derive-boot-css --check` and
+the manifest checks green. NOT verified in a browser this round, and deliberately so: the profile
+still serves the previous package code, and every browser-visible consequence of this round (one
+extra presence row in the served index) appears only after a reinstall, which is the user's to run.**
+
+This is step 2 of phase 2: the structure that lets a UI project live in its own package, plus the
+minimal package that proves it. The framework keeps its own project for now; it stops being the
+only possible one.
+
+### What was added
+
+| File | What it is |
+|---|---|
+| `src/host/service.js` | the host-plane service `uiProjectsHost`, and the first-paint contract it owns: the presence announcement, the marker attribute and script, the fragment tag, and "read the settings document at emit time" |
+| `src/client/service.js` | the client-plane service `uiProjects`: `register` / `list` / `refusals` / `revision` / `diagnostics` |
+| `src/client/boot-presence.js` | what the host plane told this page, and what actually reached it |
+| `scripts/bundle-client.mjs` | the client-bundle builder, extracted so a second package can use the same ESM→CJS rules |
+| `scripts/derive-manifest.mjs` | `package.json` → `dsh.uiProject` → `src/client/manifest.generated.js`, with `--check` |
+| `scripts/load-check.mjs` | both halves mounted on real Cordis roots, with real fibers disposed |
+| `../dsh-ui-project-skeleton/` | the smallest complete UI project package — reference and fixture |
+
+### Four findings that changed the design, each from source rather than from reasoning
+
+**1. Caller identity stops at the fiber.** A service method can see who called it — but only its
+fiber, whose name is inherited and may be `'root'` — so it carries no package identity and no
+version. Hence `register(manifest, definition)`: the manifest is explicit because it is the only
+authority there is, and the caller's context is used for lifetime and as a diagnostic.
+
+**2. A plain object provided as a service is NOT wrapped with the caller's context.** The earlier
+sketch assumed Cordis wraps every service. It does not: `getTraceable` (utils.ts) returns the value
+untouched unless the value itself carries `Symbol.for('cordis.tracker')`, which only `Service`
+subclasses and Cordis's own services define. Without that marker `this.ctx` is `undefined`, and the
+first `load` run failed exactly there.
+
+**3. The tracker symbol is global by design, so the marker can be declared without importing
+Cordis.** `symbols.tracker` is `Symbol.for('cordis.tracker')` — a global-registry symbol, chosen so
+that code which cannot import Cordis can still take part. The client service therefore declares
+`{ property: 'ctx', noShadow: true }` under that symbol, copied from Cordis's own reflect service,
+and `load` proves the effect: disposing the package's fiber withdraws its registration.
+
+**4. Two services, not one, and no precedent to copy.** A full scan of the shipped packages found
+**no** service name used in both planes, and the shipped convention for a mirrored concept is two
+names (`settings` host / `settingsScope` client). So: `uiProjects` in the browser, `uiProjectsHost`
+in Node. The mechanism would have allowed the same name (the isolation key is a symbol minted on
+`ctx.root`, so two roots cannot collide) — the convention, the error messages and the future of
+same-root tests are what decided it.
+
+### Negative results, recorded
+
+- **A loose assertion passed for the wrong reason.** `load` first selected rows by "mentions
+  skeleton" and matched the framework's own first-paint stylesheet, because `tokens.css` binds
+  `--dsw-alias-bg-skeleton`. Two of the three initial failures were that, not a real defect. The
+  filter now matches the presence row's own shape.
+- **`ctx.provide` on a stub context is not optional.** The first `host` run after this change died
+  with `ctx.provide is not a function`, because the host row now provides a service. Both stubs
+  (and the suite's minimal probe context) had to model it; a context that models less than the row
+  touches fails as a boot failure rather than as a test failure.
+- **The extraction of `scripts/build.mjs` was verified byte-for-byte before it was trusted.** The
+  rebuilt bundle was compared against the previous artefact: identical header, identical loader
+  tail, `lib/boot-css.js` hash unchanged, and exactly the two new modules added to the graph.
+
+---
+
+
 
 **Status: done. `suite` 609 assertions / 0 failing, `host` green, `browser` 147 assertions / 0
 failing — with the refusal gate proved first, and the closing guard confirming the record this run
