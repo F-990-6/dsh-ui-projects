@@ -61,6 +61,10 @@ function projectFields(manifest) {
  * @param {{ register: (definition: any) => any, ids: () => string[] }} deps.registry the live registry
  * @param {() => string[]} deps.enabledIds the ids the user has on, from the same record the host reads
  * @param {readonly string[] | null} deps.hostRowsAtBoot the host's announcement, frozen at apply
+ * @param {(id: string) => Promise<void>} [deps.retire] deactivate one project without touching the
+ *   user's record — the runtime's `retire`
+ * @param {(id: string) => Promise<void>} [deps.adopt] apply a project that registered after the
+ *   record was restored — the runtime's `adopt`
  * @param {() => boolean} deps.bootFragmentPresent per-project first-paint fragment probe
  * @param {() => boolean} deps.bodyMarkerPresent per-project marker probe
  * @param {() => void} deps.notify asked to re-render the panel after a registration change
@@ -119,10 +123,29 @@ export function createUiProjectsService(deps) {
 
     try {
       const committed = { ...projectFields(manifest), ...definition, source }
-      owned.set(manifest.id, { committed, source })
-      deps.registry.register(committed)
+      /*
+       * The disposer is KEPT, and that is the whole of the first fix. `registry.register` has
+       * always returned one — identity-guarded, so a stale copy cannot remove a newer registration
+       * — and this call used to throw it away and "withdraw" by re-registering an empty definition
+       * with `type: 'retired'`. That type is not in the registry's vocabulary, so the call threw
+       * inside a Cordis disposer, where `_unload` isolates it into a log line: retirement failed
+       * silently and the project stayed registered and rendered. See the CHANGELOG for all three
+       * bugs that one line hid.
+       */
+      const off = deps.registry.register(committed)
+      owned.set(manifest.id, { committed, source, off })
       revision += 1
       deps.notify()
+      /*
+       * A project that registers AFTER the runtime restored the record is one the restore never
+       * saw, and with projects arriving from separate packages that is the normal case rather than
+       * an edge. Not awaited — `register` is synchronous by contract and the runtime serializes
+       * its own work — but not silent either: a failure lands on the project's card, because the
+       * user's next question would be "I had it on, why is it off?".
+       */
+      Promise.resolve(deps.adopt?.(manifest.id)).catch((error) => {
+        deps.registry.markError(manifest.id, error)
+      })
       return { id: manifest.id }
     } catch (error) {
       unbind()
@@ -130,15 +153,33 @@ export function createUiProjectsService(deps) {
     }
   }
 
-  /** Drop one registration. Called by the lifetime binding, and never directly. */
-  function withdraw(id) {
-    if (!owned.delete(id)) return
+  /**
+   * Drop one registration, in the order the two halves require.
+   *
+   * RETIRE FIRST, THEN UNREGISTER. The definition must still be in the registry while the runtime
+   * tears the project down: `#release` reads it to obtain `cleanup`, and a project that owned a
+   * `<style>` element or an observer would otherwise leak exactly what this call exists to remove.
+   * Only then does the registry entry go.
+   *
+   * The user's record is touched by neither half: `retire` deactivates with `persist: false`, and
+   * the registry never writes `enabled` at all. The id stays in the settings document, so
+   * reinstalling the package restores the choice the user actually made.
+   * @param {string} id
+   */
+  async function withdraw(id) {
+    const entry = owned.get(id)
+    if (entry === undefined) return
+    owned.delete(id)
+    try {
+      await deps.retire?.(id)
+    } catch (error) {
+      // Loud, then carry on: the definition still has to leave the table, or the panel keeps a card
+      // for a package that is gone. A failed retirement leaves stylesheets behind, which is bad — a
+      // phantom card is worse, because it is the thing the user sees and cannot explain.
+      console.error(`[dsh-ui-projects] retiring "${id}" failed; its definition is being removed anyway`, error)
+    }
+    entry.off()
     revision += 1
-    // The registry has no `unregister` in phase 1 — a project is defined by its presence in a
-    // map that the runtime walks. Withdrawing therefore means re-registering a definition that
-    // declares nothing to apply; the id disappears from the panel because `list()` is built from
-    // `owned`, while the user's own records for it are left untouched on purpose.
-    deps.registry.register({ id, name: id, type: 'retired', scope: 'global', apply() {}, cleanup() {} })
     deps.notify()
   }
 

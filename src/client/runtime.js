@@ -128,6 +128,16 @@ export class UiProjectRuntime {
     /** @type {(() => void) | undefined} */
     this.stopFrameProbe = undefined
     /**
+     * The last failure to write the record, or undefined.
+     *
+     * GLOBAL rather than per project, and deliberately so: a write carries the whole document —
+     * five fields, every project's options, the enabled set — so binding the failure to one project
+     * would be a lie about what broke. What the user needs to know is "your choice did not reach
+     * the document", which is a fact about the document.
+     * @type {{ at: string, message: string } | undefined}
+     */
+    this.persistError = undefined
+    /**
      * The order projects were actually applied in, oldest first.
      *
      * Kept because `priority` is a request that a single click deliberately does not enforce: the
@@ -223,9 +233,7 @@ export class UiProjectRuntime {
     this.#markRoot()
     // An untouched record means each project follows its own default; an
     // initialized one means the user's set is authoritative, empty included.
-    const wanted = record.initialized
-      ? record.enabled
-      : this.registry.list().filter((project) => project.defaultEnabled).map((project) => project.id)
+    const wanted = this.#wantedIds()
     // Sorted: the order projects run in is a request the composition makes, not the order an
     // object's keys happen to come back in. See `canonicalOrder`.
     for (const id of this.registry.canonicalOrder(wanted)) await this.#enable(id, { persist: false })
@@ -243,7 +251,7 @@ export class UiProjectRuntime {
       await this.#enable(id, { persist: false })
       this.#syncPerfAttribute()
       if (this.registry.isEnabled(id)) this.#startFrameProbe()
-      await this.#remember()
+      await this.#remember({ add: id })
     })
   }
 
@@ -256,7 +264,7 @@ export class UiProjectRuntime {
     return this.#serialize(async () => {
       await this.#disable(id, { persist: false })
       this.#syncPerfAttribute()
-      await this.#remember()
+      await this.#remember({ remove: id })
     })
   }
 
@@ -267,6 +275,66 @@ export class UiProjectRuntime {
    */
   async toggle(id) {
     return this.registry.isEnabled(id) ? this.disable(id) : this.enable(id)
+  }
+
+  /**
+   * Deactivate a project because its PACKAGE is going away — not because the user turned it off.
+   *
+   * Not disable(id): that path calls #remember(), which rewrites `enabled` from the current
+   * activeIds — i.e. it erases the user's choice. Retirement is a package's action, not the user's;
+   * the record must outlive it so that a reinstall restores the choice. Hence the private
+   * #disable(id, { persist: false }).
+   *
+   * The id is deliberately LEFT in `enabled`. The next boot tolerates it: `#enable` returns
+   * immediately for a project the registry does not have, and `canonicalOrder` sorts an
+   * unregistered id defensively. What the user chose survives the package that could not honour it.
+   *
+   * `#syncPerfAttribute` is not optional here: if this project was the heaviest applied one, the
+   * body's `data-ui-perf` has to drop with it, or the page keeps a tier with nothing behind it.
+   *
+   * Idempotent, and safe for an id that was never registered or never applied.
+   * @param {string} id
+   * @returns {Promise<void>}
+   */
+  async retire(id) {
+    return this.#serialize(async () => {
+      await this.#disable(id, { persist: false })
+      this.#syncPerfAttribute()
+    })
+  }
+
+  /**
+   * Apply a project that registered AFTER `start()` restored the record.
+   *
+   * With projects arriving from separate packages, composition order is not ours to choose, so a
+   * registration landing after the restore is the normal case rather than an edge. Without this it
+   * would come back OFF on every reload — the same failure the phase-1 comment in `index.js`
+   * describes for a project added after `start()`.
+   *
+   * Persists nothing: `#enable(id, { persist: false })`, exactly as `start()` does, because the
+   * record already says what the user wants, and rewriting it here could drop the ids of packages
+   * that have not mounted yet. The question "should this be on?" is answered in ONE place,
+   * `#wantedIds()`, so this path and the boot path cannot disagree.
+   * @param {string} id
+   * @returns {Promise<void>}
+   */
+  async adopt(id) {
+    return this.#serialize(async () => {
+      if (!this.#wantedIds().includes(id)) return
+      await this.#enable(id, { persist: false })
+      this.#syncPerfAttribute()
+    })
+  }
+
+  /**
+   * The document's failures, for a card or an overlay to render.
+   *
+   * Read-only and cheap: it reports what the runtime already knows rather than re-measuring
+   * anything, which is what lets a test ask "did the write fail?" without a browser.
+   * @returns {{ persistError: { at: string, message: string } | undefined }}
+   */
+  diagnostics() {
+    return { persistError: this.persistError }
   }
 
   /**
@@ -767,17 +835,50 @@ export class UiProjectRuntime {
   }
 
   /**
-   * Write the current active set as the user's choice. Recording the whole set
-   * (not a per-project delta) is what makes a project that defaults off stay on
-   * after a reload, and one that defaults on stay off.
+   * The ids the document asks for: the user's set once initialized, otherwise each project's own
+   * default. One place, because `start()` and `adopt()` must not be able to disagree about it.
+   * @returns {string[]}
    */
-  async #remember() {
+  #wantedIds() {
     const record = this.persist.read()
+    return record.initialized
+      ? record.enabled.slice()
+      : this.registry.list().filter((project) => project.defaultEnabled).map((project) => project.id)
+  }
+
+  /**
+   * Record ONE change to the user's choice, applied to the DOCUMENT rather than derived from live
+   * state.
+   *
+   * WHY THIS IS NOT `activeIds()` ANY MORE, and it is the difference between a record of intent and
+   * a record of observation. Deriving `enabled` from what happens to be applied loses every id that
+   * is wanted but not currently applicable — a project whose package was uninstalled (retired, and
+   * deliberately left in the record so a reinstall restores it) and a project whose `apply` failed
+   * (the card shows the error, and the user has not changed their mind). The next toggle of any
+   * OTHER project silently dropped both, so a reinstall came back off and a transient failure
+   * became permanent.
+   *
+   * `resetOne()` has always worked this way — it filters the document's own list and only touches
+   * its own id — so this is not a new idea, it is `enable`/`disable` being brought in line with the
+   * sibling that was already right.
+   *
+   * THE SEED, for the first write of an uninitialized document: the base is what is currently
+   * applied, because that is what the user is looking at. Without it, turning one default-enabled
+   * project off would write `enabled: []` and silently switch every other default-on project off
+   * on the next load.
+   *
+   * @param {{ add?: string, remove?: string }} mutation
+   */
+  async #remember(mutation) {
+    const record = this.persist.read()
+    const base = record.initialized ? record.enabled : this.registry.activeIds()
+    const enabled = base.filter((id) => id !== mutation.add && id !== mutation.remove)
+    if (mutation.add !== undefined) enabled.push(mutation.add)
     await this.#write({
       ...record,
       v: 1,
       initialized: true,
-      enabled: this.registry.activeIds(),
+      enabled,
       settings: this.#allSettings(),
       touched: true,
     })
@@ -787,7 +888,23 @@ export class UiProjectRuntime {
   async #write(record) {
     try {
       await this.persist.write(record)
+      this.persistError = undefined
     } catch (err) {
+      /*
+       * Recorded as well as logged. A console line is invisible to the person whose choice just
+       * failed to reach the document, and "I turned it on and it came back off" is exactly the
+       * symptom that gets blamed on the skin. The failure belongs to the DOCUMENT, not to any one
+       * project, which is why it is reported globally rather than through `registry.markError`.
+       */
+      this.persistError = {
+        at: new Date().toISOString(),
+        /*
+         * Not `err instanceof Error`: a write can be called across a realm boundary — the suite's
+         * vm sandbox, a Cordis plugin boundary — where an Error from the other side fails that test
+         * and `String(err)` prepends "Error: ", which the banner would then show verbatim.
+         */
+        message: typeof err?.message === 'string' && err.message.length > 0 ? err.message : String(err),
+      }
       console.error('[dsh-ui-projects] cannot persist UI project state', err)
     }
   }

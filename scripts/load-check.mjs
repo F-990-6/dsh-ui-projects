@@ -35,6 +35,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { transform } from './bundle-client.mjs'
+import { createFakeDom, setSandbox } from './fake-dom.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const frameworkRoot = resolve(here, '..')
@@ -220,28 +221,79 @@ equal(
 
 // ── 4. the client service: registration, ownership, and lifetime ─────────────
 
+
+/*
+ * The REAL runtime, from the built bundle.
+ *
+ * `runtime.js` is a client-tree module with a web of sibling imports, so it is loaded the way the
+ * browser loads it — through the bundle's own module registry, using the public `__internals` seam
+ * the entry module exposes for exactly this purpose. The bundle's one external (react) is never
+ * requested: the entry materialises its modules lazily, and nothing here renders.
+ */
+let bundleEntry
+const previousWindow = globalThis.window
+globalThis.window = {
+  __ModuleLoader__: {
+    load: ({ factory }) => {
+      bundleEntry = factory((spec) => {
+        throw new Error(`this check does not provide the shell module "${spec}"`)
+      })
+    },
+  },
+}
+new Function(readFileSync(join(frameworkRoot, 'lib', 'client.js'), 'utf8'))()
+globalThis.window = previousWindow
+const { createRuntime } = bundleEntry.__internals
+
+const fakeDom = createFakeDom()
+
 const { createUiProjectsService } = loadClientModule(join(frameworkRoot, 'src', 'client', 'service.js'))
 
-/**
- * A registry stand-in that keeps what it was handed.
+/*
+ * NO STUBS HERE, and this is the change that matters most in this file.
  *
- * The real `registry.js` is a client-tree module with its own imports, and what this check is
- * about is the SERVICE above it: that a registration is stamped with its owner, that a disposal
- * withdraws it, and that a refused registration never reaches the registry at all.
+ * The previous version of this check built the service over a stub registry, and the stub accepted
+ * anything it was handed — including `type: 'retired'`, a project type the real registry refuses
+ * outright. So the check passed while retirement was, in production, throwing inside a Cordis
+ * disposer where the failure is isolated into a log line: the project stayed registered, the panel
+ * kept its card, and a screenshot was the only way to find out. A stub cannot testify about the
+ * class it stands in for.
+ *
+ * So: the real `UiProjectRegistry`, the real `UiProjectRuntime` from the built bundle, and the
+ * real fake DOM the suite uses — the only fiction left is the settings adapter, which is a counter
+ * here because what it has to prove is that the withdrawal does NOT write to it.
  */
-const definitions = new Map()
-const registry = {
-  register(definition) {
-    definitions.set(definition.id, definition)
+const { UiProjectRegistry } = await import(pathToFileURL(join(frameworkRoot, 'src', 'client', 'registry.js')).href)
+const registry = new UiProjectRegistry()
+
+/** The fake document, shared with the suite: one copy of the matcher, not two. */
+setSandbox({ window: globalThis.window })
+globalThis.document = fakeDom.document
+
+let appliedProjects = 0
+let cleanedUp = 0
+let writes = 0
+let insertedCss = []
+let persistedRecord = { v: 1, initialized: true, enabled: ['skeleton'], settings: {}, touched: true }
+const persist = {
+  read: () => persistedRecord,
+  ready: () => Promise.resolve(),
+  write: async (next) => {
+    writes += 1
+    persistedRecord = next
   },
-  get(id) {
-    return definitions.get(id)
-  },
-  ids() {
-    return [...definitions.keys()]
-  },
-  notify() {},
 }
+const runtime = createRuntime({
+  registry,
+  persist,
+  ctx: { get: () => undefined },
+  insertCss: (id) => {
+    insertedCss.push(id)
+    return () => {
+      insertedCss = insertedCss.filter((entry) => entry !== id)
+    }
+  },
+})
 
 const enabled = ['skeleton']
 const service = createUiProjectsService({
@@ -250,6 +302,8 @@ const service = createUiProjectsService({
   hostRowsAtBoot: Object.freeze(['skeleton']),
   bootFragmentPresent: (id) => id === 'skeleton',
   bodyMarkerPresent: (id) => id === 'skeleton',
+  retire: (id) => runtime.retire(id),
+  adopt: (id) => runtime.adopt(id),
   notify: () => {},
 })
 
@@ -265,7 +319,15 @@ const skinClient = {
   name: 'ui-project-skeleton',
   inject: ['uiProjects'],
   apply(ctx) {
-    ctx.uiProjects.register(manifest, { apply() {}, cleanup() {} })
+    ctx.uiProjects.register(manifest, {
+      apply(projectCtx) {
+        appliedProjects += 1
+        projectCtx.insertCss('body[data-ui-project-skeleton="on"]{ --skeleton: 1 }')
+      },
+      cleanup() {
+        cleanedUp += 1
+      },
+    })
   },
 }
 
@@ -277,8 +339,8 @@ equal(listed.length, 1, 'the package registers one project through the service')
 equal(listed[0]?.id, 'skeleton', 'and the project is the one its manifest declares')
 equal(listed[0]?.source?.package, 'dsh-ui-project-skeleton', 'the registration records which package owns it')
 equal(listed[0]?.version, manifest.version, 'and the version the package declares')
-if (definitions.has('skeleton')) ok('the registry below the service holds the project the runtime applies')
-else fail('the service reported a registration the registry never received')
+if (registry.get('skeleton') !== undefined) ok('the real registry holds the project the service reported')
+else fail('the service reported a registration the real registry never received')
 equal(
   service.diagnostics().projects.find((project) => project.id === 'skeleton')?.state,
   'ok',
@@ -288,7 +350,11 @@ equal(
 // The whole reason for binding a registration to its caller's fiber.
 await skinFiber.dispose()
 equal(service.list().length, 0, 'disposing the package withdraws its project: nothing is left registered')
-equal(definitions.get('skeleton')?.type, 'retired', 'and the registry is told to stop applying it')
+equal(registry.get('skeleton'), undefined, 'and the REAL registry no longer holds it')
+equal(appliedProjects, 1, 'the project was applied, so this is a retirement of something live')
+equal(cleanedUp, 1, "and retirement ran the project's cleanup, because it goes through the runtime")
+equal(insertedCss.length, 0, "every stylesheet the project owned is gone with it")
+equal(writes, 0, "and the user's record was not written by the withdrawal")
 
 // Ownership: the same id from another package is refused, and both packages are named.
 const holder = clientRoot.plugin(skinClient)
@@ -333,6 +399,23 @@ equal(
   'registering from a disposed fiber throws INACTIVE_EFFECT rather than creating an unowned project',
 )
 equal(service.list().length, before, 'and nothing was added: the lifetime binding comes before the table')
+
+/*
+ * The guard against this file growing a stub again. The bug this round fixed existed because a stub
+ * stood in for the class it was testing and accepted what the class refuses; the assertion is on
+ * the SOURCE, because that is where the substitution would reappear.
+ */
+const check = (condition, label) => (condition ? ok(label) : fail(label))
+const ownSource = readFileSync(fileURLToPath(import.meta.url), 'utf8')
+check(
+  !/const definitions = new Map\(/.test(ownSource) && !/register\(definition\) \{\n\s*definitions\.set/.test(ownSource),
+  'no stub registry in this file: the real UiProjectRegistry is the one under test',
+)
+check(
+  ownSource.includes("await import(pathToFileURL(join(frameworkRoot, 'src', 'client', 'registry.js')).href)"),
+  'and the real registry is what it imports',
+)
+check(ownSource.includes('createRuntime('), 'and the real runtime is constructed here, not in another process')
 
 // ── 5. the patch files the loader will read ──────────────────────────────────
 

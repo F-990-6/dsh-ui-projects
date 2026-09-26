@@ -3710,5 +3710,182 @@ await test('confirming records the version, and a new version invalidates it', a
 // (`state uses the dsh settings document when the host offers a scope`), and the
 // single `settings.section` registration.
 
+/* ── retirement, adoption, and a record of intent ──────────────────────────── */
+
+await test('the registry can be emptied two ways, and the guard between them holds', () => {
+  const registry = new Registry()
+  const first = registry.register({ id: 'proj-a', name: 'A' })
+  const revision = registry.getVersion()
+  first()
+  equal(registry.ids(), [], 'the disposer register() returned removes its own registration')
+  equal(registry.getVersion(), revision + 1, 'and bumps the revision exactly once')
+
+  const stale = registry.register({ id: 'proj-b', name: 'B old' })
+  registry.register({ id: 'proj-b', name: 'B new' })
+  stale()
+  equal(registry.ids(), ['proj-b'], 'a STALE disposer cannot remove a newer registration')
+  equal(registry.get('proj-b').name, 'B new', 'and the newer definition is the one that stands')
+
+  equal(registry.unregister('proj-b'), true, 'unregister(id) removes whatever is registered under it')
+  equal(registry.unregister('proj-b'), false, 'and reports false when there was nothing to remove')
+  equal(registry.status('proj-b'), 'unavailable', 'a removed id reports unavailable, not inactive')
+
+  registry.register({ id: 'proj-c', name: 'C' })
+  registry.markActive('proj-c')
+  let refused
+  try {
+    registry.unregister('proj-c')
+  } catch (error) {
+    refused = error
+  }
+  /*
+   * `name`, not `instanceof`: the registry runs inside the suite's vm sandbox, so the TypeError it
+   * throws is the SANDBOX's constructor, and `instanceof` against this realm's is false — a harness
+   * artifact that reads exactly like a failure of the check itself.
+   */
+  truthy(refused?.name === 'TypeError', 'unregister REFUSES an applied id rather than leaking its stylesheets')
+  equal(registry.ids(), ['proj-c'], 'and the registry is left exactly as it was')
+})
+
+await test('retire deactivates a project and leaves the user\'s record alone', async () => {
+  const harness = await boot()
+  let cleaned = 0
+  harness.registry.register({
+    id: 'retirable',
+    name: 'Retirable',
+    type: 'skin',
+    apply(ctx) {
+      ctx.insertCss('body[data-ui-project-retirable="on"]{ --retirable: 1 }')
+    },
+    cleanup() {
+      cleaned += 1
+    },
+  })
+  await harness.runtime.enable('retirable')
+  equal(harness.registry.isEnabled('retirable'), true, 'the project is applied')
+  truthy(harness.dom.allCss().includes('--retirable: 1'), 'and its stylesheet is in the document')
+  equal(harness.runtime.persist.read().enabled, ['retirable'], 'enabling records the choice')
+
+  await harness.runtime.retire('retirable')
+  equal(cleaned, 1, "retire runs the project's cleanup")
+  equal(harness.registry.isEnabled('retirable'), false, 'and the project is no longer applied')
+  equal(harness.runtime.persist.read().enabled, ['retirable'], "while the user's record still names it")
+  equal(harness.dom.allCss().includes('--retirable: 1'), false, 'its stylesheet is gone from the document')
+  equal(harness.dom.body.getAttribute('data-ui-project-retirable'), null, 'along with its body marker')
+  await harness.runtime.retire('retirable')
+  equal(cleaned, 1, 'and retiring twice is a no-op')
+})
+
+await test('disable records the removal; retire does not', async () => {
+  const harness = await boot()
+  harness.registry.register({ id: 'pair', name: 'Pair' })
+  await harness.runtime.enable('pair')
+  await harness.runtime.disable('pair')
+  equal(harness.runtime.persist.read().enabled, [], 'disable removes the id: that is the user turning it off')
+  await harness.runtime.enable('pair')
+  await harness.runtime.retire('pair')
+  equal(harness.runtime.persist.read().enabled, ['pair'], 'retire keeps it: that is a package going away')
+})
+
+await test('the record is intent, so an id that is wanted but absent survives other toggles', async () => {
+  const harness = await boot()
+  harness.registry.register({ id: 'gone-package', name: 'Gone' })
+  harness.registry.register({ id: 'other', name: 'Other' })
+  await harness.runtime.enable('gone-package')
+  await harness.runtime.retire('gone-package')
+  await harness.runtime.enable('other')
+  equal(
+    harness.runtime.persist.read().enabled,
+    ['gone-package', 'other'],
+    'enabling another project keeps the retired id, so a reinstall can restore it',
+  )
+  await harness.runtime.disable('other')
+  equal(harness.runtime.persist.read().enabled, ['gone-package'], 'and disabling it keeps the retired id too')
+})
+
+await test('a project whose apply fails stays in the record, and says so on its card', async () => {
+  const harness = await boot()
+  harness.registry.register({
+    id: 'broken',
+    name: 'Broken',
+    apply() {
+      throw new Error('nope')
+    },
+  })
+  harness.registry.register({ id: 'fine', name: 'Fine' })
+  await harness.runtime.enable('broken')
+  equal(harness.runtime.persist.read().enabled, ['broken'], 'the choice is recorded even though the apply failed')
+  equal(typeof harness.registry.error('broken'), 'string', 'and the card has a reason to show')
+  await harness.runtime.enable('fine')
+  equal(
+    harness.runtime.persist.read().enabled,
+    ['broken', 'fine'],
+    'toggling another project does not drop the failed one — a transient failure is not a change of mind',
+  )
+})
+
+await test('adopt applies exactly what the record asks for', async () => {
+  const harness = await boot()
+  harness.registry.register({ id: 'late', name: 'Late' })
+  await harness.runtime.adopt('late')
+  equal(harness.registry.isEnabled('late'), false, 'a project nobody asked for is not adopted')
+
+  harness.registry.register({ id: 'default-on-a', name: 'A', defaultEnabled: true })
+  harness.registry.register({ id: 'default-on-b', name: 'B', defaultEnabled: true })
+  await harness.runtime.adopt('default-on-a')
+  await harness.runtime.adopt('default-on-b')
+  equal(harness.registry.isEnabled('default-on-b'), true, 'a default-on project IS adopted while the record is uninitialized')
+  await harness.runtime.disable('default-on-b')
+  equal(
+    harness.runtime.persist.read().enabled.includes('default-on-a'),
+    true,
+    'and the first write is seeded from what is applied, so the other default-on project survives',
+  )
+
+  harness.registry.register({ id: 'wanted', name: 'Wanted' })
+  await harness.runtime.enable('wanted')
+  await harness.runtime.retire('wanted')
+  harness.registry.unregister('wanted')
+  await harness.runtime.start()
+  equal(
+    harness.registry.activeIds().includes('wanted'),
+    false,
+    'a record naming an id no package registers is tolerated by start(), and retire-then-unregister is the order that works',
+  )
+})
+
+await test('a failed write is reported globally, not blamed on a project', async () => {
+  const harness = await boot()
+  harness.registry.register({ id: 'will-fail-write', name: 'W' })
+  const realWrite = harness.runtime.persist.write
+  harness.runtime.persist.write = async () => {
+    throw new Error('disk full')
+  }
+  await harness.runtime.enable('will-fail-write')
+  const reported = harness.runtime.diagnostics().persistError
+  truthy(reported !== undefined, 'a write failure is recorded, not only logged')
+  contains(reported.message, 'disk full', 'with the message that says what happened')
+  harness.runtime.persist.write = realWrite
+  await harness.runtime.disable('will-fail-write')
+  equal(harness.runtime.diagnostics().persistError, undefined, 'and a later successful write clears it')
+})
+
+await test('a failed write is shown at the top of the section, not blamed on a project', async () => {
+  const harness = await boot()
+  harness.registry.register({ id: 'banner', name: 'Banner' })
+  const realWrite = harness.runtime.persist.write
+  harness.runtime.persist.write = async () => {
+    throw new Error('quota exceeded')
+  }
+  await harness.runtime.enable('banner')
+  equal(harness.runtime.diagnostics().persistError.message, 'quota exceeded', 'the runtime records the failure')
+  const markup = harness.render()
+  contains(markup, 'quota exceeded', 'and the section renders it')
+  contains(markup, 'uip-error', 'as an error row')
+  harness.runtime.persist.write = realWrite
+  await harness.runtime.disable('banner')
+  excludes(harness.render(), 'quota exceeded', 'and a later successful write takes the banner away')
+})
+
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
 if (failures > 0) process.exitCode = 1

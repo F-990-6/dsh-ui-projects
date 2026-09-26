@@ -25,6 +25,7 @@ export const STRINGS = {
      */
     perf: { low: 'Performance: reduced', medium: 'Performance: balanced', high: 'Performance: full' },
     perfDemoted: (names, tier) => `${names} is running at "${tier}" because this device reported less capacity.`,
+    persistError: (message) => `Your last change could not be saved: ${message}`,
     priority: (value) => `Priority ${value}`,
     orderHint: (name) => `${name} is running ahead of a higher-priority project; the order is restored on the next load.`,
     regions: {
@@ -84,6 +85,7 @@ export const STRINGS = {
     supports: { light: '浅色', dark: '深色', mobile: '移动端' },
     perf: { low: '性能：已降低', medium: '性能：均衡', high: '性能：完整' },
     perfDemoted: (names, tier) => `${names} 正以“${tier}”运行——此设备报告的能力较低。`,
+    persistError: (message) => `最后一次修改没能保存：${message}`,
     priority: (value) => `优先级 ${value}`,
     orderHint: (name) => `${name} 目前运行在更高优先级的项目之前；下次加载时顺序会恢复。`,
     regions: {

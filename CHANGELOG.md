@@ -25,7 +25,79 @@ Verification vocabulary used below:
 
 ---
 
-## Round 32 — the conformance checker: what is installed, and could we run it
+## Round 33 — real withdrawal: the three bugs a stub was hiding
+
+**Status: done. `suite` 649 assertions / 0 failing (613 → 649), `host` green, `load` 47 / 0 (40 → 47,
+now against the real registry and the real runtime), `conformance` 49 / 0, `skeleton` 13 / 0,
+`derive-boot-css --check` unchanged. No browser run: retirement happens only when a package is
+unloaded, and no package can be unloaded yet.**
+
+Step 4 of phase 2. Round 32 built a checker that can SEE a broken package; this round makes the
+system able to survive one leaving.
+
+### The three bugs, and the one root cause
+
+`service.js` retired a project by re-registering an empty definition with `type: 'retired'`:
+
+1. **`type: 'retired'` is not in the registry's vocabulary** (`PROJECT_TYPES` is
+   `['skin','enhancement']`), so `normalize()` threw — inside a Cordis disposer, where `_unload`
+   isolates every disposer's error into a `logger.error` line. **Retirement failed silently and
+   completely.**
+2. Even had it not thrown, `register()` only ever REPLACES: the definition stayed in `projects`, so
+   `ids()` listed it, `store.snapshot()` rendered a phantom card for it, and the user saw a project
+   whose package was gone.
+3. **Nothing deactivated it.** The registry owns no DOM and no context, so an APPLIED project's
+   stylesheets, `data-ui-project-*` marker and `data-ui-skin` attribute all outlived the package that
+   created them.
+
+**Root cause: a stub stood in for the class it was testing.** The step-2 `load-check` built the
+service over a hand-written registry object that accepted anything it was handed — including
+`type: 'retired'` — so the check passed while the production path threw. This is the same failure
+shape as Round 30's refusal gate: a rule that refuses nothing looks exactly like a rule whose case
+never came up. The fix is structural, not a patch: `load-check` now imports the real
+`UiProjectRegistry` and constructs the real `UiProjectRuntime` from the built bundle, and asserts in
+its own SOURCE that no stub registry has returned.
+
+### The five additions
+
+| Added | What it does |
+|---|---|
+| `registry.unregister(id)` | removes whatever is registered under an id; refuses an APPLIED id with a TypeError, because deleting the definition of an applied project leaks exactly what it owns. The disposer `register()` returns stays, and stays identity-guarded: a stale copy cannot remove a newer registration |
+| `runtime.retire(id)` | `#disable(id, { persist: false })` + `#syncPerfAttribute`. NOT `disable(id)`: that path ends in `#remember()`, which rewrites `enabled` from the current active ids — i.e. it erases the user's choice. Retirement is a package's action, not the user's |
+| `runtime.adopt(id)` | applies a project that registered AFTER `start()` restored the record. With projects arriving from separate packages, composition order is not ours to choose, so this is the normal case: without it an enabled project comes back off on every reload |
+| `#remember(mutation)` | the record now holds INTENT, not observation. Deriving `enabled` from `activeIds()` dropped every id that is wanted but not currently applicable — a retired project, or one whose `apply` failed — the moment any other project was toggled. `resetOne()` always worked this way; `enable`/`disable` are now in line with it |
+| `diagnostics().persistError` | a failed write is recorded, not only logged, and rendered as a banner at the top of the section. GLOBAL on purpose: the record is one document, so blaming a project for a write failure would be a lie about what broke |
+
+### Three problems found in the process, recorded because each was invisible
+
+- **`instanceof` across a realm.** The registry runs inside the suite's vm sandbox, so its
+  `TypeError` is the sandbox's constructor and `refused instanceof TypeError` is false. The assertion
+  now reads `refused?.name`, which is a string and survives the boundary.
+- **A fixture used the wrong context.** A project's `apply` receives the PROJECT context
+  (`insertCss(css)`, one argument), and the load-check fixture closed over Cordis's plugin context
+  instead — so `insertCss` resolved against Cordis's inject rules and threw. The runtime was right;
+  the fixture was wrong. Worth recording because the symptom ("cleanup never ran") pointed at
+  retirement, which was innocent.
+- **A string replacement is silent when it matches nothing.** The load-check import patch was a
+  chained two-step replacement whose second step ran before the first had applied, matched zero
+  times, and changed nothing. Every patch after that asserts an exact match count and refuses to
+  write otherwise.
+
+### Sabotage
+
+`#remember()` restored to `activeIds()` fails exactly the two intent assertions and nothing else —
+643 of 645 still pass, so the check is surgical rather than merely sensitive:
+
+```
+FAIL the record is intent, so an id that is wanted but absent survives other toggles
+     expected ["gone-package", "other"], got ["other"]
+FAIL a project whose apply fails stays in the record, and says so on its card
+     expected ["broken"], got []
+```
+
+---
+
+
 
 **Status: done. `suite` 613 assertions / 0 failing, `host` green, `load` 40 / 0 (now also proving
 which Cordis it drove), `conformance` 49 / 0, `check:installed` run against the real profile —

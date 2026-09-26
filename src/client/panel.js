@@ -87,6 +87,7 @@ function UiProjectsSection(props) {
    * only appears when there is something to say — a hint that is always present is not read.
    */
   const regionConflicts = snapshot.regionConflicts ?? []
+  const persistError = snapshot.persistError
   const conflictText =
     regionConflicts.length === 0
       ? null
@@ -130,6 +131,21 @@ function UiProjectsSection(props) {
         )
       : null,
     conflictText === null ? null : React_.createElement('p', { className: 'uip-hint', key: 'regionhint' }, conflictText),
+    /*
+     * A failed write, at the top of the section rather than on a card.
+     *
+     * The record is one document — five fields, every project's options, the enabled set — so a
+     * write failure belongs to no single project and must not be pinned on one. Until now it existed
+     * only as a console line, which is invisible to the person whose choice just failed to stick:
+     * they toggle a project, the switch comes back off after a reload, and the skin gets the blame.
+     */
+    persistError === undefined
+      ? null
+      : React_.createElement(
+          'p',
+          { className: 'uip-error', key: 'persist-error' },
+          t.persistError(persistError.message),
+        ),
     failure === undefined ? null : React_.createElement('p', { className: 'uip-error', key: 'failure' }, failure),
     snapshot.projects.length === 0
       ? React_.createElement(

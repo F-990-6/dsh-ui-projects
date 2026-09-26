@@ -128,6 +128,52 @@ export class UiProjectRegistry {
     }
   }
 
+  /**
+   * Remove one project by id, whatever registered it.
+   *
+   * TWO WAYS TO REMOVE A PROJECT, and they are not interchangeable:
+   *
+   *   the disposer `register()` returns   only the caller that registered it can withdraw it: a
+   *                                       stale disposer — one held across a hot reload — finds
+   *                                       `current !== project` and does nothing. That is what
+   *                                       makes re-registration safe: a reload replaces the
+   *                                       definition and the outgoing instance cannot delete its
+   *                                       successor's work.
+   *
+   *   `unregister(id)`                    removes whatever is registered under that id right now.
+   *                                       There is no caller to compare against, so there is no
+   *                                       identity to check: it is the explicit operation for a
+   *                                       caller that means "this id goes away" — the panel, a test,
+   *                                       or the loader-facing code in step 5.
+   *
+   * NEITHER PATH TOUCHES THE USER'S RECORD. `enabled` lives in the settings document and is written
+   * by `runtime.js`, never here: a package being uninstalled is not the user changing their mind,
+   * and the record has to outlive it so that a reinstall restores the choice.
+   *
+   * AND NEITHER PATH DEACTIVATES. This module owns no DOM and no context (see the header), so a
+   * project that is currently applied must be retired through the runtime FIRST. An active id is
+   * therefore refused rather than removed: deleting the definition of an applied project would
+   * leave its stylesheets and its `data-ui-*` markers on the page with nothing left that knows they
+   * exist — the leak this method exists to prevent, arriving through the back door.
+   * @param {string} id
+   * @returns {boolean} whether something was registered under that id
+   * @throws {TypeError} when the id is currently applied
+   */
+  unregister(id) {
+    const project = this.projects.get(id)
+    if (project === undefined) return false
+    if (this.active.has(id)) {
+      throw new TypeError(
+        `[dsh-ui-projects] project "${id}" is applied: retire it through the runtime (runtime.retire) before unregistering, ` +
+          'or its stylesheets and markers outlive the definition that owned them',
+      )
+    }
+    this.projects.delete(id)
+    this.errors.delete(id)
+    this.#bump()
+    return true
+  }
+
   /** @returns {string[]} every registered id, in registration order. */
   ids() {
     return Array.from(this.projects.keys())

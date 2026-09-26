@@ -119,6 +119,15 @@ function apply(ctx) {
    * so a diagnosis of "the document says it is on, but nothing registered it" is a comparison of
    * two views of one truth rather than of two caches.
    */
+  /*
+   * The runtime is built a few lines below, and the service has to reach it. A registration can
+   * arrive before that assignment runs — composition order is not ours to choose — so the closures
+   * read the binding at CALL time instead of capturing a value that does not exist yet. Before the
+   * assignment they are no-ops, and `start()` performs the same restore for anything that
+   * registered early enough to be seen by it.
+   */
+  let runtime
+
   ctx.provide(
     'uiProjects',
     createUiProjectsService({
@@ -127,6 +136,8 @@ function apply(ctx) {
       hostRowsAtBoot: presenceAtBoot,
       bootFragmentPresent,
       bodyMarkerPresent,
+      retire: (id) => runtime?.retire(id),
+      adopt: (id) => runtime?.adopt(id),
       notify: () => {
         panelRevision += 1
         sharedRegistry.notify()
@@ -134,7 +145,7 @@ function apply(ctx) {
     }),
   )
 
-  const runtime = createRuntime({
+  runtime = createRuntime({
     registry: target,
     persist,
     ctx,

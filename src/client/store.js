@@ -60,6 +60,9 @@
  * @property {'settings'|'local'} storageKind
  * @property {number} revision
  * @property {boolean} anyActive
+ * @property {{ at: string, message: string } | undefined} persistError the last failure to write the
+ *   record, or undefined. Global on purpose: a write carries the whole document, so blaming one
+ *   project for it would be a lie about what broke.
  * @property {number} activeCount
  */
 
@@ -264,6 +267,7 @@ export function createStore(input) {
     storageKind: runtime.persist.kind,
     revision: registry.getVersion() + extraRevision(),
     anyActive: registry.activeIds().length > 0,
+    persistError: typeof runtime.diagnostics === 'function' ? runtime.diagnostics().persistError : undefined,
     activeCount: registry.activeIds().length,
   })
 

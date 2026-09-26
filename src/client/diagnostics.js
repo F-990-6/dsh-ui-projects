@@ -109,6 +109,7 @@ export function collectDiagnostics(projects, runtime) {
     persistKind: runtime?.persist?.kind ?? 'no runtime',
     persistReady: runtime?.persist?.readiness ?? 'no runtime',
     persistDiverged: runtime?.persist?.diverged === true,
+    persistError: runtime?.diagnostics?.().persistError,
     /**
      * Which surfaces two active projects both claim, and whether either claim is a blur.
      *
