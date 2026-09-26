@@ -25,7 +25,88 @@ Verification vocabulary used below:
 
 ---
 
-## Round 33 — real withdrawal: the three bugs a stub was hiding
+## Round 34 — Settings › UI plugins: what is installed, read-only
+
+**Status: done. `suite` 676 assertions / 0 failing (649 → 676), `host` green, `load` 58 / 0
+(47 → 58), `conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged. No browser
+run: this round registers a section, fetches one path and renders it, and the phase rule is that a
+browser run passes the `--verify-refusal` gate first.**
+
+A second settings section, `ui-plugins` (order 26, after the projects page), answers a different
+question from the one above it: Settings › UI manages PROJECTS out of the registry, this manages
+PACKAGES from a directory scan. Two pages because they have two sources of truth, and one page
+answering both is where those get confused.
+
+### The channel survey, and why the endpoint is where it is
+
+| Route family | Authentication |
+| --- | --- |
+| `/plugins/**` (the client bundles) | **none.** `dsh-host-webserver` contains no address check, no origin check and no authorization code at all; `dsh-client-modules` registers `/plugins` as a bare `prefix` route. Right for a bundle, wrong for a listing that names every installed package and where it lives |
+| `/api/**` | the Host/Origin fence, then persistent browser authentication — `dsh-client-connection` mounts it, and `API_PATH = "/api"` is documented as "the /api URL prefix — single source for both halves of the web transport" |
+
+So the listing rides the **Connection service's fetch registry**:
+`ctx.connection.fetch.register({ path, methods: ['GET'], requestBody: 'buffered', fetch })` — the
+same call three shipped host halves make (`/api/file`, `/api/session/uploadFileBinary`,
+`/api/present.host`), with registrations scoped to the caller's fiber so the route dies with the row.
+**The payload is a projection**: identity, composition state and problems, and none of the absolute
+directories the CLI prints for a human.
+
+### The client binding was wrong, and this is what it was
+
+The first version of the page side called `ctx.connection.fetch(new Request(path))`. **That method
+does not exist there.** `connection.fetch.register` is the host-side registry, and `rpc.d.ts`'s
+`fetch(request: Request)` belongs to the host HTTP bridge — the page's `connection` service exposes
+`rpc.call(channel, endpoint, payload)` for RPC channels, which is a different mechanism, and the
+shipped pages reach fetch routes the ordinary browser way:
+
+```
+dsh-session-log-export/lib/client.js   new URL("/api/session.export", hostBase()) → fetcher(url, …)
+dsh-client-file-upload/lib/client.js   const FILE_UPLOAD_PATH = "/api/session/uploadFileBinary"
+dsh-client-ui-deliverables/client.js   const PRESENT_OPEN_PATH = "/api/present.open"
+```
+
+A plain `fetch` to a full `/api/...` path, authenticated by the browser session cookie the fence
+established. Two consequences, both now in the code: the route is registered **under `/api`**
+(asserted, because a route outside it is served with no fence at all), and the page's request is a
+plain `fetch(path, { credentials: 'same-origin' })`.
+
+**What made this findable and what did not.** I checked the host side against three precedents and
+got it right; I inferred the client side from a type file whose owner I never confirmed, and got it
+wrong. The lesson is the one this project keeps relearning: a signature in a `.d.ts` is evidence
+about *a* consumer of it, not about the one you are writing.
+
+### What the column does
+
+Three states, and the middle one is the point: `loading`, `ready` (with every package's problems
+rendered on its own row), and `failed` — **with the reason**, because "cannot read the listing" and
+"nothing is installed" look identical otherwise. Nothing is persisted, and that is asserted against
+the store's own source: a stored listing is a claim about a profile at a moment that has passed.
+
+Each row shows `name@version`, its kind, whether it is actually composed, the project it contributes
+and the exact command that would remove it. The framework's own row is marked and carries no command
+that would remove the thing rendering the list. Under every command sits the half that is easy to
+forget, in both languages:
+
+```
+dsh plugin --profile web remove <name>
+# The command alone does not take effect: the running dsh still holds the old composition.
+# Stop dsh web (Ctrl+C), then start it again.
+```
+
+Nothing in this section writes. The commands are shown so a person can run them, because `$DSH_HOME`
+is written by `install.ps1` and by nothing else in this project — a button that spawned
+`dsh plugin` would be a write nobody reviewed, triggered by a click.
+
+### A limitation, stated rather than hidden
+
+A loader row cannot see, through any service this package can reach, the profile directory it was
+composed from. The endpoint therefore scans what the CLI would scan by default — the profile named
+`web`, otherwise the only one — and **puts the profile's name in the payload**, so a deployment with
+several profiles shows which one is being described instead of guessing silently.
+
+---
+
+
 
 **Status: done. `suite` 649 assertions / 0 failing (613 → 649), `host` green, `load` 47 / 0 (40 → 47,
 now against the real registry and the real runtime), `conformance` 49 / 0, `skeleton` 13 / 0,

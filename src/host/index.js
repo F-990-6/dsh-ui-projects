@@ -29,7 +29,11 @@
 
 import z from '@deepseek-ai/schemastery'
 
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+
 import { BOOT_CSS } from './boot-css.js'
+import { registerInstalledEndpoint } from './installed-endpoint.js'
 import { UI_PROJECTS_SETTINGS_NAMESPACE, createHostService } from './service.js'
 
 export { UI_PROJECTS_SETTINGS_NAMESPACE }
@@ -97,6 +101,28 @@ export function apply(ctx) {
   const hostService = createHostService(ctx)
   ctx.provide('uiProjectsHost', hostService)
 
+  /*
+   * The installed-package listing, over the Connection service's authenticated channel.
+   *
+   * WHICH PROFILE. A row knows its composition but not, through any service this package can see,
+   * the directory it was composed from — so the endpoint scans what the CLI would scan by default:
+   * the profile named "web" if it exists, otherwise the only one. That is a real limitation rather
+   * than a hidden one: the payload carries the profile's NAME, and the column shows it, so a
+   * deployment with several profiles shows which one is being described instead of guessing
+   * silently. A composition with no profiles at all yields an error payload the column renders.
+   */
+  ctx.effect(() => {
+    const scan = async () => {
+      const { discoverProfiles, scanProfile } = await import('./profile-scan.js')
+      const dshHome = resolveDshHome(ctx)
+      const names = await discoverProfiles({ dshHome })
+      const name = names.includes('web') ? 'web' : names[0]
+      if (name === undefined) throw new Error(`no dsh profile under ${join(dshHome, 'profiles')}`)
+      return scanProfile({ profileDir: join(dshHome, 'profiles', name) })
+    }
+    return registerInstalledEndpoint(ctx, { scan })
+  }, 'ui-projects: installed-package endpoint')
+
   // `settings` is an OPTIONAL dependency, reached through `ctx.inject` rather
   // than declared in `inject` on the plugin object. Declaring it would hold this
   // row in `waiting` forever in a composition that never provides it, and the
@@ -129,6 +155,22 @@ export function apply(ctx) {
   ctx.on('webserver/index-inject', (table) => {
     table.push(...hostService.bootRows(SHIPPED_SKIN_ID, BOOT_CSS))
   })
+}
+
+/**
+ * Where dsh keeps its profiles.
+ *
+ * `dshHomePath` is a service, so it may be a string or a function; anything else falls back to
+ * `DSH_HOME` and then to the conventional home directory, which is what the CLI does.
+ * @param {{ get: (name: string) => any }} ctx
+ * @returns {string}
+ */
+function resolveDshHome(ctx) {
+  const provided = ctx.get('dshHomePath')
+  const value = typeof provided === 'function' ? provided() : provided
+  if (typeof value === 'string' && value.length > 0) return value
+  if (typeof process.env.DSH_HOME === 'string' && process.env.DSH_HOME.length > 0) return process.env.DSH_HOME
+  return join(homedir(), '.dsh')
 }
 
 /** Cordis row metadata. */

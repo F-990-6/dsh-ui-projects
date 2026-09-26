@@ -530,5 +530,83 @@ equal(
 await betaFiber.dispose()
 equal(service.list().length, baseline, 'disposing the last caller leaves the table as it was')
 
+
+// ── 7. the installed-package endpoint ────────────────────────────────────────
+
+/*
+ * Mounted on the Connection service's fetch registry, not on the webserver: the webserver implements
+ * no authentication at all, and this payload names every installed package. The service is stubbed
+ * here because what is under test is OUR registration and OUR payload — and the stub records enough
+ * to assert the shape the real one demands.
+ */
+const { registerInstalledEndpoint, INSTALLED_PATH, INSTALLED_SCHEMA_VERSION } = await import(
+  pathToFileURL(join(frameworkRoot, 'src', 'host', 'installed-endpoint.js')).href
+)
+
+const registeredRoutes = []
+const endpointRoot = new Context()
+endpointRoot.provide('connection', {
+  fetch: {
+    register(route) {
+      registeredRoutes.push(route)
+      return async () => {
+        registeredRoutes.pop()
+      }
+    },
+  },
+})
+const endpointCtx = endpointRoot
+endpointCtx.logger = { info: () => {}, warn: () => {} }
+
+const scanFixture = {
+  profileName: 'web',
+  readAt: '2026-01-01T00:00:00.000Z',
+  dependencies: [
+    { name: 'dsh-ui-projects', spec: 'link:E:/dsh/plugins/dsh-ui-projects', resolved: true, version: '0.1.0', dir: 'E:/dsh/plugins/dsh-ui-projects', realDir: 'E:/dsh/plugins/dsh-ui-projects', via: 'link', kind: 'bundle', bundled: true, problems: [] },
+  ],
+  bundles: { all: ['dsh-ui-projects'], inBox: [], fromDependencies: ['dsh-ui-projects'] },
+  uiProjectPackages: [],
+  orphanedBindings: [],
+  unresolved: [],
+  problems: [],
+}
+
+const disposeEndpoint = registerInstalledEndpoint(endpointCtx, { scan: async () => scanFixture })
+equal(registeredRoutes.length, 1, 'the endpoint registers exactly one route')
+equal(registeredRoutes[0]?.path, INSTALLED_PATH, 'at the namespaced path')
+equal(
+  INSTALLED_PATH.startsWith('/api/'),
+  true,
+  'under /api, which is the only prefix the Host/Origin fence and the browser session cover',
+)
+equal(registeredRoutes[0]?.methods?.join(','), 'GET', 'and only answers GET')
+
+const okResponse = await registeredRoutes[0].fetch(new Request('http://127.0.0.1' + INSTALLED_PATH))
+const okPayload = await okResponse.json()
+equal(okPayload.schemaVersion, INSTALLED_SCHEMA_VERSION, 'the payload carries its own version')
+equal(okPayload.scan.profileName, 'web', 'and the profile it describes, by name')
+equal(okPayload.scan.dependencies[0].name, 'dsh-ui-projects', 'and the packages in it')
+equal(
+  Object.prototype.hasOwnProperty.call(okPayload.scan.dependencies[0], 'dir'),
+  false,
+  'and NOT the absolute directories the CLI keeps for a human: the payload is a projection',
+)
+
+const failing = registerInstalledEndpoint(endpointCtx, {
+  scan: async () => {
+    throw new Error('no profile')
+  },
+})
+const failingRoute = registeredRoutes[registeredRoutes.length - 1]
+const failPayload = await (await failingRoute.fetch(new Request('http://127.0.0.1' + INSTALLED_PATH))).json()
+equal(failPayload.error.message, 'no profile', 'a failed scan becomes a payload, not a thrown transport error')
+equal(failPayload.scan, undefined, 'and carries no scan at all')
+failing()
+
+const withoutConnection = registerInstalledEndpoint({ get: () => undefined, logger: { warn: () => {} } }, { scan: async () => scanFixture })
+equal(typeof withoutConnection, 'function', 'a composition without a connection service skips the endpoint instead of refusing the row')
+withoutConnection()
+disposeEndpoint()
+
 process.stdout.write(failed === 0 ? `\n${passed} assertions, 0 failing\n` : `\n${passed} assertions, ${failed} failing\n`)
 process.exitCode = failed === 0 ? 0 : 1

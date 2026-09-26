@@ -30,6 +30,7 @@
 const { UiProjectRegistry } = require('./registry.js')
 const { createPersist, LOCAL_KEY, SETTINGS_NS } = require('./persist.js')
 const { createUiProjectsService } = require('./service.js')
+const { createInstalledStore } = require('./installed.js')
 const { readHostRowsAtBoot, bootFragmentPresent, bodyMarkerPresent } = require('./boot-presence.js')
 const { createRuntime } = require('./runtime.js')
 const { createStore, detectLocale, onLocaleChange } = require('./store.js')
@@ -44,6 +45,9 @@ const coreCss = require('./styles/core.css')
 const SECTION_ID = 'ui'
 /** Navigation position inside Settings, after the shipped sections. */
 const SECTION_ORDER = 25
+/** The package column, after the projects page: the skin is what people come for. */
+const PLUGINS_SECTION_ID = 'ui-plugins'
+const PLUGINS_SECTION_ORDER = 26
 
 
 /** Module-level: the shell's loader calls the factory once, at registration. */
@@ -247,6 +251,62 @@ function apply(ctx) {
     }
   }, 'ui-projects: settings section')
 
+  /*
+   * Settings › UI plugins: what is INSTALLED, from the host, read-only.
+   *
+   * The request goes through the Connection service's fetch registry — the same authenticated
+   * `/api` channel the host mounted the endpoint on — so the page never hand-builds a URL and the
+   * Host/Origin fence stays in play. This binding is the one line in this round that could not be
+   * confirmed from the shipped types (the client bundle is minified): if its shape differs, the
+   * column renders "cannot read the listing" WITH the reason, which is the same thing it does when
+   * the host is old, so the failure is legible rather than mysterious.
+   */
+  const installedStore = createInstalledStore({
+    /*
+     * A plain fetch to a full `/api/...` path, which is how every shipped page reaches a host route
+     * (`dsh-session-log-export/client.js` builds `/api/session.export` and fetches it; the upload and
+     * deliverable pages do the same). Authentication is the browser session cookie the fence
+     * established, so nothing here has to carry a token — and nothing here may hand-build a path
+     * outside `/api`, because that is the part with no fence around it.
+     */
+    request: async (path) => {
+      const response = await fetch(path, {
+        credentials: 'same-origin',
+        headers: { accept: 'application/json' },
+      })
+      if (response.ok !== true) throw new Error(`the host answered ${response.status}`)
+      return await response.json()
+    },
+  })
+
+  ctx.effect(() => {
+    const slots = ctx.get('slots')
+    if (slots === undefined || typeof slots.inject !== 'function') return () => {}
+    const injection = slots.inject('settings.section', () => {
+      const registered = slots.register(
+        {
+          name: 'settings.section',
+          id: PLUGINS_SECTION_ID,
+          order: PLUGINS_SECTION_ORDER,
+          label: () => strings(detectLocale(ctx)).pluginsLabel,
+        },
+        () => {
+          // Opening the column is what asks the host, and asking twice is what the store's in-flight
+          // guard prevents. A side effect in a render is a smell, and it is the only seam this slot
+          // API offers: there is no mount hook, and a listing fetched at boot would be a request for
+          // a page most sessions never open.
+          if (installedStore.state().status === 'idle') void installedStore.refresh()
+          const { UiPluginsSection } = require('./panel-plugins.js')
+          return UiPluginsSection({ store: installedStore, t: strings(detectLocale(ctx)), React: require('react') })
+        },
+      )
+      return typeof registered === 'function' ? registered : () => {}
+    })
+    return () => {
+      if (typeof injection === 'function') injection()
+    }
+  }, 'ui-projects: settings plugins section')
+
 }
 
 /**
@@ -323,6 +383,13 @@ module.exports = {
   __internals: {
     Registry: UiProjectRegistry,
     createRuntime,
+    /**
+     * The installed-package store and the plugins section, so the suite can drive both without a
+     * browser and without React: the section renders through whatever `React` it is handed, which a
+     * test can supply as a `createElement` that returns plain data.
+     */
+    createInstalledStore,
+    UiPluginsSection: require('./panel-plugins.js').UiPluginsSection,
     scopeCss,
     strings,
     detectLocale,

@@ -93,6 +93,15 @@ function makeContext(register, section) {
        * `apply` throws, and with it the loader entry. Recorded rather than ignored, so a test can
        * ask what was provided.
        */
+      /*
+       * The row mounts effects (the installed-package endpoint among them), so a context without
+       * `effect` fails as a boot failure rather than as a test failure — the same lesson `provide`
+       * taught one round earlier.
+       */
+      effect: (callback) => {
+        const result = callback()
+        return typeof result === 'function' ? result : () => {}
+      },
       provide: (name, value) => {
         calls.push(`provide:${name}`)
         provided.set(name, value)

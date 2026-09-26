@@ -563,6 +563,7 @@ function materializeEntry(source, require) {
 /* ── boot helper ──────────────────────────────────────────────────────────── */
 
 const { plugin, sandbox, origin, source: bundleSource } = await loadClientBundle()
+const { createInstalledStore, UiPluginsSection } = plugin.__internals
 setSandbox(sandbox)
 const { Registry, scopeCss, strings, detectLocale } = plugin.__internals
 /**
@@ -1280,7 +1281,7 @@ await test('the project modules register only once the settings slot is declared
     await probe.ready()
     // One settings section: the UI project manager. It waits for the slot
     // declaration, so it does not register before the slot exists.
-    equal(injections.length, 1, 'the section registration waits for the slot declaration')
+    equal(injections.length, 2, 'both settings sections wait for the slot declaration: the projects page and the plugins page')
     /*
      * The registration surface, and the one thing it can say about the host plane.
      *
@@ -3709,6 +3710,181 @@ await test('confirming records the version, and a new version invalidates it', a
 // stylesheet is owned and removable`), durable state through the settings scope
 // (`state uses the dsh settings document when the host offers a scope`), and the
 // single `settings.section` registration.
+
+/* ── the installed-package column ─────────────────────────────────────────── */
+
+/** A React stand-in that builds plain data, so the section can be inspected without a renderer. */
+const fakeReact = {
+  createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
+}
+
+await test('the installed store persists nothing, by construction and by assertion', async () => {
+  /*
+   * A stored listing is a claim about a profile at a moment that has passed, with no invalidation
+   * point: install something and the stored copy is a lie. The store's source is checked rather than
+   * its behaviour, because the failure this prevents is a future edit that adds a cache.
+   */
+  const source = await readFile(join(packageRoot, 'src', 'client', 'installed.js'), 'utf8')
+  equal(/localStorage|sessionStorage|settingsScope|persist\.write/.test(source), false, 'the store touches no storage of any kind')
+  const store = createInstalledStore({ request: async () => ({ schemaVersion: 1, scan: { profileName: 'web', dependencies: [] } }) })
+  await store.refresh()
+  equal(store.state().status, 'ready', 'and a refresh leaves nothing behind but the state it returns')
+})
+
+await test('a per-package problem is rendered against its own row, and a failed column leaves the projects page alone', async () => {
+  const t = {
+    title: 'UI plugins',
+    intro: 'intro',
+    loading: 'Reading…',
+    failed: (reason) => `Cannot read: ${reason}`,
+    failedHint: 'hint',
+    refresh: 'Read again',
+    empty: 'Nothing installed',
+    composed: 'composed',
+    notComposed: 'not composed',
+    framework: 'framework',
+    project: (id) => `project id: ${id}`,
+    orphaned: (names) => `orphaned: ${names}`,
+    commandsHint: 'run this:',
+    restartHint: 'restart dsh',
+    restartBlock: '# 1. stop dsh web',
+    kinds: { bundle: 'bundle' },
+  }
+  const render = (state) =>
+    JSON.stringify(UiPluginsSection({ store: { state: () => state, refresh: async () => {} }, t, React: fakeReact }))
+
+  const withProblem = render({
+    status: 'ready',
+    scan: {
+      profileName: 'web',
+      orphanedBindings: [],
+      dependencies: [
+        {
+          name: 'dsh-broken',
+          version: '1.0.0',
+          kind: 'ui-project',
+          bundled: false,
+          problems: [{ code: 'patch-file-missing', message: 'no such file under the package root' }],
+        },
+      ],
+    },
+  })
+  contains(withProblem, 'patch-file-missing', 'a problem names its code')
+  contains(withProblem, 'no such file under the package root', 'and says what is wrong, on the row it belongs to')
+
+  contains(
+    render({ status: 'idle' }),
+    'data-uip-plugins-action',
+    'the refresh control exists in the reading state as well as the ready one',
+  )
+
+  /*
+   * The two columns share no state: a listing that cannot be read must not take the page down with
+   * it. Asserted on the projects page's own render, which is the half that would break.
+   */
+  const harness = await boot()
+  harness.registry.register({ id: 'still-there', name: 'Still there' })
+  const failing = createInstalledStore({
+    request: async () => {
+      throw new Error('connection refused')
+    },
+  })
+  await failing.refresh()
+  equal(failing.state().status, 'failed', 'the listing column is in its failed state')
+  contains(harness.render(), 'still-there', 'and the projects page renders exactly as before')
+})
+
+await test('the installed store reads on demand, and remembers nothing', async () => {
+  let calls = 0
+  const payload = { schemaVersion: 1, scan: { profileName: 'web', dependencies: [], uiProjectBundle: true } }
+  const store = createInstalledStore({
+    request: async () => {
+      calls += 1
+      return payload
+    },
+  })
+  equal(store.state().status, 'idle', 'nothing is read until something asks')
+  await store.refresh()
+  equal(calls, 1, 'a refresh asks the host once')
+  equal(store.state().status, 'ready', 'and a scan makes the state ready')
+  equal(store.state().scan.profileName, 'web', 'with the profile the host named')
+  await Promise.all([store.refresh(), store.refresh(), store.refresh()])
+  equal(calls, 2, 'three concurrent refreshes share one request: the in-flight guard holds')
+})
+
+await test('a failed read is a state with a reason, not a silent empty list', async () => {
+  const store = createInstalledStore({
+    request: async () => {
+      throw new Error('connection refused')
+    },
+  })
+  await store.refresh()
+  equal(store.state().status, 'failed', 'the failure is a state the column can render')
+  equal(store.state().error, 'connection refused', 'with the reason, which is the difference between broken and empty')
+  const hostReported = createInstalledStore({ request: async () => ({ schemaVersion: 1, error: { message: 'no profile' } }) })
+  await hostReported.refresh()
+  equal(hostReported.state().error, 'no profile', 'and a failure the HOST reported travels the same way')
+})
+
+await test('the plugins column renders each state, and never pretends to be empty', () => {
+  const t = {
+    title: 'UI plugins',
+    intro: 'intro',
+    loading: 'Reading…',
+    failed: (reason) => `Cannot read: ${reason}`,
+    failedHint: 'hint',
+    refresh: 'Read again',
+    empty: 'Nothing installed',
+    composed: 'composed',
+    notComposed: 'not composed',
+    framework: 'framework',
+    project: (id) => `project id: ${id}`,
+    orphaned: (names) => `orphaned: ${names}`,
+    commandsHint: 'run this:',
+    restartHint: 'restart dsh',
+    restartBlock: '# 1. stop dsh web',
+    kinds: { bundle: 'bundle', 'ui-project': 'UI project' },
+  }
+  const render = (state) =>
+    JSON.stringify(
+      UiPluginsSection({
+        store: { state: () => state, refresh: async () => {} },
+        t,
+        React: fakeReact,
+      }),
+    )
+
+  contains(render({ status: 'idle' }), 'Reading…', 'an unread column says it is reading')
+  contains(render({ status: 'loading' }), 'Reading…', 'and so does one mid-request')
+  contains(render({ status: 'failed', error: 'no profile' }), 'Cannot read: no profile', 'a failure names the reason')
+  contains(render({ status: 'failed', error: 'no profile' }), 'Read again', 'and offers the control that tries again')
+
+  const ready = render({
+    status: 'ready',
+    scan: {
+      profileName: 'web',
+      dependencies: [
+        { name: 'dsh-ui-projects', version: '0.1.0', kind: 'bundle', bundled: true, problems: [] },
+        { name: 'dsh-ui-project-skeleton', version: '0.1.0', kind: 'ui-project', bundled: true, projectId: 'skeleton', problems: [] },
+        { name: 'zod', version: '3.23.8', kind: 'library', bundled: false, problems: [] },
+      ],
+      orphanedBindings: [],
+    },
+  })
+  contains(ready, 'dsh-ui-project-skeleton@0.1.0', 'a row names the package and its version')
+  contains(ready, 'project id: skeleton', 'and the project it contributes')
+  contains(ready, 'not composed', 'and whether it is actually in the layer stack')
+  contains(ready, 'dsh plugin --profile web remove dsh-ui-project-skeleton', 'and the exact command that would remove it')
+  contains(ready, 'restart dsh', 'and the half of the instruction that is easy to forget: a command alone changes nothing until dsh restarts')
+  contains(ready, 'framework', 'the framework row is marked')
+  equal(ready.includes('remove dsh-ui-projects'), false, 'and carries no command that would remove the thing rendering the list')
+
+  const orphans = render({
+    status: 'ready',
+    scan: { profileName: 'web', dependencies: [], orphanedBindings: ['dsh-orphan'] },
+  })
+  contains(orphans, 'orphaned: dsh-orphan', 'a package that declares a bundle but is not composed is reported')
+})
 
 /* ── retirement, adoption, and a record of intent ──────────────────────────── */
 
