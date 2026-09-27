@@ -296,6 +296,15 @@ const runtime = createRuntime({
 })
 
 const enabled = ['skeleton']
+/*
+ * The panel is told, and this counts it rather than stubbing it away.
+ *
+ * `notify` is how a withdrawal reaches the interface: the panel renders from a snapshot taken when the
+ * registry last changed, so a registration that leaves without telling it leaves a card for a package
+ * that is gone. It fires from `register` and from `withdraw` (`service.js:138`, `:195`), which is why
+ * the assertion below is a DELTA rather than an absolute count.
+ */
+let notifications = 0
 const service = createUiProjectsService({
   registry,
   enabledIds: () => enabled,
@@ -304,7 +313,9 @@ const service = createUiProjectsService({
   bodyMarkerPresent: (id) => id === 'skeleton',
   retire: (id) => runtime.retire(id),
   adopt: (id) => runtime.adopt(id),
-  notify: () => {},
+  notify: () => {
+    notifications += 1
+  },
 })
 
 const clientRoot = new Context()
@@ -369,6 +380,7 @@ persistedRecord = {
   },
 }
 const recordBeforeWithdrawal = JSON.stringify(persist.read())
+const notifiedBeforeWithdrawal = notifications
 
 // The whole reason for binding a registration to its caller's fiber.
 await skinFiber.dispose()
@@ -397,6 +409,11 @@ equal(
   persist.read().settings?.['other-package-project']?.strength,
   3,
   "while a different package's entry was never in question",
+)
+equal(
+  notifications,
+  notifiedBeforeWithdrawal + 1,
+  'and the panel is asked to re-render exactly once, so the card for a package that is gone does not linger',
 )
 
 // Ownership: the same id from another package is refused, and both packages are named.

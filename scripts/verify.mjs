@@ -49,8 +49,22 @@ const server = nodeRequire('react-dom/server')
 let failures = 0
 let checks = 0
 
+/**
+ * Run only the tests whose name contains this substring, for the evidence of ONE test on its own.
+ *
+ * `DSH_TEST_ONLY=... node scripts/verify.mjs`. A skip is counted and announced at the end, because a
+ * filtered run that stays silent about what it skipped is a run whose green means nothing — the same
+ * reason the browser suite prints the mode it started in.
+ */
+const onlyTest = process.env.DSH_TEST_ONLY ?? ''
+let skipped = 0
+
 /** @param {string} name @param {() => void | Promise<void>} body */
 async function test(name, body) {
+  if (onlyTest !== '' && !name.includes(onlyTest)) {
+    skipped += 1
+    return
+  }
   try {
     await body()
     process.stdout.write(`  ok   ${name}\n`)
@@ -4227,6 +4241,124 @@ await test('retire deactivates a project and leaves the user\'s record alone', a
   equal(cleaned, 1, 'and retiring twice is a no-op')
 })
 
+await test("a project's timer and the runtime's own observer are gone once the package is retired", async () => {
+  /*
+   * Item 9 of the uninstall list, in the two halves it actually has — and they are different contracts.
+   *
+   * 1. A PROJECT's interval is the project's to clear: the runtime promises that `cleanup()` runs
+   *    (`retire runs the project's cleanup`, above), and what this half adds is the consequence a
+   *    reader cares about — nothing ticks once the package is gone.
+   * 2. The runtime's OWN observer and backstop interval come from `ctx.markColumns()`
+   *    (`runtime.js:561`), whose disposer the runtime keeps in its own owned list (`:754`). That
+   *    disposal is this half's real subject: it is not the project's bookkeeping.
+   *
+   * PERIOD-SCOPED, NOT COUNTED, and the premise is pinned rather than assumed. The runtime arms
+   * periods of its own — 500 ms for the boot-page watch and 250 ms for the marking backstop — and an
+   * existing test already asserts exactly that pair (`the column-marking retry stops once it
+   * succeeds`, which reads `runningPeriods.join(',') === '500,250'`). An absolute count would
+   * therefore drift with the runtime's internals; a 5 ms period belongs to this test and nothing else.
+   * The first assertion below fails loudly if that ever stops being true.
+   */
+  /*
+   * `detachedFrame` for the same reason the two existing timer tests use it: with the sandbox's
+   * timers in charge, a boot that expects the frame to be there already waits on a timer nobody is
+   * going to fire, and the run hangs rather than failing. This boot starts without the frame, mounts
+   * it by hand, and therefore also exercises the path where the observer does the marking.
+   */
+  const harness = await boot({ detachedFrame: true, fakeTimers: true })
+  equal(harness.timers.runningPeriods.includes(5), false, 'no 5 ms interval runs before this project exists')
+
+  let ticks = 0
+  /** @type {any} */
+  let timer
+  harness.registry.register({
+    id: 'busy',
+    name: 'Busy',
+    apply(ctx) {
+      ctx.markColumns()
+      /*
+       * `sandbox.setInterval`, not the bare global, and this is not a style choice: a project defined
+       * in THIS file is a host-realm function, so a bare `setInterval` would be Node's real one — the
+       * fake timer ledger would never see it, the tick assertions would fail, and the real handle would
+       * hold the process open so the run looked like a hang instead of a failure. Using the sandbox's
+       * functions is what a package gets for free in a browser, where its own realm IS the page's.
+       */
+      timer = sandbox.setInterval(() => {
+        ticks += 1
+      }, 5)
+    },
+    cleanup() {
+      sandbox.clearInterval(timer)
+    },
+  })
+
+  const observersBefore = FakeMutationObserver.instances.length
+  await harness.runtime.enable('busy')
+
+  const markedColumns = () =>
+    harness.dom.document.body.querySelectorAll('div').filter((el) => el.hasAttribute('data-ui-skin-column'))
+  equal(harness.timers.runningPeriods.includes(5), true, 'the project armed its own interval while applied')
+  harness.timers.tickIntervals()
+  equal(ticks, 1, 'and it really ticks')
+  equal(markedColumns().length, 0, 'nothing is marked yet: the shell has not mounted the frame')
+  const projectObservers = FakeMutationObserver.instances.slice(observersBefore)
+  truthy(
+    projectObservers.some((observer) => observer.callbacks.length > 0),
+    'and an observer this application created is connected, waiting for the frame',
+  )
+
+  // The shell mounts the application: this is the mutation the runtime waits for.
+  harness.dom.mountFrame()
+  FakeMutationObserver.flushAll()
+  equal(markedColumns().length, 3, 'the columns are marked once the frame appears')
+  equal(harness.timers.runningPeriods.includes(250), false, 'and the marking backstop is gone, its job done')
+
+  await harness.runtime.retire('busy')
+  equal(harness.timers.runningPeriods.includes(5), false, 'retire clears the interval the project armed')
+  harness.timers.tickIntervals()
+  equal(ticks, 1, 'so nothing ticks any more')
+  equal(markedColumns().length, 0, 'the column marks the runtime put on the frame are gone with it')
+  equal(
+    projectObservers.filter((observer) => observer.callbacks.length > 0).length,
+    0,
+    'and every observer this application created is disconnected',
+  )
+})
+
+await test('retiring the active skin returns the shipped interface, not a half-applied one', async () => {
+  /*
+   * Item 11 of the uninstall list, from the page's side.
+   *
+   * THE ROOT MARKER IS NOT ASSERTED HERE, and that is a decision rather than an omission:
+   * `data-ui-projects` is set in `start()` and cleared in `dispose()` (`runtime.js:233`, `:457`), so
+   * it means "this plugin is mounted", not "a project is applied" — retiring the last project leaves
+   * it in place on purpose. Its removal is asserted where it belongs, in `dispose() removes every
+   * effect it owns`.
+   */
+  const harness = await boot({ device: { cores: 8 } })
+  await harness.runtime.enable('liquid-glass')
+  equal(harness.dom.body.getAttribute('data-ui-project-liquid-glass'), 'on', 'the skin marker is on while it is applied')
+  equal(harness.dom.body.getAttribute('data-ui-perf'), 'high', 'and the tier this device allows is published')
+  truthy(
+    harness.allCss().includes('data-ui-project-liquid-glass'),
+    'with its scoped stylesheet in the document',
+  )
+
+  await harness.runtime.retire('liquid-glass')
+  equal(harness.registry.activeIds().length, 0, 'nothing is applied any more')
+  equal(harness.dom.body.getAttribute('data-ui-project-liquid-glass'), null, 'the skin marker is gone')
+  equal(
+    harness.dom.body.getAttribute('data-ui-perf'),
+    null,
+    'and the tier goes with it, so no rule keyed on it can keep matching a project that is not applied',
+  )
+  equal(
+    harness.allCss().includes('data-ui-project-liquid-glass'),
+    false,
+    'its stylesheet is out of the document, which is what the shipped interface is made of',
+  )
+})
+
 await test('disable records the removal; retire does not', async () => {
   const harness = await boot()
   harness.registry.register({ id: 'pair', name: 'Pair' })
@@ -4422,5 +4554,75 @@ await test('a failed write is shown at the top of the section, not blamed on a p
   excludes(harness.render(), 'quota exceeded', 'and a later successful write takes the banner away')
 })
 
+/*
+ * THE UNINSTALL SCRIPT'S CHECKS, GUARDED AGAINST DELETION.
+ *
+ * `install.ps1` writes $DSH_HOME, so no suite runs it — that is the user's to do, and the discipline
+ * this project runs under besides. The consequence was that nothing read the file at all: every check
+ * Round 38 added (the settings-block comparison, the tombstone scan, the neighbours check, the lockfile
+ * probe, the source-integrity hashes) could have been deleted with every suite still green.
+ *
+ * WHAT THIS GUARD IS AND IS NOT: it catches a check being DELETED, RENAMED or MOVED. It cannot catch
+ * one being WEAKENED — a comparison replaced by something that always passes reads the same to a
+ * source scan. The real verification is a real uninstall, which is why the manual acceptance steps
+ * live in `docs/uninstall.md`.
+ */
+await test('the uninstall script still contains every check it promises, where it promises it', async () => {
+  const source = await readFile(join(packageRoot, 'install.ps1'), 'utf8')
+  const branchStart = source.indexOf("Write-Head 'Uninstall plan'")
+  const branchEnd = source.indexOf('# =================================================================== INSTALL ===')
+  truthy(
+    branchStart > 0 && branchEnd > branchStart,
+    `the uninstall branch is where this guard looks for it (start=${branchStart}, end=${branchEnd})`,
+  )
+  const branch = source.slice(branchStart, branchEnd)
+  truthy(branch.length > 2000, `the slice is the uninstall branch rather than a fragment (${branch.length} chars)`)
+
+  const required = [
+    ['compares the settings block before and after', ['$settingsBlockBefore', '$settingsBlockAfter']],
+    ['hashes the source tree before and after', ['sourceManifestSha', 'sourceBundleSha']],
+    ['looks for a pnpm tombstone', ['.ignored_*', '$tombstones']],
+    ['compares the node_modules inventory', ['$inventoryBefore', '$unexpectedGone']],
+    ['probes the lockfile', ['Select-String -LiteralPath $LockPath']],
+    ['removes a leftover link through the guard', ['Remove-DirectoryLink']],
+    ['asserts the bundle layer is gone', ['dsh.profile.bundles']],
+  ]
+  for (const [what, needles] of required) {
+    const missing = needles.filter((needle) => !branch.includes(needle))
+    equal(JSON.stringify(missing), '[]', `the branch still ${what} (missing: ${JSON.stringify(missing)})`)
+  }
+
+  const promises = ['the source tree', 'settings.yaml', 'other packages', 'the checklist record']
+  const unkept = promises.filter((promise) => !branch.includes(promise))
+  equal(
+    JSON.stringify(unkept),
+    '[]',
+    `the four things the dry run promises not to touch are still named (missing: ${JSON.stringify(unkept)})`,
+  )
+
+  /*
+   * The position, which is what keeps a dry run dry: the plan, then the exit, then the work. An edit
+   * that moved the removal above the exit would turn `-DryRun` into a real uninstall, and that is the
+   * one change here whose consequence nobody would notice until it had already happened.
+   */
+  const dryRunAt = branch.indexOf('if ($DryRun)')
+  const exitAt = branch.indexOf('exit 0')
+  const removingAt = branch.indexOf("Write-Head 'Removing'")
+  equal(
+    [dryRunAt, exitAt, removingAt].filter((at) => at <= 0).length,
+    0,
+    `the dry run, its exit and the removal are all inside the branch (${dryRunAt}, ${exitAt}, ${removingAt})`,
+  )
+  truthy(dryRunAt < exitAt && exitAt < removingAt, 'and the dry run still exits before anything is removed')
+  equal(
+    branch.split('if ($DryRun)').length - 1,
+    1,
+    'exactly one dry-run gate in the branch, so the position compared above is unambiguous',
+  )
+})
+
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
+if (onlyTest !== '') {
+  process.stdout.write(`[filter] DSH_TEST_ONLY=${JSON.stringify(onlyTest)} skipped ${skipped} test(s)\n`)
+}
 if (failures > 0) process.exitCode = 1

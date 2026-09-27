@@ -42,7 +42,7 @@ Two consequences worth carrying into new code:
 | `src/client/` | the browser half: the registry, the runtime, the settings section. CJS-dialect sources, bundled by `scripts/build.mjs` and never loaded by Node directly |
 | `src/host/` | the host half: the loader row, the `uiProjectsHost` service, the conformance checker. Plain ESM, copied verbatim into `lib/` |
 | `scripts/` | builds, suites and tools. `bundle-client.mjs` and `fake-dom.mjs` are shared with sibling UI project packages |
-| `docs/` | nothing yet: this file and `CHANGELOG.md` carry the rules so far |
+| `docs/` | `uninstall.md`: the twelve things a removal consists of, which driver holds each one, and the manual acceptance steps — the host half can only be verified by a real run |
 
 ## The verification set
 

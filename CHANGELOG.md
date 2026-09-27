@@ -25,6 +25,86 @@ Verification vocabulary used below:
 
 ---
 
+## Round 39 — Step 6d: the uninstall list, its proof, and its limits
+
+**Status: done. `suite` 760 assertions / 0 failing (729 → 760), `load` 65 / 0 (64 → 65), `host` green,
+`conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged, `browser --self-check`
+green. No browser run: nothing user-visible changed, and the three new tests are offline by design.**
+(The three filtered runs report 12, 8 and 14 assertions; each of those includes the suite's one
+module-level assertion, so the new tests contribute 11, 7 and 13 — 31 in total, which is the difference
+between 729 and 760.)
+
+### The inventory, corrected by reading the tests
+
+The audit's mapping was right for four items and wrong for six, and the corrections are the point of
+this round. Items 1–5 and 9 came from step 4, not from 6a. Items 8 and 10 are **implemented but never
+executed**: every check Round 38 added lives inside the non-dry-run branch of `install.ps1`, after its
+`exit 0`, and no suite read that file at all (zero references — measured). Item 11's only assertion ran
+on the `disable` path; item 12's `withdraw` notification was stubbed to a no-op in the real-Cordis
+harness. Both were genuine gaps.
+
+### The three new tests
+
+- **`a project's timer and the runtime's own observer are gone once the package is retired`** (item 9,
+  12 assertions). Two halves, two contracts: a project's own interval is the project's to clear — the
+  runtime's promise is that `cleanup()` runs — and the observer plus backstop interval from
+  `ctx.markColumns()` are the RUNTIME's, disposed from its owned list. Period-scoped rather than counted,
+  because the runtime arms periods of its own (500 ms boot-page watch, 250 ms marking backstop, both
+  already asserted at `verify.mjs`), and the first assertion pins that premise instead of assuming it.
+- **`retiring the active skin returns the shipped interface, not a half-applied one`** (item 11, 8
+  assertions). The root marker is deliberately NOT asserted here: `data-ui-projects` is set in `start()`
+  and cleared in `dispose()` (`runtime.js:233`, `:457`) — it means "this plugin is mounted", not "a
+  project is applied". The first draft of this test asserted its removal, which would have failed and
+  pointed at a defect that does not exist; the premise check caught it before the test was written.
+- **`the panel is asked to re-render exactly once`** (item 12, in `load-check.mjs`). A DELTA, not a
+  count: `deps.notify()` fires from `register` (`service.js:138`) and from `withdraw` (`:195`), so an
+  absolute number would drift with registration.
+
+### The source guard, and what it cannot do
+
+Nothing read `install.ps1`, so every check Round 38 added could have been deleted with the suite green.
+A guard now asserts the branch still contains each check, still names the four things the dry run
+promises not to touch, and still orders `if ($DryRun)` < `exit 0` < `Write-Head 'Removing'`, with
+exactly one dry-run gate so the position compared is unambiguous.
+
+**It catches a check being deleted, renamed or moved. It cannot catch one being weakened** — a
+comparison replaced by something that always passes reads the same to a source scan. The real
+verification is a real uninstall, which is why the manual acceptance steps live in `docs/uninstall.md`.
+
+Sensitivity was demonstrated without touching the script (its file is not this round's to change): the
+guard's own logic re-run over in-memory mutations. Untouched: clean. Drop `$settingsBlockAfter`: the
+settings-block assertion reports it. Drop `.ignored_*`: the tombstone assertion reports it. Move the
+removal above the exit: the position assertion reports it. Slice length 16,504 characters against a
+2,000-character floor, so the vacuous case — scanning a fragment or an empty string — fails instead of
+passing.
+
+### A hang, and why it was one
+
+The first draft of the timer test used the bare `setInterval` inside a project defined in the suite
+file. A project defined there is a HOST-realm function, so that was Node's real timer: the fake ledger
+never saw it, and the real handle held the process open, so the run looked like a hang rather than
+failing. It now uses `sandbox.setInterval` — the same globals the bundle sees, which is what a package
+gets for free in a browser where its realm IS the page's. Recorded because a hang is the most expensive
+way to learn it.
+
+A second lesson from the same attempt: with the sandbox's timers in charge, a boot that expects the
+frame to be present already waits on a timer nobody will fire. Both existing fake-timer tests boot with
+`detachedFrame`; this one now does too, and mounts the frame by hand — which also puts the observer's
+marking path under the assertion.
+
+### `docs/uninstall.md`
+
+The twelve items with the driver, the code and the assertion for each; the boundary that no suite runs
+`install.ps1` and why; and five manual acceptance steps with expected output, including the read-only
+check that the `ui-projects` block of `settings.yaml` survives.
+
+### Also
+
+`DSH_TEST_ONLY="<substring>" node scripts/verify.mjs` runs one test and prints how many it skipped, so a
+single test's evidence does not have to be found inside a 762-assertion run.
+
+---
+
 ## Round 38 — Step 6c: the uninstall audit, and the residue it found on a real machine
 
 **Status: done. `install.ps1` extended in five places; parse-checked (1117 lines); `-Uninstall -DryRun`
