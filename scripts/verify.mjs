@@ -4594,12 +4594,12 @@ await test('the uninstall script still contains every check it promises, where i
     equal(JSON.stringify(missing), '[]', `the branch still ${what} (missing: ${JSON.stringify(missing)})`)
   }
 
-  const promises = ['the source tree', 'settings.yaml', 'other packages', 'the checklist record']
+  const promises = ['the source tree', 'settings.yaml', 'other packages', 'the checklist record', 'version snapshots']
   const unkept = promises.filter((promise) => !branch.includes(promise))
   equal(
     JSON.stringify(unkept),
     '[]',
-    `the four things the dry run promises not to touch are still named (missing: ${JSON.stringify(unkept)})`,
+    `the things the dry run promises not to touch are still named (missing: ${JSON.stringify(unkept)})`,
   )
 
   /*
@@ -4636,7 +4636,10 @@ await test('the uninstall script still contains every check it promises, where i
 await test('the update mode is a read-only plan, and refuses to pretend otherwise', async () => {
   const source = await readFile(join(packageRoot, 'install.ps1'), 'utf8')
   const start = source.indexOf("Write-Head 'Update plan'")
-  const end = source.indexOf('# =================================================================== INSTALL ===')
+  // The end anchor follows the file's own section order: UPDATE stops where SNAPSHOT begins. Leaving it
+  // at INSTALL would have let the snapshot mode's text satisfy this guard -- the same trap the uninstall
+  // guard's anchor was moved out of when UPDATE was added.
+  const end = source.indexOf('# =================================================================== SNAPSHOT ===')
   truthy(start > 0 && end > start, `the update branch is where this guard looks for it (start=${start}, end=${end})`)
   const branch = source.slice(start, end)
   truthy(branch.length > 2000, `the slice is the update branch rather than a fragment (${branch.length} chars)`)
@@ -4708,6 +4711,85 @@ await test('the update mode is a read-only plan, and refuses to pretend otherwis
   truthy(
     branch.includes('Write-Note "  $($settingsLine[0].Trim())"'),
     'and its label is taken from the line itself',
+  )
+})
+
+/*
+ * THE SNAPSHOT SECTION, WHICH HAS ONE WRITING HALF AND ONE READ-ONLY HALF.
+ *
+ * `-Snapshot` writes version copies under the profile's `.dsh-ui-projects-versions\`; `-ListVersions`
+ * only reads them. The guard therefore splits the section at the listing header: above it, every write
+ * verb must be addressed into the version store; below it, there must be no write verb at all. That is a
+ * line-scoped check because a destination is the only thing a source scan can honestly judge — and the
+ * variables are named `$SnapshotDir` / `$SnapshotPayload` / `$OldSnapshotDir` so the invariant is
+ * checkable rather than merely intended.
+ */
+await test('the snapshot mode writes only inside the version store, and verifies what it wrote', async () => {
+  const source = await readFile(join(packageRoot, 'install.ps1'), 'utf8')
+  const start = source.indexOf('# =================================================================== SNAPSHOT ===')
+  const end = source.indexOf('# =================================================================== INSTALL ===')
+  truthy(start > 0 && end > start, `the snapshot section is where this guard looks for it (start=${start}, end=${end})`)
+  const section = source.slice(start, end)
+  truthy(section.length > 2000, `the slice is the whole section rather than a fragment (${section.length} chars)`)
+
+  // The pair that shares one directory is refused with both names in the check, and it is not dead code:
+  // the mode matrix above deliberately leaves this pair to it.
+  truthy(section.includes('if ($Snapshot -and $ListVersions)'), 'the pair sharing one directory is refused with both names in the check')
+  truthy(section.includes('pass one of them'), 'and the refusal says what to do instead')
+  truthy(section.includes("'^[A-Za-z0-9._-]+$'"), 'a snapshot name is validated as a directory name')
+
+  const splitAt = section.indexOf('Write-Head "Versions (newest')
+  truthy(splitAt > 0, 'the read-only listing half is inside this section')
+  const writing = section.slice(0, splitAt)
+  const listing = section.slice(splitAt)
+
+  const verbs = ['Copy-Item', 'New-Item', 'Remove-Item', 'Write-TextFile', 'Set-Content', 'Add-Content', 'Invoke-Dsh']
+  const allowed = ['$SnapshotDir', '$SnapshotPayload', '$OldSnapshotDir', '$VersionsDir', '$PackageVersionsDir', '$PruneTarget']
+  const offenders = []
+  for (const line of writing.split('\n')) {
+    const verb = verbs.find((candidate) => line.includes(candidate))
+    if (verb === undefined) continue
+    if (!allowed.some((name) => line.includes(name))) offenders.push(`${verb} -> ${line.trim()}`)
+  }
+  equal(
+    JSON.stringify(offenders),
+    '[]',
+    `every write in the snapshot half names the version store (offenders: ${JSON.stringify(offenders)})`,
+  )
+  equal(
+    writing.split('\n').filter((line) => verbs.some((verb) => line.includes(verb)) && line.includes('$SourceDir')).length,
+    0,
+    'and no write is addressed at the source tree',
+  )
+  equal(writing.includes('Write-TextFile $StatePath'), false, 'the snapshot mode does not rewrite the install record')
+
+  for (const [what, needle] of [
+    ['verifies the copy by reading it back', 'read-back: comparing every written file against the manifest'],
+    ['removes an unverified snapshot instead of registering it', 'the incomplete snapshot was removed'],
+    ['names what it pruned, and only what it wrote', 'not written by this tool, so left alone'],
+    ['announces the retention decision', 'nothing would be pruned'],
+  ]) {
+    truthy(writing.includes(needle), `and ${what}`)
+  }
+
+  /*
+   * The order, which is the safety property: the dry run exits first, the copy is read back second, and
+   * only then can anything be removed. Pruning after the verification is what keeps a failed snapshot
+   * from costing an old one.
+   */
+  const dryRunAt = writing.indexOf('if ($DryRun)')
+  const readBackAt = writing.indexOf('read-back: comparing')
+  const firstRemoveAt = writing.indexOf('Remove-Item')
+  truthy(
+    dryRunAt > 0 && readBackAt > dryRunAt && firstRemoveAt > readBackAt,
+    `the dry run exits, then the copy is read back, and only then can anything be removed (${dryRunAt} < ${readBackAt} < ${firstRemoveAt})`,
+  )
+
+  const listingWrites = verbs.filter((verb) => listing.includes(verb))
+  equal(
+    JSON.stringify(listingWrites),
+    '[]',
+    `the listing half contains no write verb at all (found: ${JSON.stringify(listingWrites)})`,
   )
 })
 

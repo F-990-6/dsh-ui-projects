@@ -25,6 +25,98 @@ Verification vocabulary used below:
 
 ---
 
+## Round 41 — Step 7b: version snapshots, and the check that makes a truncated copy visible
+
+**Status: done. `suite` 794 assertions / 0 failing (779 → 794), `load` 65 / 0, `host` green,
+`conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged, `browser --self-check`
+green. No browser run. `install.ps1` was NOT executed in any mode**: the snapshot has never been taken
+here. Its output, its read-back verification, the retention pruning and the truncation case are the
+user's manual acceptance steps; what this round verifies is static (three source guards) plus the
+suites.
+
+### Five modes, five promises
+
+| Mode | Promise |
+| --- | --- |
+| `-Install` (default) | wires the profile through `dsh plugin`, then verifies |
+| `-Uninstall` | removes what the PACKAGE owns, keeps what the USER owns |
+| `-Update` | writes nothing at all (7a) |
+| `-Snapshot` | **writes only under** `profiles\<p>\ .dsh-ui-projects-versions\` |
+| `-ListVersions` | reads only |
+
+`-Snapshot` and `-ListVersions` are refused **together** at the top of the snapshot section, with both
+names in the check, before either opens the directory they share — the pair a person is most likely to
+combine by accident, since one writes there and the other only reads. The general mode matrix leaves
+that pair to this check on purpose, so the refusal sits with the two names it is about rather than
+becoming dead code behind a broader guard.
+
+### What a snapshot is
+
+```
+profiles\web\.dsh-ui-projects-versions\dsh-ui-projects\<version>-<stamp>\
+├── payload\   package.json, cordis.patch.yml, CHANGELOG.md, lib\**
+└── manifest.json   schemaVersion, tool, name, version, revision, createdAt, sourceDir,
+                    payload {files,bytes,sha256}, sourceTree {…}, settingsBlockSha256,
+                    files [ {rel, bytes, sha256} … ]
+```
+
+A package, not somebody's working directory: `lib/**` is the build output the profile actually loads,
+and `package.json`/`cordis.patch.yml`/`CHANGELOG.md` are what a version IS. **The user's settings
+record is not copied** — only a sha of its block, as evidence that it was untouched; a restore never
+reads it, because a record belongs to dsh and the user (Round 36).
+
+`-Name` is validated as a directory name (`^[A-Za-z0-9._-]+$`, no separators, no `..`) because that is
+what it becomes.
+
+### The verification, in three places and one direction
+
+The same comparison — every recorded file present and byte-identical, and no unrecorded file in the
+payload — runs (a) immediately after writing, (b) on every `-ListVersions`, and (c) before any restore
+(7c). A copy nobody re-read is a copy nobody has checked.
+
+- **(a) write-time**: a mismatch **deletes the incomplete snapshot** and exits 1; older snapshots are
+  never touched. Pruning happens only after this passes, so a failed snapshot cannot cost an old one.
+- **(b) list-time**: `-ListVersions` reports `OK n/n` or `WARN … changed: lib/client.js`, exits **1**
+  if any snapshot fails, and a manifest with an unknown `schemaVersion` is a WARN that still lists what
+  it can read.
+- **(c) restore-time**: the contract `-Rollback` will honour — refuse, never half-restore.
+
+The read-back is honest about its reach, in a comment where the check lives: the source side is read in
+the same process at the same moment, so it proves the copy matched the source **as it was then**. It
+cannot see a concurrent writer changing the source tree afterwards, and saying otherwise would be the
+more dangerous claim.
+
+Retention keeps the newest 3 by default (`-Keep` overrides it; the default is deliberate, and the
+comment says so). Pruning deletes only directories whose manifest says `tool = install.ps1 -Snapshot`;
+anything else in that folder is reported and left alone.
+
+### The guard, and the inconsistency it caught on its first run
+
+Four sections now, each guarded by its own slice: UNINSTALL → UPDATE → SNAPSHOT → INSTALL. Two anchors
+had to move, and both moves are the same lesson: the uninstall guard already ended at UPDATE, and the
+update guard's end anchor moved from INSTALL to SNAPSHOT — an anchor that skips a section lets that
+section's text satisfy the wrong guard.
+
+The snapshot guard splits its section at the listing header: **above** it every write verb must name
+the version store (`$SnapshotDir`, `$SnapshotPayload`, `$OldSnapshotDir`, `$VersionsDir`,
+`$PackageVersionsDir`, `$PruneTarget` — line-scoped, because a destination is the only thing a source
+scan can honestly judge); **below** it no write verb may appear at all. It also asserts the order —
+`if ($DryRun)` < the read-back marker < the first `Remove-Item` — because pruning after verifying is what
+keeps a bad snapshot from costing a good one.
+
+**It failed on its first run, on a real inconsistency**: the new snapshot locals were written camelCase
+(`$snapshotDir`) while the guard and the rest of the file use PascalCase (`$NodeModulesDir`,
+`$StatePath`). Six identifiers were renamed rather than the guard being loosened, and the assertion that
+caught it is the one that exists to keep every write pointed at the version store.
+
+### What this round does NOT show
+
+No snapshot has been taken: not the copy, not the read-back, not the pruning, not the truncation case.
+A source guard proves the checks are still written down; only running the mode proves they hold — Round
+40's lesson, applied before the fact this time.
+
+---
+
 ## Round 40 — Step 7a: `-Update` as a read-only plan
 
 **Status: done. `suite` 777 assertions / 0 failing (760 → 777), `load` 65 / 0, `host` green,

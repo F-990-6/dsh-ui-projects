@@ -90,7 +90,11 @@ param(
     [switch]$DryRun,
     [switch]$Uninstall,
     [switch]$Update,
+    [switch]$Snapshot,
+    [switch]$ListVersions,
+    [string]$Name = '',
     [string]$Revision = '',
+    [int]$Keep = 3,
     [int]$Changes = 1,
     [switch]$SkipLinkProbe,
     [string]$Profile = 'web',
@@ -345,6 +349,82 @@ function Get-ShortSha([string]$Value) {
     return $Value.Substring(0, 16)
 }
 
+# The sha256 of a string, lowercase, the same construction the manual fingerprint command uses.
+#
+# Needed because `Get-Sha256` hashes a FILE, and one of the things recorded here is a value rather than a
+# path: the settings block's hash, which is evidence that the user's record was left alone.
+function Get-TextSha([string]$Text) {
+    return [System.BitConverter]::ToString(
+        (New-Object System.Security.Cryptography.SHA256Managed).ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Text))
+    ).Replace('-', '').ToLowerInvariant()
+}
+
+# Every version snapshot under a package's versions directory, newest first.
+#
+# A snapshot is a directory holding `manifest.json` and a `payload` directory. Anything else found there
+# is returned too, with `ours = $false`: the pruning step deletes only what this tool wrote, and the only
+# way to know that is to read the manifest back rather than to trust a directory name.
+function Get-VersionSnapshots([string]$PackageVersionsDir) {
+    $found = New-Object System.Collections.ArrayList
+    if (-not (Test-Path -LiteralPath $PackageVersionsDir -PathType Container)) { return @() }
+    foreach ($entry in @(Get-ChildItem -LiteralPath $PackageVersionsDir -Directory -Force -ErrorAction SilentlyContinue)) {
+        $manifestPath = Join-Path $entry.FullName 'manifest.json'
+        $manifest = $null
+        if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+            try { $manifest = Read-JsonFile $manifestPath } catch { $manifest = $null }
+        }
+        [void]$found.Add([pscustomobject]@{
+            name = $entry.Name
+            dir = $entry.FullName
+            manifest = $manifest
+            ours = ([string](Get-JsonProperty $manifest 'tool' '') -eq 'install.ps1 -Snapshot')
+            schemaVersion = Get-JsonProperty $manifest 'schemaVersion' 0
+            version = [string](Get-JsonProperty $manifest 'version' '')
+            createdAt = [string](Get-JsonProperty $manifest 'createdAt' '')
+        })
+    }
+    return @($found | Sort-Object -Property createdAt, name -Descending)
+}
+
+# Verify one snapshot against its own manifest: every recorded file present and byte-identical.
+#
+# The same comparison runs in three places -- after writing, when listing, and (in 7c) before restoring --
+# because a copy nobody re-read is a copy nobody has checked. A truncated or edited file is therefore a
+# REPORTED failure rather than a surprise during a rollback.
+function Test-VersionSnapshot([string]$SnapshotDir) {
+    $manifestPath = Join-Path $SnapshotDir 'manifest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        return [pscustomobject]@{ ok = $false; checked = 0; total = 0; problems = @(); reason = 'no manifest.json' }
+    }
+    $manifest = $null
+    try { $manifest = Read-JsonFile $manifestPath }
+    catch { return [pscustomobject]@{ ok = $false; checked = 0; total = 0; problems = @(); reason = 'manifest.json is not readable JSON' } }
+    $files = @(Get-JsonProperty $manifest 'files' @())
+    if ($files.Count -eq 0) {
+        return [pscustomobject]@{ ok = $false; checked = 0; total = 0; problems = @(); reason = 'the manifest lists no files' }
+    }
+    $problems = New-Object System.Collections.ArrayList
+    $checked = 0
+    foreach ($record in $files) {
+        $rel = [string](Get-JsonProperty $record 'rel' '')
+        $expected = [string](Get-JsonProperty $record 'sha256' '')
+        if ($rel -eq '') { [void]$problems.Add('<a manifest entry with no rel>'); continue }
+        $abs = Join-Path (Join-Path $SnapshotDir 'payload') $rel.Replace('/', '\')
+        if (-not (Test-Path -LiteralPath $abs -PathType Leaf)) { [void]$problems.Add("missing: $rel"); continue }
+        if ((Get-Sha256 $abs) -ne $expected) { [void]$problems.Add("changed: $rel"); continue }
+        $checked += 1
+    }
+    # And the other direction: a payload holding files the manifest never listed is not what was recorded.
+    $payloadRoot = Join-Path $SnapshotDir 'payload'
+    if (Test-Path -LiteralPath $payloadRoot -PathType Container) {
+        $listed = @($files | ForEach-Object { ([string](Get-JsonProperty $_ 'rel' '')).Replace('\', '/') })
+        $present = @(Get-ChildItem -LiteralPath $payloadRoot -Recurse -File -Force -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.FullName.Substring($payloadRoot.Length).TrimStart('\', '/').Replace('\', '/') })
+        foreach ($rel in $present) { if ($listed -notcontains $rel) { [void]$problems.Add("unrecorded: $rel") } }
+    }
+    return [pscustomobject]@{ ok = ($problems.Count -eq 0); checked = $checked; total = $files.Count; problems = @($problems); reason = '' }
+}
+
 # Remove a directory LINK, never its target.
 #
 # `pnpm remove` has been observed deleting the dependency and the bundle layer
@@ -397,6 +477,13 @@ $LockPath = Join-Path $ProfileDir $LockFileName
 $NodeModulesDir = Join-Path $ProfileDir 'node_modules'
 $LinkPath = Join-Path $NodeModulesDir $PackageName
 $StatePath = Join-Path $ProfileDir $StateFileName
+# The version store, defined HERE rather than inside the mode that uses it.
+#
+# Round 40's crash came from one branch assuming a variable another branch had defined, and the fix was
+# a comment saying a branch must define what it reads. A path that several modes need belongs in this
+# list instead, where every mode can see it and none has to guess.
+$VersionsDir = Join-Path $ProfileDir '.dsh-ui-projects-versions'
+$PackageVersionsDir = Join-Path $VersionsDir $PackageName
 
 # `dsh plugin --profile <name>` resolves the profile from DSH_HOME itself and is
 # never told about -ProfileDir. If the two disagree, this script would verify one
@@ -414,17 +501,26 @@ if ($ProfileDir -ne $profileDirFromHome) {
 "@
 }
 
-# The three modes are mutually exclusive on purpose: each has a different promise about what it writes,
-# and a command that could be read as two of them at once would have no honest promise at all.
-if ($Uninstall -and $Update) {
+# The modes are mutually exclusive on purpose: each has a different promise about what it writes, and a
+# command that could be read as two of them at once would have no honest promise at all.
+#
+# `-Snapshot -ListVersions` is refused at the top of the SNAPSHOT section instead of here, so that the
+# refusal sits with the two names it is about -- and so that this check does not make that one dead code.
+$modeSwitches = @()
+if ($Uninstall) { $modeSwitches += '-Uninstall' }
+if ($Update) { $modeSwitches += '-Update' }
+if ($Snapshot) { $modeSwitches += '-Snapshot' }
+if ($ListVersions) { $modeSwitches += '-ListVersions' }
+$pairHandledBelow = ($modeSwitches.Count -eq 2 -and $Snapshot -and $ListVersions)
+if ($modeSwitches.Count -gt 1 -and -not $pairHandledBelow) {
     Write-Host ''
-    Write-Host '   REFUSED  -Uninstall and -Update are different modes; pass one of them.'
+    Write-Host "   REFUSED  $($modeSwitches -join ' and ') are different modes; pass one of them."
     Write-Host '            Nothing was run and nothing was written.'
     Write-Host ''
     exit 2
 }
 
-$mode = if ($Uninstall) { 'UNINSTALL' } elseif ($Update) { 'UPDATE' } else { 'INSTALL' }
+$mode = if ($Uninstall) { 'UNINSTALL' } elseif ($Update) { 'UPDATE' } elseif ($Snapshot) { 'SNAPSHOT' } elseif ($ListVersions) { 'LIST-VERSIONS' } else { 'INSTALL' }
 if ($DryRun) { $mode = "$mode (dry run)" }
 
 Write-Head 'Target'
@@ -748,16 +844,18 @@ if ($Uninstall) {
         }
 
         <#
-          The four things a person about to paste a removal command most needs to read
-          before they paste it. Three of them are user data (the switch list, the
-          per-project settings including a recorded verification, and the source tree
-          they built this package in); the fourth is every other package in the profile.
+          The five things a person about to paste a removal command most needs to read
+          before they paste it. Four of them are user data (the switch list, the
+          per-project settings including a recorded verification, the source tree they
+          built this package in, and the version snapshots taken of it); the fifth is
+          every other package in the profile.
         #>
         Write-Head 'Will not be touched'
         Write-Note "the source tree          $SourceDir"
         Write-Note "settings.yaml            $settingsPath"
         Write-Note "other packages           every other entry under $NodeModulesDir, compared before and after this run"
         Write-Note 'the checklist record     ui-projects.settings in settings.yaml (user data; see Round 36)'
+        Write-Note "version snapshots        $PackageVersionsDir   (a package going away is not a reason to forget a version)"
 
         Write-Head 'Dry run'
         Write-Host '   Nothing was run. Re-run without -DryRun to apply.'
@@ -1178,6 +1276,219 @@ if ($Update) {
     Write-Head 'Dry run'
     Write-Host '   Nothing was run. -Update without -DryRun is not implemented yet (7c implements it).'
     exit 0
+}
+
+# =================================================================== SNAPSHOT ===
+
+# Refused with both names in play, before either of them opens the directory they share: one of these
+# modes writes there and the other only reads, and a combined invocation is the one a person reaches for
+# by accident. The general mode matrix above deliberately leaves this pair to this check, so that the
+# refusal sits with the two names it is about instead of making this branch dead code.
+if ($Snapshot -and $ListVersions) {
+    Write-Host ''
+    Write-Host '   REFUSED  -Snapshot and -ListVersions are different modes; pass one of them.'
+    Write-Host '            Nothing was run and nothing was written.'
+    Write-Host ''
+    exit 2
+}
+
+if ($Snapshot) {
+    Write-Head 'Snapshot plan'
+    Write-Plan 'record the version that is running now: package.json, cordis.patch.yml, CHANGELOG.md and lib/**'
+    Write-Plan 'write them under the profile''s versions directory, plus a manifest with a sha256 per file'
+    Write-Plan 'read every written file back and compare it against that manifest'
+    Write-Plan "keep the newest $([Math]::Max($Keep, 1)); the oldest are named before they go"
+    Write-Plan 'this mode never writes inside the source tree, never runs dsh, never touches settings.yaml'
+
+    # A snapshot name becomes a directory name, so it is validated as one: no separators, no `..`, nothing
+    # that could leave the versions directory even if a caller passes it by accident.
+    if (-not [string]::IsNullOrWhiteSpace($Name)) {
+        if ($Name -notmatch '^[A-Za-z0-9._-]+$') {
+            Write-Host ''
+            Write-Host "   REFUSED  -Name must match ^[A-Za-z0-9._-]+$ (got: $Name)."
+            Write-Host '            Nothing was run and nothing was written.'
+            Write-Host ''
+            exit 2
+        }
+    }
+
+    $sourceClientBundle = Join-Path $SourceDir 'lib/client.js'
+    if (-not (Test-Path -LiteralPath $sourceClientBundle -PathType Leaf)) {
+        Write-Warn "nothing to record: $sourceClientBundle does not exist; run: node scripts/build.mjs"
+        exit 1
+    }
+
+    $sourceManifestNow = Read-JsonFile $sourceManifest
+    $SnapshotVersion = [string](Get-JsonProperty $sourceManifestNow 'version' '0.0.0')
+    $SnapshotStamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+    $SnapshotName = if (-not [string]::IsNullOrWhiteSpace($Name)) { $Name } else { "$SnapshotVersion-$SnapshotStamp" }
+
+    # What a package IS, not what somebody's working directory contains: the manifest, the loader patch,
+    # the changelog, and the build output under `lib/**. An untracked notes file is not part of a version.
+    $payloadFiles = New-Object System.Collections.ArrayList
+    foreach ($rel in @('package.json', 'cordis.patch.yml', 'CHANGELOG.md')) {
+        $abs = Join-Path $SourceDir $rel
+        if (Test-Path -LiteralPath $abs -PathType Leaf) {
+            [void]$payloadFiles.Add([pscustomobject]@{ rel = $rel; abs = $abs })
+        }
+        else {
+            Write-Skip "not present, so not recorded: $rel"
+        }
+    }
+    $libRoot = Join-Path $SourceDir 'lib'
+    foreach ($entry in @(Get-ChildItem -LiteralPath $libRoot -Recurse -File -Force -ErrorAction SilentlyContinue | Sort-Object FullName)) {
+        $rel = 'lib/' + $entry.FullName.Substring($libRoot.Length).TrimStart('\', '/').Replace('\', '/')
+        [void]$payloadFiles.Add([pscustomobject]@{ rel = $rel; abs = $entry.FullName })
+    }
+
+    $libTree = Get-TreeFingerprint $libRoot @()
+    $sourceTree = Get-TreeFingerprint $SourceDir @('.git', 'node_modules', 'lib')
+    $settingsBlockNow = Get-SettingsBlock (Join-Path $dshHome 'settings.yaml')
+    $settingsBlockSha = if ($settingsBlockNow -eq $null) { '' } else { Get-TextSha $settingsBlockNow }
+
+    $manifestFiles = @()
+    foreach ($file in $payloadFiles) {
+        $manifestFiles += [pscustomobject]@{
+            rel = $file.rel
+            bytes = (Get-Item -LiteralPath $file.abs).Length
+            sha256 = Get-Sha256 $file.abs
+        }
+    }
+    $manifest = [pscustomobject]@{
+        schemaVersion = 1
+        tool = 'install.ps1 -Snapshot'
+        name = $SnapshotName
+        package = $PackageName
+        version = $SnapshotVersion
+        revision = $Revision
+        createdAt = (Get-Date).ToUniversalTime().ToString('o')
+        sourceDir = $SourceDir
+        payload = [pscustomobject]@{
+            files = $payloadFiles.Count
+            bytes = [int](@($manifestFiles | Measure-Object -Property bytes -Sum).Sum)
+            sha256 = $libTree.sha256
+        }
+        sourceTree = [pscustomobject]@{ files = $sourceTree.files; bytes = $sourceTree.bytes; sha256 = $sourceTree.sha256 }
+        settingsBlockSha256 = $settingsBlockSha
+        files = $manifestFiles
+    }
+    $SnapshotDir = Join-Path $PackageVersionsDir $SnapshotName
+    $SnapshotPayload = Join-Path $SnapshotDir 'payload'
+
+    Write-Head 'What this run found'
+    Write-Note "version            : $SnapshotVersion"
+    if ([string]::IsNullOrWhiteSpace($Revision)) { Write-Note 'revision           : (none given; recorded as empty)' }
+    else { Write-Note "revision           : $Revision (recorded only -- this mode never calls git)" }
+    Write-Note "payload            : $($payloadFiles.Count) files, $([int](@($manifestFiles | Measure-Object -Property bytes -Sum).Sum)) bytes   (lib/** tree sha $(Get-ShortSha $libTree.sha256))"
+    Write-Note "source tree        : $($sourceTree.files) files, $($sourceTree.bytes) bytes, sha $(Get-ShortSha $sourceTree.sha256)   (excludes .git, node_modules, lib)"
+    if ($settingsBlockSha -eq '') { Write-Note 'settings block     : none in settings.yaml (nothing to record a hash of)' }
+    else { Write-Note "settings block sha : $(Get-ShortSha $settingsBlockSha)   (evidence only; the block itself is never copied)" }
+    Write-Note "name this run will create : $SnapshotName"
+    if (Test-Path -LiteralPath $SnapshotDir) {
+        Write-Warn "a snapshot named $SnapshotName already exists; pick another -Name (nothing was written)"
+        exit 1
+    }
+
+    Write-Head 'Retention'
+    $keepCount = [Math]::Max($Keep, 1)
+    $existingSnapshots = @(Get-VersionSnapshots $PackageVersionsDir)
+    $wouldPrune = @($existingSnapshots | Select-Object -Skip $keepCount)
+    if ($wouldPrune.Count -eq 0) { Write-Note "keeping the newest $keepCount; nothing would be pruned" }
+    else { Write-Note "keeping the newest $keepCount; would prune: $(($wouldPrune | ForEach-Object { $_.name }) -join ', ')" }
+
+    if ($DryRun) {
+        Write-Head 'Dry run'
+        Write-Host '   Nothing was run. Re-run without -DryRun to apply.'
+        exit 0
+    }
+
+    Write-Head 'Writing'
+    New-Item -ItemType Directory -Force -Path $SnapshotPayload | Out-Null
+    foreach ($file in $payloadFiles) {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent (Join-Path $SnapshotPayload $file.rel.Replace('/', '\'))) | Out-Null
+        Copy-Item -LiteralPath $file.abs -Destination (Join-Path $SnapshotPayload $file.rel.Replace('/', '\')) -Force
+    }
+    Write-TextFile (Join-Path $SnapshotDir 'manifest.json') (($manifest | ConvertTo-Json -Depth 6) + "`n")
+    Write-Ok "copied $($payloadFiles.Count) file(s) into $SnapshotDir"
+
+    # READ-BACK: the copy is verified, not assumed, and the verification is honest about its reach. The
+    # source side of this comparison is read in the SAME process at the SAME moment, so it proves the copy
+    # matched the source as it was then. It cannot see a concurrent writer changing the source tree after
+    # this moment -- nothing in this script can, and pretending otherwise would be the more dangerous lie.
+    Write-Head 'Read-back'
+    Write-Note 'read-back: comparing every written file against the manifest'
+    $verification = Test-VersionSnapshot $SnapshotDir
+    if (-not $verification.ok) {
+        Write-Warn "the copy does NOT match its manifest: $(($verification.problems | Select-Object -First 5) -join '; ')"
+        Remove-Item -LiteralPath $SnapshotDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Warn 'the incomplete snapshot was removed; older snapshots were not touched'
+        exit 1
+    }
+    Write-Ok "snapshot $SnapshotName verified ($($verification.checked)/$($verification.total) files)"
+
+    Write-Head 'Retention'
+    $allSnapshots = @(Get-VersionSnapshots $PackageVersionsDir)
+    $pruneList = @($allSnapshots | Select-Object -Skip $keepCount)
+    Write-Note "keeping the newest $keepCount : $(($allSnapshots | Select-Object -First $keepCount | ForEach-Object { $_.name }) -join ', ')"
+    if ($pruneList.Count -eq 0) { Write-Note 'nothing to prune' }
+    foreach ($entry in $pruneList) {
+        if (-not $entry.ours) {
+            Write-Warn "not written by this tool, so left alone: $($entry.name)"
+            continue
+        }
+        $OldSnapshotDir = $entry.dir
+        Remove-Item -LiteralPath $OldSnapshotDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Note "pruned: $($entry.name)"
+    }
+
+    Write-Head 'Done'
+    Write-Host "   Snapshot $SnapshotName recorded and verified."
+    Write-Host '   Next: git pull && npm run build brings the new version, then -Update reports the difference.'
+    Write-Host '   Restoring one is -Rollback -To <name> (7c).'
+    exit 0
+}
+
+if ($ListVersions) {
+    # READ-ONLY, and the guard asserts it: everything below opens files, and nothing here writes.
+    $keepCount = [Math]::Max($Keep, 1)
+    Write-Head "Versions (newest first; keeping $keepCount)"
+    $entries = @(Get-VersionSnapshots $PackageVersionsDir)
+    if ($entries.Count -eq 0) {
+        Write-Skip "no version snapshots yet under $PackageVersionsDir"
+        exit 0
+    }
+    foreach ($entry in $entries) {
+        if ($entry.manifest -eq $null) {
+            Write-Warn "$($entry.name): no readable manifest.json, so only its name is shown"
+            continue
+        }
+        if ($entry.schemaVersion -ne 1) {
+            # Reported, never fatal: a manifest from a future format should still be listed with whatever
+            # fields this script can read, and the reader decides what to do about it.
+            Write-Warn "$($entry.name): schemaVersion $($entry.schemaVersion) is not one this script knows; showing the fields it can read"
+        }
+        $payload = Get-JsonProperty $entry.manifest 'payload' $null
+        Write-Note ("{0}   v{1}   {2}   {3} files   {4} bytes   sha {5}" -f $entry.name, $entry.version, $entry.createdAt, (Get-JsonProperty $payload 'files' 0), (Get-JsonProperty $payload 'bytes' 0), (Get-ShortSha ([string](Get-JsonProperty $payload 'sha256' ''))))
+    }
+
+    Write-Head 'Verification'
+    $bad = 0
+    foreach ($entry in $entries) {
+        $verification = Test-VersionSnapshot $entry.dir
+        if ($verification.ok) {
+            Write-Ok "$($entry.name): $($verification.checked)/$($verification.total) files match the manifest"
+        }
+        else {
+            $bad += 1
+            $detail = if ($verification.reason -ne '') { $verification.reason } else { ($verification.problems | Select-Object -First 5) -join ', ' }
+            Write-Warn "$($entry.name): does NOT match its manifest -- $detail"
+        }
+    }
+
+    Write-Head 'Summary'
+    Write-Note "$($entries.Count - $bad) of $($entries.Count) snapshot(s) verify"
+    Write-Note '-Rollback refuses a snapshot that does not (7c)'
+    exit $(if ($bad -eq 0) { 0 } else { 1 })
 }
 
 # =================================================================== INSTALL ===
