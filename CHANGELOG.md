@@ -25,6 +25,90 @@ Verification vocabulary used below:
 
 ---
 
+## Round 40 — Step 7a: `-Update` as a read-only plan
+
+**Status: done. `suite` 772 assertions / 0 failing (760 → 772), `load` 65 / 0, `host` green,
+`conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged, `browser --self-check`
+green. No browser run: nothing user-visible changed.**
+**`install.ps1` was NOT executed in any mode, including `-DryRun`.** That is this round's discipline, and
+it splits the evidence: the dry run's actual output, its exit code and the "nothing moved" invariance are
+the user's manual acceptance step, while what is verified here is static — the two source guards — plus
+the suites.
+
+### Three modes, three promises
+
+`-Update` verifies and reports. It writes **nothing at all**: not the source tree, not the install
+record, not the profile. The duties live in three separate commands because the ORDER is the part that
+is easy to get wrong:
+
+```
+install.ps1 -Snapshot          record the version that is running now      (7b)
+git pull && npm run build      the user brings the new version
+install.ps1 -Update            verify what is there, report the difference
+```
+
+Without `-DryRun` the mode **refuses** (`exit 2`) with a diagnosis naming the round that implements it,
+rather than half-working. `-Uninstall` and `-Update` together are refused the same way: each mode has a
+different promise about what it writes, and a command readable as two of them has no honest promise.
+
+The plan prints: the recorded baseline (install record's timestamp and two hashes), the current version,
+whether `package.json` and `lib/client.js` moved since the record, the `lib/**` fingerprint, the source
+tree fingerprint, a verdict, the registry **capability** (a `link:` spec is reported as "no registry
+version to query" — the query itself lands after step 8), the newest CHANGELOG section(s), the recorded
+`ui-projects` block as evidence, and the four things it will not touch.
+
+### The helper: a self-consistent tree fingerprint
+
+`Get-TreeFingerprint` hashes every file under a root as `"<rel> <sha256>"` lines, sorted and joined, then
+hashes that. Relative paths use `/`; the sort is PowerShell's default string sort, the same one the
+manual command uses, which is what makes the two agree. It is a fingerprint for comparing one machine
+against itself, **not** a canonical cross-tool hash, and it says so. It excludes what it is told to:
+`.git`, `node_modules` and `lib` for the source tree, since `lib/` is the build output under test and
+`.git` is the user's own history.
+
+### The three corrections to the approved plan
+
+1. The plan line no longer claims to record: `then report the diff; nothing is written in this mode (7c
+   implements recording)`. 7a writes no record, so a promise to write one would have been false.
+2. The guard asserts the **absence of every write** — `Invoke-Dsh`, `Remove-Item`, `Copy-Item`,
+   `New-Item`, `Set-Content`, `Add-Content`, `Write-TextFile` — instead of permitting exactly one. With
+   the non-dry-run mode refusing, a permitted `Write-TextFile` would have been unreachable code that the
+   guard protected; 7c grants the permission in the same edit that starts writing.
+3. The dry-run footer no longer says "re-run without `-DryRun` to apply", which was misleading while the
+   mode refuses. It now says what is true.
+
+### The guard, and its sensitivity
+
+The uninstall guard's slice now ends at the **UPDATE** header rather than the INSTALL one: with three
+branches in the file, an end anchor that skips one would let the update mode's text satisfy the uninstall
+guard. A second guard covers the update branch itself, and its sensitivity was demonstrated in memory
+(the script is not this round's to mutate):
+
+| Control | Result |
+| --- | --- |
+| untouched | PASS |
+| A: 7c adds `Write-TextFile` without widening the guard | caught — `Write-TextFile` |
+| B: the mode starts calling `Invoke-Dsh` | caught — `Invoke-Dsh` |
+| C: the refusal is dropped, so `-Update` silently does nothing | caught — 0 refuse gates |
+| D: the diagnosis stops naming the round | caught — no `(7c implements it)` |
+
+Slice 8,566 characters against a 2,000-character floor, so scanning a fragment or an empty string fails
+instead of passing.
+
+### What this round does NOT show
+
+The dry run has never been executed here: not its output, not its exit code, not the fingerprint
+invariance. A source guard can prove a check is still written down; it cannot prove the check runs. If
+the manual run disagrees with the plan — a missing section, a wrong exit code, a fingerprint that moves
+— that is a 7a fix in the next round, not a footnote.
+
+### Also
+
+`tools/snapshot.mjs`'s header no longer claims "git is not installed on this machine": git is available
+now, and the plugin repo has its own history. The tool still covers the trees git does not.
+
+---
+
 ## Round 39 — Step 6d: the uninstall list, its proof, and its limits
 
 **Status: done. `suite` 760 assertions / 0 failing (729 → 760), `load` 65 / 0 (64 → 65), `host` green,

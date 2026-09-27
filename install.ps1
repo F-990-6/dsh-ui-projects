@@ -89,6 +89,9 @@
 param(
     [switch]$DryRun,
     [switch]$Uninstall,
+    [switch]$Update,
+    [string]$Revision = '',
+    [int]$Changes = 1,
     [switch]$SkipLinkProbe,
     [string]$Profile = 'web',
     [string]$ProfileDir,
@@ -294,6 +297,42 @@ function Get-NodeModulesInventory([string]$NodeModulesDir) {
     return @($names | Sort-Object)
 }
 
+# One sha256 over every file under a root, excluding named directories.
+#
+# Relative paths are normalized to `/` and sorted before hashing, so the value does not depend on the
+# order the filesystem happens to return directory entries in. The sort is PowerShell's default string
+# sort -- the same one the manual fingerprint command in `docs/` uses, which is what makes the two
+# agree. This is a SELF-CONSISTENT fingerprint for comparing one machine against itself, not a
+# canonical cross-tool hash.
+function Get-TreeFingerprint([string]$Root, [string[]]$Exclude) {
+    $summary = [pscustomobject]@{ files = 0; bytes = 0; sha256 = 'n/a' }
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return $summary }
+    $lines = New-Object System.Collections.ArrayList
+    $files = 0
+    $bytes = 0
+    $stack = New-Object System.Collections.Stack
+    $stack.Push($Root)
+    while ($stack.Count -gt 0) {
+        $dir = $stack.Pop()
+        foreach ($entry in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) {
+            if ($entry.PSIsContainer) {
+                if ($Exclude -contains $entry.Name) { continue }
+                $stack.Push($entry.FullName)
+                continue
+            }
+            $files += 1
+            $bytes += $entry.Length
+            $rel = $entry.FullName.Substring($Root.Length).TrimStart('\', '/').Replace('\', '/')
+            [void]$lines.Add("$rel $(Get-Sha256 $entry.FullName)")
+        }
+    }
+    $joined = (@($lines | Sort-Object) -join "`n")
+    $sha = [System.BitConverter]::ToString(
+        (New-Object System.Security.Cryptography.SHA256Managed).ComputeHash([System.Text.Encoding]::UTF8.GetBytes($joined))
+    ).Replace('-', '').ToLowerInvariant()
+    return [pscustomobject]@{ files = $files; bytes = $bytes; sha256 = $sha }
+}
+
 # Remove a directory LINK, never its target.
 #
 # `pnpm remove` has been observed deleting the dependency and the bundle layer
@@ -363,7 +402,17 @@ if ($ProfileDir -ne $profileDirFromHome) {
 "@
 }
 
-$mode = if ($Uninstall) { 'UNINSTALL' } else { 'INSTALL' }
+# The three modes are mutually exclusive on purpose: each has a different promise about what it writes,
+# and a command that could be read as two of them at once would have no honest promise at all.
+if ($Uninstall -and $Update) {
+    Write-Host ''
+    Write-Host '   REFUSED  -Uninstall and -Update are different modes; pass one of them.'
+    Write-Host '            Nothing was run and nothing was written.'
+    Write-Host ''
+    exit 2
+}
+
+$mode = if ($Uninstall) { 'UNINSTALL' } elseif ($Update) { 'UPDATE' } else { 'INSTALL' }
 if ($DryRun) { $mode = "$mode (dry run)" }
 
 Write-Head 'Target'
@@ -933,6 +982,170 @@ if ($Uninstall) {
         Write-Warn 'so a later run can still see what this install changed.'
     }
     exit $(if ($failed -eq 0) { 0 } else { 1 })
+}
+
+# =================================================================== UPDATE ===
+
+if ($Update) {
+    Write-Head 'Update plan'
+    Write-Plan 'read the recorded state and the current build; write nothing in the source tree'
+    Write-Plan 'then assert: the profile still links this source, the record is unchanged, no other package moved'
+    Write-Plan 'then report the diff; nothing is written in this mode (7c implements recording)'
+    Write-Plan 'this mode never runs dsh, never edits YAML, never copies or deletes a file'
+
+    <#
+      `-Update` VERIFIES AND REPORTS. It writes nothing at all -- not the source tree, not the install
+      record, not the profile. Three duties live in three commands on purpose, because the ORDER is the
+      part that is easy to get wrong:
+
+          install.ps1 -Snapshot           record the version that is running now
+          git pull  &&  npm run build     the user brings the new version
+          install.ps1 -Update             verify what is there, and report the difference
+
+      This round implements the PLAN only. Without -DryRun the mode refuses rather than half-working, so
+      no path inside this branch can write anything at all; `scripts/verify.mjs` asserts exactly that,
+      and 7c will add the recording step together with the guard that permits it.
+    #>
+    if (-not $DryRun) {
+        Write-Host ''
+        Write-Host '   REFUSED  -Update without -DryRun is not implemented yet (7c implements it).'
+        Write-Host '            This round implements the plan only: re-run with -DryRun.'
+        Write-Host '            Nothing was run and nothing was written.'
+        Write-Host ''
+        exit 2
+    }
+
+    $settingsPath = Join-Path $dshHome 'settings.yaml'
+    $settingsBlock = Get-SettingsBlock $settingsPath
+
+    # The baseline chain, stated because a file-level diff can only be as precise as what was written
+    # down: the newest version snapshot when one exists (7b writes those), otherwise the install record,
+    # which carries two hashes and nothing more.
+    $recorded = $null
+    if (Test-Path -LiteralPath $StatePath -PathType Leaf) { $recorded = Read-JsonFile $StatePath }
+    $recordedBefore = Get-JsonProperty $recorded 'before' $null
+    $recordedSource = Get-JsonProperty $recordedBefore 'source' $null
+    $recordedManifestSha = Get-JsonProperty $recordedSource 'manifestSha256' $null
+    $recordedBundleSha = Get-JsonProperty $recordedSource 'clientBundleSha256' $null
+    $recordedAt = Get-JsonProperty $recorded 'installedAt' ''
+
+    $currentManifest = Read-JsonFile $sourceManifest
+    $currentVersion = Get-JsonProperty $currentManifest 'version' '?'
+    $nowManifestSha = Get-Sha256 $sourceManifest
+    $nowBundleSha = Get-Sha256 $sourceBundle
+
+    Write-Head 'What this run found'
+    if ($recorded -eq $null) {
+        Write-Warn "no install record ($StateFileName); the comparison below has no baseline"
+    }
+    else {
+        Write-Note "recorded at install : $recordedAt"
+    }
+    Write-Note "current version     : $currentVersion"
+    if ($recordedManifestSha -eq $null) {
+        Write-Skip 'package.json        : no recorded hash to compare against'
+    }
+    elseif ($recordedManifestSha -eq $nowManifestSha) {
+        Write-Ok "package.json        : unchanged since the record ($($nowManifestSha.Substring(0, 16)))"
+    }
+    else {
+        Write-Warn "package.json        : CHANGED since the record (was $($recordedManifestSha.Substring(0, 16)), now $($nowManifestSha.Substring(0, 16)))"
+    }
+    if ($recordedBundleSha -eq $null) {
+        Write-Skip 'lib/client.js       : no recorded hash to compare against'
+    }
+    elseif ($recordedBundleSha -eq $nowBundleSha) {
+        Write-Ok "lib/client.js       : unchanged since the record ($($nowBundleSha.Substring(0, 16)))"
+    }
+    else {
+        Write-Warn "lib/client.js       : CHANGED since the record (was $($recordedBundleSha.Substring(0, 16)), now $($nowBundleSha.Substring(0, 16)))"
+    }
+
+    $libTree = Get-TreeFingerprint (Join-Path $SourceDir 'lib') @()
+    Write-Note "lib/**              : $($libTree.files) files, $($libTree.bytes) bytes, sha $($libTree.sha256.Substring(0, 16))"
+    $sourceTree = Get-TreeFingerprint $SourceDir @('.git', 'node_modules', 'lib')
+    Write-Note "source tree         : $($sourceTree.files) files, $($sourceTree.bytes) bytes, sha $($sourceTree.sha256.Substring(0, 16))   (excludes .git, node_modules, lib)"
+    if ($recorded -ne $null -and $recordedManifestSha -eq $nowManifestSha -and $recordedBundleSha -eq $nowBundleSha) {
+        Write-Note 'verdict             : NOTHING TO UPDATE -- the build matches what the record was taken against'
+    }
+    elseif ($recorded -ne $null) {
+        Write-Note 'verdict             : this build DIFFERS from the recorded one; 7c would record the new state'
+    }
+
+    # Registry capability, not a registry query: the query itself lands after the packages are published
+    # (step 8). What is worth saying today is which case this profile is in.
+    $profileManifest = Read-JsonFile $ManifestPath
+    $spec = Get-JsonProperty (Get-JsonProperty $profileManifest 'dependencies' $null) $PackageName ''
+    if ($spec -like 'link:*') {
+        Write-Note "registry            : skipped -- the dependency spec is $spec, so there is no registry version to query"
+    }
+    elseif ([string]::IsNullOrWhiteSpace($spec)) {
+        Write-Skip "registry            : the profile does not declare $PackageName"
+    }
+    else {
+        Write-Note "registry            : the dependency spec is $spec; the query lands once the packages are published (step 8)"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Revision)) {
+        Write-Note "revision            : $Revision (recorded only -- this mode never calls git)"
+    }
+
+    $changelogPath = Join-Path $SourceDir 'CHANGELOG.md'
+    $wanted = [Math]::Max($Changes, 1)
+    Write-Head "CHANGELOG (newest $wanted section(s) of the candidate)"
+    if (-not (Test-Path -LiteralPath $changelogPath -PathType Leaf)) {
+        Write-Skip 'the candidate ships no CHANGELOG.md'
+    }
+    else {
+        $changelogLines = @(Read-TextLines $changelogPath)
+        $headings = New-Object System.Collections.ArrayList
+        for ($index = 0; $index -lt $changelogLines.Count; $index++) {
+            if ($changelogLines[$index] -match '^##\s') { [void]$headings.Add($index) }
+        }
+        if ($headings.Count -eq 0) {
+            Write-Skip 'the changelog has no "## " sections to show'
+        }
+        else {
+            $take = [Math]::Min($wanted, $headings.Count)
+            for ($section = 0; $section -lt $take; $section++) {
+                $from = $headings[$section]
+                $to = if ($section + 1 -lt $headings.Count) { $headings[$section + 1] } else { $changelogLines.Count }
+                $body = @($changelogLines[$from..($to - 1)])
+                $cap = 40
+                if ($body.Count -gt $cap) {
+                    $body = @($body[0..($cap - 1)]) + @("   ... $($body.Count - $cap) more line(s); see CHANGELOG.md")
+                }
+                foreach ($line in $body) { Write-Host "   $line" }
+            }
+            Write-Note 'the changelog is round-based, not version-based: these are the newest sections, and the install record time is the reference point'
+        }
+    }
+
+    Write-Head 'Recorded state (evidence only; this mode never writes it)'
+    if ($settingsBlock -eq $null) {
+        Write-Note 'no ui-projects block in settings.yaml'
+    }
+    else {
+        $blockLines = @($settingsBlock -split "`n")
+        Write-Note "the ui-projects block is $($blockLines.Count) line(s); it is compared byte-for-byte by -Update, never rewritten here"
+        $enabledIds = @()
+        foreach ($line in $blockLines) {
+            if ($line -match '^\s{4}-\s+(.+)$') { $enabledIds += $Matches[1].Trim() }
+        }
+        if ($enabledIds.Count -eq 0) { Write-Note '  enabled : (nothing recorded)' }
+        else { Write-Note "  enabled : $($enabledIds -join ', ')" }
+        $settingsLine = @($blockLines | Where-Object { $_ -match '^\s{2}settings:' })
+        if ($settingsLine.Count -gt 0) { Write-Note "  settings: $($settingsLine[0].Trim())" }
+    }
+
+    Write-Head 'Will not be touched'
+    Write-Note "the source tree          $SourceDir"
+    Write-Note "settings.yaml            $settingsPath"
+    Write-Note "other packages           every other entry under $NodeModulesDir"
+    Write-Note 'the checklist record     ui-projects.settings in settings.yaml (user data; see Round 36)'
+
+    Write-Head 'Dry run'
+    Write-Host '   Nothing was run. -Update without -DryRun is not implemented yet (7c implements it).'
+    exit 0
 }
 
 # =================================================================== INSTALL ===

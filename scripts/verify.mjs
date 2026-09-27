@@ -4570,7 +4570,9 @@ await test('a failed write is shown at the top of the section, not blamed on a p
 await test('the uninstall script still contains every check it promises, where it promises it', async () => {
   const source = await readFile(join(packageRoot, 'install.ps1'), 'utf8')
   const branchStart = source.indexOf("Write-Head 'Uninstall plan'")
-  const branchEnd = source.indexOf('# =================================================================== INSTALL ===')
+  // The slice ends where the UPDATE branch begins, not where INSTALL does: with three branches in the
+  // file, an end anchor that skips one would let the update mode's text satisfy the uninstall guard.
+  const branchEnd = source.indexOf('# =================================================================== UPDATE ===')
   truthy(
     branchStart > 0 && branchEnd > branchStart,
     `the uninstall branch is where this guard looks for it (start=${branchStart}, end=${branchEnd})`,
@@ -4618,6 +4620,58 @@ await test('the uninstall script still contains every check it promises, where i
     branch.split('if ($DryRun)').length - 1,
     1,
     'exactly one dry-run gate in the branch, so the position compared above is unambiguous',
+  )
+})
+
+/*
+ * THE UPDATE MODE'S PROMISE, GUARDED THE SAME WAY.
+ *
+ * `-Update` verifies and reports; it writes nothing at all — not the source tree, not the install
+ * record, not the profile. That is a promise about ABSENCE, and absence is what a later edit undoes
+ * quietly: one `Write-TextFile` slipped in beside a new check would turn a read-only mode into a
+ * writing one and leave every suite green. So the absence is asserted directly, over the branch's own
+ * source text. When 7c implements the recording step it will have to change this test on purpose,
+ * which is the point: permission to write should be granted in the same edit that starts writing.
+ */
+await test('the update mode is a read-only plan, and refuses to pretend otherwise', async () => {
+  const source = await readFile(join(packageRoot, 'install.ps1'), 'utf8')
+  const start = source.indexOf("Write-Head 'Update plan'")
+  const end = source.indexOf('# =================================================================== INSTALL ===')
+  truthy(start > 0 && end > start, `the update branch is where this guard looks for it (start=${start}, end=${end})`)
+  const branch = source.slice(start, end)
+  truthy(branch.length > 2000, `the slice is the update branch rather than a fragment (${branch.length} chars)`)
+
+  // Nothing that could write, at any point in the branch.
+  const writers = ['Invoke-Dsh', 'Remove-Item', 'Copy-Item', 'New-Item', 'Set-Content', 'Add-Content', 'Write-TextFile']
+  const found = writers.filter((writer) => branch.includes(writer))
+  equal(JSON.stringify(found), '[]', `the update branch contains no write of any kind (found: ${JSON.stringify(found)})`)
+
+  // The refusal: without -DryRun this mode must not pretend to have run.
+  equal(branch.split('if (-not $DryRun)').length - 1, 1, 'exactly one refusal gate in the branch')
+  truthy(branch.includes('exit 2'), 'and the refused mode exits 2 rather than reporting success')
+  truthy(
+    branch.includes('not implemented yet (7c implements it)'),
+    'with a diagnosis that names the round which implements it',
+  )
+
+  // What it does promise, and the four things it promises not to touch.
+  const required = [
+    ['reads the recorded ui-projects block', ['Get-SettingsBlock']],
+    ['fingerprints the source tree with the three exclusions', ["'.git', 'node_modules', 'lib'"]],
+    ['reports the registry capability instead of querying', ['link:*', 'no registry version to query']],
+    ['records the revision without calling git', ['this mode never calls git']],
+    ['prints the newest changelog section(s)', ['CHANGELOG (newest ']],
+  ]
+  for (const [what, needles] of required) {
+    const missing = needles.filter((needle) => !branch.includes(needle))
+    equal(JSON.stringify(missing), '[]', `the update branch still ${what} (missing: ${JSON.stringify(missing)})`)
+  }
+  const promises = ['the source tree', 'settings.yaml', 'other packages', 'the checklist record']
+  const unkept = promises.filter((promise) => !branch.includes(promise))
+  equal(
+    JSON.stringify(unkept),
+    '[]',
+    `the four things the update plan promises not to touch are named (missing: ${JSON.stringify(unkept)})`,
   )
 })
 
