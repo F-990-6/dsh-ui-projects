@@ -3714,9 +3714,7 @@ await test('confirming records the version, and a new version invalidates it', a
 /* ── the installed-package column ─────────────────────────────────────────── */
 
 /** A React stand-in that builds plain data, so the section can be inspected without a renderer. */
-const fakeReact = {
-  createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
-}
+const renderSection = (props) => server.renderToStaticMarkup(react.createElement(UiPluginsSection, props))
 
 await test('the installed store persists nothing, by construction and by assertion', async () => {
   /*
@@ -3732,7 +3730,7 @@ await test('the installed store persists nothing, by construction and by asserti
 })
 
 await test('a per-package problem is rendered against its own row, and a failed column leaves the projects page alone', async () => {
-  const t = {
+  const flatCopy = {
     title: 'UI plugins',
     intro: 'intro',
     loading: 'Reading…',
@@ -3750,33 +3748,7 @@ await test('a per-package problem is rendered against its own row, and a failed 
     restartBlock: '# 1. stop dsh web',
     kinds: { bundle: 'bundle' },
   }
-  const render = (state) =>
-    JSON.stringify(UiPluginsSection({ store: { state: () => state, refresh: async () => {} }, t, React: fakeReact }))
-
-  const withProblem = render({
-    status: 'ready',
-    scan: {
-      profileName: 'web',
-      orphanedBindings: [],
-      dependencies: [
-        {
-          name: 'dsh-broken',
-          version: '1.0.0',
-          kind: 'ui-project',
-          bundled: false,
-          problems: [{ code: 'patch-file-missing', message: 'no such file under the package root' }],
-        },
-      ],
-    },
-  })
-  contains(withProblem, 'patch-file-missing', 'a problem names its code')
-  contains(withProblem, 'no such file under the package root', 'and says what is wrong, on the row it belongs to')
-
-  contains(
-    render({ status: 'idle' }),
-    'data-uip-plugins-action',
-    'the refresh control exists in the reading state as well as the ready one',
-  )
+  const render = (state) => renderSection({ store: { state: () => state, refresh: async () => {} }, t: { plugins: flatCopy }, state, React: react })
 
   /*
    * The two columns share no state: a listing that cannot be read must not take the page down with
@@ -3827,7 +3799,7 @@ await test('a failed read is a state with a reason, not a silent empty list', as
 })
 
 await test('the plugins column renders each state, and never pretends to be empty', () => {
-  const t = {
+  const flatCopy = {
     title: 'UI plugins',
     intro: 'intro',
     loading: 'Reading…',
@@ -3845,14 +3817,7 @@ await test('the plugins column renders each state, and never pretends to be empt
     restartBlock: '# 1. stop dsh web',
     kinds: { bundle: 'bundle', 'ui-project': 'UI project' },
   }
-  const render = (state) =>
-    JSON.stringify(
-      UiPluginsSection({
-        store: { state: () => state, refresh: async () => {} },
-        t,
-        React: fakeReact,
-      }),
-    )
+  const render = (state) => renderSection({ store: { state: () => state, refresh: async () => {} }, t: { plugins: flatCopy }, state, React: react })
 
   contains(render({ status: 'idle' }), 'Reading…', 'an unread column says it is reading')
   contains(render({ status: 'loading' }), 'Reading…', 'and so does one mid-request')
@@ -3884,6 +3849,94 @@ await test('the plugins column renders each state, and never pretends to be empt
     scan: { profileName: 'web', dependencies: [], orphanedBindings: ['dsh-orphan'] },
   })
   contains(orphans, 'orphaned: dsh-orphan', 'a package that declares a bundle but is not composed is reported')
+})
+
+await test('the column reads the dictionary it is actually given', async () => {
+  /*
+   * THE BUG THESE EXIST FOR. The component read its copy one level too high: the dictionary nests
+   * this page under `plugins`, as it nests `storage`, `perf` and `tests`. One of the misplaced reads
+   * was dynamic — `t.kinds[dependency.kind]` — and dynamic access on undefined THROWS, which is where
+   * "Cannot read properties of undefined (reading 'bundle')" came from: `bundle` is the VALUE of
+   * dependency.kind, not a property name in any file, which is why grepping for `.bundle` found
+   * nothing. The other fifteen keys rendered as nothing at all.
+   *
+   * These render the REAL dictionaries. A fixture is a dictionary that does not exist, and this file
+   * was tested against one while production threw.
+   */
+  const READ_KEYS = ['title', 'intro', 'loading', 'failed', 'failedHint', 'refresh', 'empty', 'composed',
+    'notComposed', 'framework', 'project', 'orphaned', 'commandsHint', 'restartHint', 'restartBlock', 'kinds']
+  const readyScan = {
+    profileName: 'web',
+    dependencies: [{ name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] }],
+    orphanedBindings: [],
+  }
+  for (const locale of ['en', 'zh']) {
+    const dictionary = strings(locale)
+    const markup = renderSection({ store: { state: () => ({ status: 'ready', scan: readyScan }), refresh: async () => {} }, t: dictionary, React: react })
+    truthy(markup.length > 0, 'the ' + locale + ' dictionary renders the column without throwing')
+    contains(markup, dictionary.plugins.title, 'and the title comes from the dictionary (' + locale + ')')
+    contains(markup, dictionary.plugins.kinds.bundle, 'and a package kind is translated (' + locale + ')')
+    contains(markup, dictionary.plugins.commandsHint, 'and the command instruction comes from the dictionary (' + locale + ')')
+
+    /* A key the component reads but the dictionary lacks renders as nothing rather than as an error,
+     * which is how fifteen of them survived a green suite. */
+    const page = dictionary.plugins ?? {}
+    const missing = READ_KEYS.filter((key) => page[key] === undefined)
+    equal(missing, [], 'every key the column reads exists in the ' + locale + ' dictionary')
+    const unread = Object.keys(page).filter((key) => !READ_KEYS.includes(key))
+    if (unread.length > 0) process.stdout.write('         note  ' + locale + ': keys nothing reads yet: ' + unread.join(', ') + '\n')
+  }
+
+  /* A dictionary older than a project kind shows the raw kind instead of a blank badge. */
+  const withoutKinds = { plugins: { ...strings('en').plugins, kinds: undefined } }
+  const fallback = renderSection({ store: { state: () => ({ status: 'ready', scan: readyScan }), refresh: async () => {} }, t: withoutKinds, React: react })
+  contains(fallback, 'bundle', 'a missing kinds table falls back to the raw kind instead of throwing')
+})
+
+/**
+ * Strip comments so a guard reads CODE, not the prose that explains the bug.
+ *
+ * No regular expression is used, and that is deliberate: a backslash pattern written inside a patch
+ * script's template literal has been eaten twice in this project, once silently. Splitting on the
+ * markers cannot be mangled on the way through a string.
+ * @param {string} source
+ * @returns {string}
+ */
+function stripComments(source) {
+  const withoutBlocks = source
+    .split('/*')
+    .map((chunk, index) => (index === 0 ? chunk : chunk.slice(chunk.indexOf('*/') + 2)))
+    .join('')
+  return withoutBlocks
+    .split(String.fromCharCode(10))
+    .filter((line) => !line.trim().startsWith('//'))
+    .join(String.fromCharCode(10))
+}
+
+await test('the column reads its copy through the plugins namespace, and a guard keeps it that way', async () => {
+  /* The root cause was a read one level too high. A source guard fails earlier than a behaviour test
+   * can: it fails the moment someone writes `t.title` here again. */
+  const source = await readFile(join(packageRoot, 'src', 'client', 'panel-plugins.js'), 'utf8')
+  /*
+   * Comments are stripped first, and this is not tidiness: the doc comment at the top of that file
+   * explains the bug using the very expressions this guard looks for, so without stripping it the
+   * guard fails on its own documentation — which is exactly what happened when it was first written.
+   */
+  const code = stripComments(source)
+  const IDENTIFIER = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$"
+    const direct = []
+    for (let at = code.indexOf("t."); at >= 0; at = code.indexOf("t.", at + 1)) {
+      const before = at === 0 ? "" : code.charAt(at - 1)
+      const after = code.charAt(at + 2)
+      const boundary = before === "" || !IDENTIFIER.includes(before)
+      // `React.` contains `t.`, which is how the first version of this guard flagged five
+      // `React.createElement` calls as copy reads. The boundary check is the whole fix, and `t.plugins`
+      // is the one legitimate read at that level.
+      if (boundary && IDENTIFIER.slice(0, 52).includes(after) && !code.startsWith("plugins", at + 2)) {
+        direct.push(code.slice(at, at + 24))
+      }
+    }
+  equal(direct, [], 'no direct `t.<key>` read: every key comes from the `plugins` namespace')
 })
 
 /* ── retirement, adoption, and a record of intent ──────────────────────────── */

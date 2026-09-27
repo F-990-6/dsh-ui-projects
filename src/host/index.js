@@ -111,17 +111,58 @@ export function apply(ctx) {
    * deployment with several profiles shows which one is being described instead of guessing
    * silently. A composition with no profiles at all yields an error payload the column renders.
    */
+  /** @type {() => Promise<any>} */
+  const scan = async () => {
+    const { discoverProfiles, scanProfile } = await import('./profile-scan.js')
+    const dshHome = resolveDshHome(ctx)
+    const names = await discoverProfiles({ dshHome })
+    const name = names.includes('web') ? 'web' : names[0]
+    if (name === undefined) throw new Error(`no dsh profile under ${join(dshHome, 'profiles')}`)
+    return scanProfile({ profileDir: join(dshHome, 'profiles', name) })
+  }
+
+  /*
+   * THE ENDPOINT WAITS FOR THE CONNECTION SERVICE. It used to read it once, synchronously, inside an
+   * effect that runs during apply — and a probe printed exactly what that costs:
+   *
+   *     [dsh-ui-projects] apply entered
+   *     [dsh-ui-projects] effect ran; connection=undefined
+   *
+   * The service belongs to a row in an earlier LAYER, and a layer being inserted is not the same as
+   * its row having finished activating — the connection host half's own `apply` is async. So the
+   * registration is parked until the service exists, which is the difference between registering and
+   * hoping. This is the host-side form of the timing dependency `src/client/index.js` documents for
+   * `settingsScope`, where reading the service optimistically found nothing and fell back silently.
+   *
+   * NOT a top-level `inject: ['connection']` on the row, and the asymmetry with the client fix is the
+   * point: that plugin's two jobs both need their services, so it declares both; this row's first job
+   * (the settings namespace) needs nothing, and parking the whole row would cost a composition with no
+   * connection service — Electron serves the client over `file://`, a headless profile has no browser
+   * at all — the namespace it can provider perfectly well. Phase 1 keeps running; only phase 2 waits.
+   */
+  let endpointMounted = false
   ctx.effect(() => {
-    const scan = async () => {
-      const { discoverProfiles, scanProfile } = await import('./profile-scan.js')
-      const dshHome = resolveDshHome(ctx)
-      const names = await discoverProfiles({ dshHome })
-      const name = names.includes('web') ? 'web' : names[0]
-      if (name === undefined) throw new Error(`no dsh profile under ${join(dshHome, 'profiles')}`)
-      return scanProfile({ profileDir: join(dshHome, 'profiles', name) })
-    }
-    return registerInstalledEndpoint(ctx, { scan })
-  }, 'ui-projects: installed-package endpoint')
+    /*
+     * If the service never arrives, say so once. Not through `ctx.logger`: a composition without a
+     * logger exporter leaves it undefined and the optional chaining would swallow the line, which is
+     * how this round's silence started. `console.error` reaches stderr in the host process, and a
+     * wait that never ends must not be invisible.
+     */
+    const notice = setTimeout(() => {
+      if (endpointMounted) return
+      console.error(
+        '[dsh-ui-projects] the connection service has not appeared, so the installed-package endpoint is not mounted; Settings › UI plugins will report that it cannot read the listing',
+      )
+    }, 5000)
+    return () => clearTimeout(notice)
+  }, 'ui-projects: connection wait notice')
+
+  ctx.inject(['connection'], (connectionCtx) => {
+    endpointMounted = true
+    // The registration is scoped to the CALLER's fiber, so it is withdrawn when this row unloads; the
+    // returned disposer is handed back as well, because belt and braces costs nothing here.
+    return registerInstalledEndpoint(connectionCtx, { scan })
+  })
 
   // `settings` is an OPTIONAL dependency, reached through `ctx.inject` rather
   // than declared in `inject` on the plugin object. Declaring it would hold this

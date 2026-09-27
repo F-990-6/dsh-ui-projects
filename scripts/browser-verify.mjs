@@ -2531,6 +2531,211 @@ try {
    * `data-ui-skin-column`, stamped by the client runtime. The colours, the transparent frame and
    * the ambient gradient are.
    */
+  /*
+   * WHERE THIS GROUP MUST RUN: after every test that uses the settings panel, and BEFORE these two —
+   *
+   *   `the first frame is already the skin, with the client bundle blocked` deliberately blocks the
+   *   client bundle, and the page it leaves behind has no application and therefore no buttons;
+   *
+   *   `the console collector observes page console errors at all` says in its own comment that it must
+   *   be last, because a later assertion would read a collector that is no longer clean.
+   *
+   * This group was inserted after both and failed with `"buttons":[]` — nothing wrong with what it
+   * asserted, only with when. Move it again only to a place that respects the same two boundaries.
+   */
+  // ── Settings › UI plugins ───────────────────────────────────────────────────
+
+  /**
+   * The page-error count when this group started. Module scope on purpose: the assertion that reads it
+   * lives in the group's LAST test, and the `const` this used to be was scoped to the first one — so the
+   * check threw `errorsAtGroupStart is not defined` instead of comparing two numbers.
+   */
+  let errorsAtGroupStart = 0
+
+  await test('the plugins column opens, fetches the listing, and settles', async () => {
+    // `ensurePanel` is the suite's idempotent opener. The raw trigger expression fails when the
+    // panel is ALREADY open — which it is, because the tests before this group leave it that way — and
+    // that single failure is what made the next three assertions look for a nav item inside no panel.
+    await ensurePanel(page)
+
+    // The console baseline: the run-wide collector check is written as the last word on the collector,
+    // so anything this group throws would otherwise be invisible. Assignment, not declaration — the
+    // comparison happens in the group's last test.
+    errorsAtGroupStart = pageErrors.length
+
+    // The nav item is the only handle the shell offers — it renders our label() and nothing else —
+    // so the CLICK matches copy, and every assertion after it reads the data-* hooks our own
+    // renderer writes, which a copy edit in either language cannot break.
+    const clicked = await evaluate(session, `(() => {
+      const items = Array.from(document.querySelectorAll('button,[role="button"],[role="tab"],a'))
+      const wanted = items.find((el) => /UI 插件|UI plugins/.test((el.textContent || '').trim()))
+      if (!wanted) return { ok: false, seen: items.slice(0, 12).map((el) => (el.textContent || '').trim().slice(0, 16)) }
+      wanted.click()
+      return { ok: true }
+    })()`)
+    truthy(clicked?.ok === true, `the UI plugins nav item exists (saw ${JSON.stringify(clicked?.seen ?? [])})`)
+
+    /*
+     * `waitFor` THROWS on timeout and returns nothing on success — it is not a boolean. Read as one
+     * (`truthy(rendered === true, …)`, which this test did until now), the assertion can never pass, and
+     * that is what made two runs report `expected truthy, got false` while the column was there all along.
+     * Caught, so a real timeout is reported AFTER the samples rather than instead of them.
+     */
+    let mounted = true
+    try {
+      await waitFor(session, `document.querySelector('[data-uip-plugins]') !== null`, 'the plugins column renders')
+    } catch {
+      mounted = false
+    }
+    /*
+     * THE SEQUENCE IS THE DIAGNOSTIC. A column that never leaves `loading` beside an endpoint that answers
+     * in milliseconds is the difference between "the host is slow" and "the render never learned" — and
+     * "expected ready, got loading" says neither. Six samples, a refresh, four more, and two timed probes,
+     * all printed whether or not the assertion passes.
+     */
+    const SAMPLER = '(async () => { const seen = []; for (let i = 0; i < 6; i += 1) {' +
+      " seen.push(document.querySelector('[data-uip-plugins]')?.getAttribute('data-uip-plugins') ?? null);" +
+      ' await new Promise((done) => setTimeout(done, 500)) }' +
+      " document.querySelector('[data-uip-plugins-action=\"refresh\"]')?.click();" +
+      ' for (let i = 0; i < 4; i += 1) { await new Promise((done) => setTimeout(done, 500));' +
+      " seen.push(document.querySelector('[data-uip-plugins]')?.getAttribute('data-uip-plugins') ?? null) }" +
+      ' return seen })()'
+    const samples = await evaluate(session, SAMPLER)
+    process.stdout.write('         note  plugin-column states, 500ms apart: ' + JSON.stringify(samples) + '\n')
+
+    const PROBE = '(async () => { const started = performance.now(); try {' +
+      " const response = await fetch('/api/ui-projects/installed.json', { credentials: 'same-origin' });" +
+      ' return { status: response.status, ms: Math.round(performance.now() - started) }' +
+      ' } catch (error) { return { status: 0, ms: Math.round(performance.now() - started), error: String(error) } } })()'
+    const immediate = await evaluate(session, PROBE)
+    await sleep(3000)
+    const delayed = await evaluate(session, PROBE)
+    process.stdout.write('         note  endpoint probe: immediate ' + JSON.stringify(immediate) + ', after 3s ' + JSON.stringify(delayed) + '\n')
+
+    /*
+     * The assertions come LAST, and both carry the sequence. Written the other way round, a column that
+     * never appears fails the mount assertion first and the samples above are never collected — which is
+     * exactly the run that needed them.
+     */
+    truthy(mounted === true, 'the column mounts — states: ' + JSON.stringify(samples))
+
+    const settledState = await evaluate(session, "document.querySelector('[data-uip-plugins]')?.getAttribute('data-uip-plugins') ?? null")
+    truthy(
+      settledState === 'ready' || settledState === 'failed',
+      'the column settles instead of resting on the reading state: ' + String(settledState) + ' after ' + JSON.stringify(samples),
+    )
+  })
+
+  await test('the page can fetch the endpoint the host mounted', async () => {
+    const probe = await evaluate(
+      session,
+      `fetch('/api/ui-projects/installed.json', { credentials: 'same-origin' })
+        .then(async (response) => ({ status: response.status, body: await response.json() }))
+        .catch((error) => ({ status: 0, error: String(error) }))`,
+    )
+    equal(probe?.status, 200, `the endpoint answers this page (${JSON.stringify(probe?.error ?? '')})`)
+    equal(probe?.body?.schemaVersion, 1, 'with the payload version this client understands')
+    equal(typeof probe?.body?.scan?.profileName, 'string', 'and the profile it describes, by name')
+  })
+
+  await test('the listing renders a row per package, and marks the framework unremovable', async () => {
+    const frameworkRow = await evaluate(
+      session,
+      `(() => {
+        const row = document.querySelector('[data-uip-plugin="dsh-ui-projects"]')
+        if (row === null) return null
+        return { text: row.textContent.trim().slice(0, 80), command: row.querySelector('[data-uip-command]') !== null }
+      })()`,
+    )
+    truthy(frameworkRow !== null, 'the framework itself is listed')
+    contains(frameworkRow?.text ?? '', '@', 'the row names the package and its version')
+    equal(frameworkRow?.command, false, 'and carries no command that would remove the thing rendering the list')
+
+    const rows = await evaluate(session, `document.querySelectorAll('[data-uip-plugin]').length`)
+    truthy(rows >= 1, `at least one package row rendered (${rows})`)
+
+    const commands = await evaluate(
+      session,
+      `Array.from(document.querySelectorAll('[data-uip-command] pre')).map((el) => el.textContent.trim())`,
+    )
+    const removeCommand = (commands ?? []).find((line) => /^dsh plugin /.test(line))
+    truthy(removeCommand !== undefined, `a row offers the exact command (${JSON.stringify(commands ?? [])})`)
+    contains(String(removeCommand), 'dsh plugin --profile', 'and it is the loader invocation, not a paraphrase')
+
+    const restart = await evaluate(
+      session,
+      `({
+        hint: document.querySelector('[data-uip-restart="hint"]') !== null,
+        block: document.querySelector('[data-uip-restart="block"]') !== null,
+      })`,
+    )
+    equal(restart?.hint, true, 'the restart instruction is present, matched by hook rather than by copy')
+    equal(restart?.block, true, 'and so is the block a person copies')
+  })
+
+  await test('a listing that cannot be read degrades to a message, never to an empty list', async () => {
+    /*
+     * The endpoint works, so the failure is simulated IN THE PAGE: `fetch` is failed for this one
+     * path, the column is asked to read again, and the state must become `failed` — which is the
+     * difference between "we could not read it" and "there is nothing installed". The patch is
+     * reverted in the same expression, so nothing survives the assertion.
+     */
+    const result = await evaluate(
+      session,
+      `(async () => {
+        const real = window.fetch
+        try {
+          window.fetch = (input, init) => {
+            const url = typeof input === 'string' ? input : input?.url ?? ''
+            if (url.includes('/api/ui-projects/installed.json')) return Promise.reject(new Error('simulated network failure'))
+            return real(input, init)
+          }
+          const refresh = document.querySelector('[data-uip-plugins-action="refresh"]')
+          if (refresh === null) return { error: 'no refresh control' }
+          refresh.click()
+          for (let i = 0; i < 60; i += 1) {
+            await new Promise((done) => setTimeout(done, 50))
+            if (document.querySelector('[data-uip-plugins="failed"]') !== null) break
+          }
+          const root = document.querySelector('[data-uip-plugins]')
+          return {
+            state: root?.getAttribute('data-uip-plugins') ?? null,
+            message: document.querySelector('[data-uip-plugins-error]')?.textContent?.trim().slice(0, 120) ?? null,
+            rows: document.querySelectorAll('[data-uip-plugin]').length,
+          }
+        } finally {
+          window.fetch = real
+        }
+      })()`,
+    )
+    equal(result?.state, 'failed', `the column reports that it could not read the listing (${JSON.stringify(result?.error ?? '')})`)
+    truthy(typeof result?.message === 'string' && result.message.length > 0, 'with a reason a person can act on')
+    equal(result?.rows, 0, 'and with no package rows: an unreadable listing must not look like an empty one')
+
+    const recovered = await evaluate(
+      session,
+      `(async () => {
+        document.querySelector('[data-uip-plugins-action="refresh"]')?.click()
+        for (let i = 0; i < 60; i += 1) {
+          await new Promise((done) => setTimeout(done, 50))
+          if (document.querySelector('[data-uip-plugins="ready"]') !== null) break
+        }
+        return document.querySelector('[data-uip-plugins]')?.getAttribute('data-uip-plugins') ?? null
+      })()`,
+    )
+    equal(recovered, 'ready', 'and the refresh control recovers the column once the host answers again')
+
+    /*
+     * The group is done, so its console must be as clean as it was when it started. The run-wide collector
+     * check now runs BEFORE this group, which is exactly why this local one exists.
+     */
+    equal(
+      pageErrors.length,
+      errorsAtGroupStart,
+      'the plugins group added no page errors (' + JSON.stringify(pageErrors.slice(errorsAtGroupStart)) + ')',
+    )
+  })
+
   await test('the first frame is already the skin, with the client bundle blocked', async () => {
     await session.send('Network.enable')
     await session.send('Network.setBlockedURLs', { urls: ['*dsh-ui-projects/client.js*'] })
@@ -2609,6 +2814,7 @@ try {
       `a page console.error reaches the collector (${pageErrors.length} message(s) collected)`,
     )
   })
+
 } catch (err) {
   /*
    * `--verify-refusal` ends by design; anything else ends the way it should — loudly, with the exit

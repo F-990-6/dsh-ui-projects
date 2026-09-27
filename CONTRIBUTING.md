@@ -59,3 +59,32 @@ npm run check:installed  # read-only against a real profile
 results — a change that did not fix the problem is worth more than one that was never tried, because
 it eliminates a hypothesis. Keep that up: state the command, state the count, and say plainly when
 something was not verified.
+
+## Tool discipline: never build a multi-line anchor inside a template literal
+
+**A patch script must not hold a multi-line code anchor inside a template literal.** Escaping,
+line-chomping and quoting fight each other there, and the failures are silent or bizarre: in one
+round this project produced an anchor that matched two places, a regular expression that arrived at
+the file with its backslashes eaten, a script that did not parse at all, and a replacement line that
+reached the file as the literal text `.join(' + NL + ')`. Four attempts, four different symptoms,
+one cause.
+
+Two shapes work, and both have been used since:
+
+```js
+// 1. line-level edits, matched on a prefix or an exact trimmed line — no pattern contains a newline
+//    or a backslash, and every operation asserts how many lines it expects to touch
+const hits = lines.map((line, i) => (line.trim() === target ? i : -1)).filter((i) => i >= 0)
+if (hits.length !== 1) throw new Error(`found ${hits.length}`)
+
+// 2. the read + edit tools, whose anchors are plain strings and never pass through JS parsing
+```
+
+Two further properties are worth copying, because they are what kept these failures cheap: a patch
+script **writes only after every anchor has matched**, so a mistake changes nothing; and it **prints
+what each operation touched**, so the report carries the same evidence the tool used.
+
+And one companion rule, learned the same way: **never do line surgery** (splicing a block by computed
+indices) in a file where the same line occurs more than once. Three attempts at moving one block put
+it in the `finally` block, then after the `catch`, and finally destroyed the file — all because
+`} catch (err) {` appears several times in it. Restore from git and use an anchored edit.

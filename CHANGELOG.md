@@ -97,6 +97,63 @@ Nothing in this section writes. The commands are shown so a person can run them,
 is written by `install.ps1` and by nothing else in this project — a button that spawned
 `dsh plugin` would be a write nobody reviewed, triggered by a click.
 
+### The browser run, and what its first failure proved
+
+The refusal gate passed (11 / 0), and the first full `--no-write` run came back **152 assertions with
+4 failing** — all four in this round's new column, because **the endpoint was not there**: the running
+dsh process had been started before this round, so it held the old composition and served the old
+client code while the profile's `link:` dependency pointed at the working tree the entire time. That
+is precisely the state the command block's own restart note describes — a profile can be perfectly
+correct while the process serving it is not — and it arrived as a live demonstration of that note's
+necessity, on the first attempt to use the thing it warns about.
+
+**A restart did not clear it**, so the cause is narrower than a stale process, and this entry does not
+guess at it: the page (authenticated) still receives the SPA fallback's `not found` for
+`/api/ui-projects/installed.json`, so the endpoint is not registered on the running host. Two
+candidates remain, and one line in that host's console separates them — either
+`installed-package listing mounted at /api/ui-projects/installed.json` (registered: the fault is on
+the client side) or `no connection service in this composition` (the row found no `connection`
+service, in which case the fix is to declare the dependency so Cordis waits for it rather than
+reading it optimistically inside an effect).
+
+Two probes were run, and both are recorded as what they are, because either could be mistaken for
+evidence:
+
+- `GET /api/ui-projects/installed.json` unauthenticated answers **401** — and so does a path that
+  certainly does not exist. The Host/Origin fence runs **before** routing, so an unauthenticated
+  status cannot testify about whether a route exists; only the page's own authenticated request can.
+- `GET /plugins/dsh-ui-projects/client.js` answers **404**, which is a false alarm: the shell fetches
+  that route in its revisioned combo form. The skin's own assertions passed in the same run, and they
+  cannot pass without the bundle — so the 404 says nothing about the bundle at all.
+
+### The browser round found a namespace bug, and the crash was the lucky part
+
+The listing column registered, the endpoint answered — and the column rendered a **blank page**. The
+console said `Cannot read properties of undefined (reading 'bundle')`, and the diagnosis went the wrong
+way at first for an instructive reason: `bundle` appears **nowhere** in this repository, because it is
+not a property name. It is the VALUE of `dependency.kind`, read through a dynamic access —
+`t.kinds[dependency.kind]` — on a `t.kinds` that was `undefined`. **Grepping for a literal cannot find a
+dynamic property read.** The line the browser pointed at was the one that threw, and the property name
+in the error came from the payload.
+
+The real defect was wider than the crash. Sixteen keys were read one level too high: the dictionary
+nests this page under `plugins`, exactly as it nests `storage`, `perf` and `tests`, which `panel.js`
+reads as `t.storage[...]` and `t.perf[...]`. One of the sixteen was the dynamic read, so it threw; the
+other fifteen rendered as **nothing at all**, silently. A green suite beside a blank column would have
+been worse than the crash, and the fix is shaped around that.
+
+**Why the suite did not catch it.** The tests built their own `t` fixture by hand — a dictionary that
+does not exist — and handed it to a component whose copy lives under `plugins`. Both halves agreed with
+each other and neither agreed with the shipped dictionary. Three assertions now make that impossible:
+both REAL dictionaries are rendered (with a parity check that every key the component reads exists in
+each, and a note listing keys nothing reads yet), a dictionary older than a project kind must show the
+raw kind rather than a blank badge, and a source guard fails the suite if `t.<key>` is ever read
+directly again — reading the code, not the comment that explains the bug.
+
+**And one more thing the round proved by failing.** The endpoint was missing on the first two browser
+attempts because the running host predated the code — the exact state the command block's own restart
+note describes. A profile can be perfectly correct while the process serving it is not, and the note was
+written before it was needed.
 ### A limitation, stated rather than hidden
 
 A loader row cannot see, through any service this package can reach, the profile directory it was

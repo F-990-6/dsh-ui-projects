@@ -80,7 +80,30 @@ function makeContext(register, section) {
       logger: { info: (line) => calls.push(`info:${line}`), warn: (line) => calls.push(`warn:${line}`) },
       inject: (deps, callback) => {
         calls.push(`inject:${JSON.stringify(deps)}`)
-        callback({ settings: { register } })
+        /*
+         * A CONTEXT, not a bag of services. The real `ctx.inject` hands the callback a context scoped
+         * to the dependency, and the row reaches `connection` through it — so the stub has to answer
+         * `get` the way a context does, or the row dies with `ctx.get is not a function` and the
+         * failure says nothing about the dependency.
+         */
+        const connection = {
+          fetch: {
+            register: (route) => {
+              calls.push(`endpoint:${route.path}:${(route.methods ?? []).join(',')}`)
+              return () => {}
+            },
+          },
+        }
+        callback({
+          get: (service) => {
+            if (service === 'connection') return connection
+            if (service === 'settings' && section !== undefined) {
+              return { get: (namespace) => (namespace === EXPECTED_NAMESPACE ? section : undefined) }
+            }
+            return undefined
+          },
+          settings: { register },
+        })
       },
       on: (event, handler) => {
         calls.push(`on:${event}`)
@@ -125,6 +148,17 @@ try {
   const bad = calls.filter((line) => line.startsWith('inject-threw'))
   if (bad.length > 0) fail(`apply reported: ${bad.join(', ')}`)
   else ok(`apply ran; ${calls.length} call(s)`)
+
+  /*
+   * The row does two things and they now wait differently: the settings namespace runs at apply, the
+   * endpoint waits for the connection service. Both are asserted, because "it mounted" and "it did its
+   * job" are different claims — and the endpoint one is what the browser round depends on.
+   */
+  const endpoint = calls.find((line) => line.startsWith('endpoint:'))
+  if (endpoint === undefined) fail('the installed-package endpoint was not registered when the connection service appeared')
+  else ok(`the endpoint is registered: ${endpoint.slice('endpoint:'.length)}`)
+  if (calls.some((line) => line.includes('"connection"'))) ok('and the row waited for the connection service by name')
+  else fail('the row did not declare a dependency on the connection service')
 } catch (err) {
   fail(`apply threw: ${err instanceof Error ? err.message : String(err)}`)
 }
