@@ -76,14 +76,18 @@ function UiProjectsSection(props) {
    * property the two columns' no-shared-state test protects — a listing that cannot be read must not take
    * this page down — and here it is a decision in the code rather than a hope in a comment.
    *
-   * FOUR STATES, and only three of them are claims about the profile:
-   *   ready + versions undefined        -> the host has no such code yet: say that, do not say "none"
-   *   ready + versions[pkg] === []      -> it looked, and there are none: a fact about the profile
-   *   ready + versions[pkg] has entries -> compare the newest with what is installed, without guessing
-   *                                        which of the two is newer
-   *   anything else (no store, idle, loading, failed) -> SAY NOTHING, not even "no snapshots": nothing has
-   *                                        been read yet, and a claim the page cannot support is worse
-   *                                        than a sentence that is absent.
+   * FOUR STATES, in this order, and the third one is the correction:
+   *   1. no store, or status !== 'ready'  -> SAY NOTHING. Nothing has been read, so "no snapshots" would be
+   *                                          a claim the page cannot support.
+   *   2. ready + versions === undefined   -> the host has no such code yet (a restart that has not
+   *                                          happened): say THAT, do not say "none".
+   *   3. ready + versions[pkg] missing OR empty -> snapshotNone. "Missing" matters as much as "empty":
+   *                                          with `versions: {}` the lookup is undefined, and the first
+   *                                          version of this code treated that as unreadable and stayed
+   *                                          silent — which is exactly what the person saw, an empty block
+   *                                          with no hint that -Snapshot is the answer.
+   *   4. ready + entries                  -> compare the newest with what is installed, without guessing
+   *                                          which of the two is newer.
    */
   const installedState = typeof props.installed?.state === 'function' ? props.installed.state() : null
   const maintenanceFor = (project) => {
@@ -96,11 +100,17 @@ function UiProjectsSection(props) {
         version = { kind: 'host-stale' }
       }
       else {
-        const list = Array.isArray(scan.versions[packageName]) ? scan.versions[packageName] : undefined
-        if (list !== undefined && list.length === 0) {
+        const raw = scan.versions[packageName]
+        const list = Array.isArray(raw) ? raw : []
+        if (list.length === 0) {
+          /*
+           * Covers both "the package has no entry in the map" and "its entry is empty": once the store is
+           * READY, either one means this profile has recorded no snapshot of it, and that is a fact worth
+           * telling the reader — it is the sentence that explains what -Snapshot is for.
+           */
           version = { kind: 'none' }
         }
-        else if (list !== undefined) {
+        else {
           const newest = list[0]
           const installed = (scan.dependencies ?? []).find((entry) => entry.name === packageName)
           const current = String(installed?.version ?? 'unknown')

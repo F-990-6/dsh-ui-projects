@@ -211,7 +211,16 @@ function apply(ctx) {
   // render time, never at load time.
   const render = () => {
     const { UiProjectsSection } = require('./panel.js')
-    return UiProjectsSection({ store, t: strings(detectLocale(ctx)) })
+    /*
+     * `installed` is passed here because nothing else can: the shell calls a registered section renderer
+     * with NO arguments, so a section can reach only what its own closure holds. Without this line the
+     * version sentence on the cards never rendered — four states existed, three of them claims about the
+     * profile, and production only ever reached the fourth. The unit tests passed because they call the
+     * section with props directly; the wiring between the two was never asserted, and now is.
+     *
+     * `installedStore` is declared below and read only when this runs, which is after apply has finished.
+     */
+    return UiProjectsSection({ store, t: strings(detectLocale(ctx)), installed: installedStore })
   }
   LOADED_PLUGIN.section = render
 

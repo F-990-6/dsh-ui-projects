@@ -100,6 +100,38 @@ failed, loading, idle or absent store renders every card and every command, with
    page and the ones before need the projects page — such a rule would have to be re-derived per test
    anyway. Stating the contract where it is kept is the version a reader can verify by reading.
 
+### The maintenance block shipped broken twice, and both causes are recorded
+
+**The version sentence never rendered.** The section got the installed store only if `index.js` passed it,
+and the shell calls a registered renderer with **no arguments** — a section can reach only what its own
+closure holds. It now receives `installed: installedStore` there, and a browser assertion guards that
+wiring, because the unit tests could not: they call the section directly and hand it a store of their own.
+
+**Then it still rendered nothing, and the cause was two-layered.** `readVersions` was handed a list of
+names from `uiProjectPackages`, which holds only packages declaring `dsh.uiProject`. The framework declares
+none (it IS the framework), so it was never asked about and `versions` came back `{}` while its snapshots
+sat on disk. **The versions directory is the list**: it now scans `.dsh-ui-projects-versions/` itself.
+
+**And the fourth state was wrong.** With `versions: {}` the lookup `versions[pkg]` is `undefined`, and the
+code treated "missing" as unreadable and stayed **silent** — leaving a person an empty block and no hint
+that `-Snapshot` is the answer. Once the store is READY, "no entry" and "empty entry" both mean this profile
+has recorded no snapshot of that package, and both now say so. Only "nothing has been read yet"
+(`idle`/`loading`/`failed`/no store) stays silent: the one case where no claim can be supported.
+
+**Two diagnostic lessons:**
+
+- **Optional chaining removes the proof, not the bug.** `props.installed?.state()` short-circuits on
+  `undefined`, so the section rendered its silent state without throwing — and "the panel still renders" was
+  read as evidence the prop had arrived. It was evidence of nothing. When absence is indistinguishable from
+  emptiness, print the value.
+- **A host-side `console.log` appears in the `dsh web` terminal, not the browser console.** The endpoint runs
+  in the dsh process, so the diagnostics appeared in a window nobody was watching.
+
+**And one about verifying a build:** `lib/index.js` is only the entry; the host half is copied **file by
+file** into `lib/*.js`, so a constant added to `profile-scan.js` lives in `lib/profile-scan.js` and nowhere
+else. Searching the entry for it and concluding "the build did not run" was wrong twice over — **look in the
+file the source becomes.**
+
 ### A number that needed reconciling
 
 The three new 7d-2a tests reported 10, 14 and 3 assertions while the suite grew by 24, so the arithmetic

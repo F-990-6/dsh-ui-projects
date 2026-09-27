@@ -27,6 +27,9 @@ const VERSIONS_DIR_NAME = '.dsh-ui-projects-versions'
 
 /** How many snapshots are worth sending: the panel offers the newest and lists the rest on request. */
 const VERSIONS_MAX = 5
+
+/** How many package directories are worth opening: the store never holds many, and a scan is not free. */
+const VERSIONS_MAX_PACKAGES = 20
 import { join, resolve } from 'node:path'
 
 import {
@@ -289,7 +292,7 @@ export async function scanProfile({ profileDir }) {
   // Version snapshots, for the packages a row can be rendered for. Read here rather than in the
   // endpoint so that the wire projection stays a projection: what crosses the channel is decided in
   // one place (`projectScan`), and what is read is decided in this one.
-  scan.versions = await readVersions(profileDir, scan.uiProjectPackages.map((entry) => entry.name))
+  scan.versions = await readVersions(profileDir)
 
   // Every package's problems were appended as it was scanned. Re-appending the unresolved ones here
   // would double every one of those warnings in the listing, which is exactly the kind of noise that
@@ -308,22 +311,45 @@ export async function scanProfile({ profileDir }) {
  * sends no `versions` object at all, and the client renders a different sentence for that than for "no
  * snapshots yet" — one is a restart that has not happened, the other is a fact about the profile.
  */
-async function readVersions(profileDir, names) {
+async function readVersions(profileDir) {
+  /*
+   * THE DIRECTORY ITSELF IS THE LIST.
+   *
+   * It used to be handed a list of package names, and that list came from `uiProjectPackages` — which holds
+   * only packages declaring `dsh.uiProject`. The framework declares none (it IS the framework), so it was
+   * never asked about and `versions` came back `{}` while its snapshots sat on disk the whole time. Which
+   * packages have snapshots is a fact about this directory, not something a caller should have to know.
+   */
   /** @type {Record<string, any[]>} */
   const out = {}
-  for (const name of names) {
+  const root = join(profileDir, VERSIONS_DIR_NAME)
+  /** @type {any[]} */
+  let entries = []
+  try {
+    entries = await readdir(root, { withFileTypes: true })
+  } catch {
+    /* no versions directory at all: every package has none, which a caller reads as an empty object */
+    return out
+  }
+  let scanned = 0
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    if (scanned >= VERSIONS_MAX_PACKAGES) break
+    scanned += 1
+    const name = entry.name
     /** @type {any[]} */
     const list = []
     const packageDir = join(profileDir, VERSIONS_DIR_NAME, name)
     try {
-      const entries = await readdir(packageDir, { withFileTypes: true })
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue
+      /* Named apart from the outer list on purpose: shadowing it would read as a bug to the next person. */
+      const snapshotDirs = await readdir(packageDir, { withFileTypes: true })
+      for (const snapshot of snapshotDirs) {
+        if (!snapshot.isDirectory()) continue
         try {
-          const manifest = JSON.parse(await readFile(join(packageDir, entry.name, 'manifest.json'), 'utf8'))
+          const manifest = JSON.parse(await readFile(join(packageDir, snapshot.name, 'manifest.json'), 'utf8'))
           const payload = manifest?.payload ?? {}
           list.push({
-            name: entry.name,
+            name: snapshot.name,
             version: String(manifest.version ?? 'unknown'),
             createdAt: String(manifest.createdAt ?? ''),
             files: Number(payload.files ?? 0),

@@ -4998,7 +4998,15 @@ await test('the rollback listing half is read-only', async () => {
 await test('the plugins column prints the maintenance commands, addressed at the package', async () => {
   const readyScan = {
     profileName: 'web',
-    dependencies: [{ name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] }],
+    /*
+     * BOTH KINDS OF ROW, because they are not rendered by the same code: the framework's row skips the
+     * REMOVAL block — it is the thing rendering the list — and it must not skip this one. The first
+     * version of the maintenance block lived inside that removal block, and the framework row lost it.
+     */
+    dependencies: [
+      { name: 'dsh-ui-projects', version: '0.1.0', kind: 'ui-project', bundled: true, problems: [] },
+      { name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] },
+    ],
     orphanedBindings: [],
   }
   for (const locale of ['en', 'zh']) {
@@ -5010,6 +5018,19 @@ await test('the plugins column prints the maintenance commands, addressed at the
       React: react,
     })
     contains(markup, 'data-uip-maintenance="dsh-ui-project-x"', 'the row carries the maintenance block (' + locale + ')')
+    /*
+     * And the FRAMEWORK's row carries it too. This is the assertion whose absence let a real bug ship: the
+     * block was inside the removal block, which the framework row skips by design, so the one package whose
+     * ordinary case is updating-and-rolling-back had no maintenance commands at all.
+     */
+    contains(markup, 'data-uip-maintenance="dsh-ui-projects"', 'and so does the framework row (' + locale + ')')
+    contains(
+      markup,
+      copy.maintenanceTitle('dsh-ui-projects'),
+      'whose heading names the framework package (' + locale + ')',
+    )
+    const rows = markup.split('data-uip-maintenance="').length - 1
+    equal(rows, 2, 'one maintenance block per row, with no row skipped (' + locale + ')')
     contains(markup, copy.maintenanceTitle('dsh-ui-project-x'), 'whose heading names the package (' + locale + ')')
     for (const verb of ['snapshot', 'update', 'rollback']) {
       contains(

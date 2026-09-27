@@ -139,6 +139,15 @@ export function UiPluginsSection(props) {
       ...(dependency.problems ?? []).map((problem, index) =>
         React_.createElement('p', { className: 'uip-error', key: 'problem-' + index }, problem.code + ': ' + problem.message),
       ),
+      /*
+       * THE MAINTENANCE BLOCK IS FOR EVERY ROW, the framework's included.
+       *
+       * 7d-1 put it inside `CommandBlock`, which this row skips for the framework — so the package that
+       * most needs `-Snapshot`/`-Update`/`-Rollback` (updating and rolling back the framework is the
+       * ordinary case) was the one row without them. What the framework must not carry is a REMOVAL
+       * command, because it is the thing rendering this list; maintenance is not removal.
+       */
+      MaintenanceBlock({ copy, React: React_, name: dependency.name }),
       dependency.name === 'dsh-ui-projects'
         ? null
         : CommandBlock({ copy, React: React_, name: dependency.name, profileName: scan.profileName }),
@@ -156,6 +165,33 @@ export function UiPluginsSection(props) {
     rows.length === 0
       ? React_.createElement('p', { className: 'uip-hint', key: 'empty' }, copy.empty)
       : React_.createElement('ul', { className: 'uip-list', key: 'list' }, rows),
+  )
+}
+
+/**
+ * The maintenance commands for one package, printed for EVERY row.
+ *
+ * Its own function, not a tail on `CommandBlock`, for a reason worth keeping: `CommandBlock` shows the
+ * REMOVAL command, and the framework's row skips it because it is the thing rendering the list. Folded in
+ * there, the framework row lost its maintenance commands too — and updating or rolling back the framework
+ * is the ordinary case, not an exotic one.
+ *
+ * Printed, never run: `$DSH_HOME` is written by install.ps1 and by nothing else in this project.
+ */
+function MaintenanceBlock({ copy, React, name }) {
+  return React.createElement(
+    'div',
+    { className: 'uip-maintenance', 'data-uip-maintenance': name },
+    React.createElement('p', { className: 'uip-hint', 'data-uip-maintenance-title': name }, copy.maintenanceTitle(name)),
+    React.createElement('p', { className: 'uip-hint' }, copy.maintenanceHint),
+    React.createElement('p', { className: 'uip-hint' }, copy.cmdSnapshotWhy),
+    React.createElement('pre', { 'data-uip-command-maintenance': 'snapshot' }, 'install.ps1 -Snapshot'),
+    React.createElement('p', { className: 'uip-hint' }, copy.cmdUpdateWhy),
+    React.createElement('pre', { 'data-uip-command-maintenance': 'update' }, 'install.ps1 -Update'),
+    React.createElement('p', { className: 'uip-hint' }, copy.cmdRollbackWhy),
+    React.createElement('pre', { 'data-uip-command-maintenance': 'rollback' }, 'install.ps1 -Rollback -To <name>'),
+    React.createElement('p', { className: 'uip-hint' }, copy.cmdRollbackList),
+    React.createElement('p', { className: 'uip-hint' }, copy.restartReminder),
   )
 }
 
@@ -217,33 +253,8 @@ function CommandBlock({ copy, React, name, profileName }) {
       ),
     ),
     /*
-     * THE MAINTENANCE COMMANDS, and the title names what they maintain.
-     *
-     * Commands address PACKAGES, not projects or pages: `install.ps1 -Update` maintains the package that
-     * owns this row. Today the framework and the built-in skin ship in one package, so a person who
-     * recognises "Liquid Glass" and not "dsh-ui-projects" would read the command as maintaining the skin
-     * — which is why the heading says the package name out loud rather than "maintenance".
-     *
-     * Printed, never run, like every other command in this file: `$DSH_HOME` is written by install.ps1
-     * and by nothing else in this project.
+     * The maintenance block used to live here, and moved out when the framework's row turned out to have
+     * lost it: this function is only rendered for rows that may be REMOVED, and maintenance is not removal.
      */
-    React.createElement(
-      'div',
-      { className: 'uip-maintenance', 'data-uip-maintenance': name, key: 'maintenance' },
-      React.createElement('p', { className: 'uip-hint', 'data-uip-maintenance-title': name }, copy.maintenanceTitle(name)),
-      React.createElement('p', { className: 'uip-hint' }, copy.maintenanceHint),
-      React.createElement('p', { className: 'uip-hint' }, copy.cmdSnapshotWhy),
-      React.createElement('pre', { 'data-uip-command-maintenance': 'snapshot' }, 'install.ps1 -Snapshot'),
-      React.createElement('p', { className: 'uip-hint' }, copy.cmdUpdateWhy),
-      React.createElement('pre', { 'data-uip-command-maintenance': 'update' }, 'install.ps1 -Update'),
-      React.createElement('p', { className: 'uip-hint' }, copy.cmdRollbackWhy),
-      React.createElement(
-        'pre',
-        { 'data-uip-command-maintenance': 'rollback' },
-        'install.ps1 -Rollback -To <name>',
-      ),
-      React.createElement('p', { className: 'uip-hint' }, copy.cmdRollbackList),
-      React.createElement('p', { className: 'uip-hint' }, copy.restartReminder),
-    ),
   )
 }

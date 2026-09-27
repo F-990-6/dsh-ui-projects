@@ -2782,6 +2782,16 @@ try {
       0,
       'and every one of them offers all three commands: snapshot, update and rollback',
     )
+    /*
+     * EVERY ROW, the framework's included — the assertion whose absence let a real bug ship. The
+     * maintenance block was rendered inside the removal block, which the framework row skips on purpose,
+     * so the package whose ordinary case is updating-and-rolling-back had no commands at all.
+     */
+    const rowsWithoutMaintenance = await evaluate(
+      session,
+      `Array.from(document.querySelectorAll('[data-uip-plugin]')).filter((row) => row.querySelector('[data-uip-maintenance]') === null).length`,
+    )
+    equal(rowsWithoutMaintenance, 0, 'every package row carries a maintenance block, the framework row included')
   })
 
   /*
@@ -2839,19 +2849,48 @@ try {
     )
     equal(open, 0, 'and they start folded, so a card stays a card')
 
-    // Hand the panel back where the tests that follow expect it (see the contract above).
-    const backToPlugins = await evaluate(
-      session,
-      `(() => {
-        const items = Array.from(document.querySelectorAll('button,[role="button"],[role="tab"],a'))
-        const wanted = items.find((el) => /UI 插件|UI plugins/.test((el.textContent || '').trim()))
-        if (!wanted) return { ok: false }
-        wanted.click()
-        return { ok: true }
-      })()`,
-    )
-    truthy(backToPlugins.ok === true, 'and this test hands the panel back on the plugins page')
-    await sleep(300)
+    /*
+     * THE WIRING, which is what a unit test cannot see: the section receives the installed store from its
+     * own closure (`index.js`), because the shell calls a registered renderer with no arguments. When that
+     * line was missing, four states existed and production reached only the silent one — every unit test
+     * passed, because each of them passed the prop in by hand.
+     *
+     * Requires a host whose code carries the `versions` field (i.e. a dsh web restarted after 7d-1); with
+     * an older process the honest answer is a card that says so, which is a different failure to read.
+     */
+    /*
+     * THE CLEANUP RUNS EVEN WHEN AN ASSERTION ABOVE FAILS, and that is not tidiness: the first version of
+     * this test put the switch back at the end of the body, so when an assertion threw the panel stayed on
+     * the projects page and the NEXT test — the one guarding the unreadable-listing path — failed with
+     * `no refresh control`. One failure became two, and the second one lied about its cause.
+     *
+     * The contract, stated where it is kept: go where you need to go, hand the panel back on the PLUGINS
+     * page, and do it in a `finally` so a failure cannot skip it.
+     */
+    try {
+      const versionStates = await evaluate(
+        session,
+        `Array.from(document.querySelectorAll('[data-uip-maintenance-panel]')).map((node) =>
+          node.querySelector('[data-uip-version-state]')?.getAttribute('data-uip-version-state') ?? null
+        )`,
+      )
+      truthy(
+        Array.isArray(versionStates) && versionStates.some((state) => state !== null),
+        `at least one card states its version situation (it needs the section wired to the installed store AND that store already read): ${JSON.stringify(versionStates ?? null)}`,
+      )
+    } finally {
+      await evaluate(
+        session,
+        `(() => {
+          const items = Array.from(document.querySelectorAll('button,[role="button"],[role="tab"],a'))
+          const wanted = items.find((el) => /UI 插件|UI plugins/.test((el.textContent || '').trim()))
+          if (!wanted) return { ok: false }
+          wanted.click()
+          return { ok: true }
+        })()`,
+      )
+      await sleep(300)
+    }
   })
 
   await test('a listing that cannot be read degrades to a message, never to an empty list', async () => {
