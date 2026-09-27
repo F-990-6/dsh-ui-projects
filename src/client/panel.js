@@ -67,6 +67,56 @@ function UiProjectsSection(props) {
       })
   }
 
+  /*
+   * Snapshot information for the maintenance block, read SYNCHRONOUSLY.
+   *
+   * `props.installed` is the plugins column's store, passed in optionally. This panel never awaits it,
+   * never asks it for anything and never depends on it: when it is absent, or still loading, or failed,
+   * every card renders exactly as before and the version sentence is simply not there. That is the
+   * property the two columns' no-shared-state test protects — a listing that cannot be read must not take
+   * this page down — and here it is a decision in the code rather than a hope in a comment.
+   *
+   * FOUR STATES, and only three of them are claims about the profile:
+   *   ready + versions undefined        -> the host has no such code yet: say that, do not say "none"
+   *   ready + versions[pkg] === []      -> it looked, and there are none: a fact about the profile
+   *   ready + versions[pkg] has entries -> compare the newest with what is installed, without guessing
+   *                                        which of the two is newer
+   *   anything else (no store, idle, loading, failed) -> SAY NOTHING, not even "no snapshots": nothing has
+   *                                        been read yet, and a claim the page cannot support is worse
+   *                                        than a sentence that is absent.
+   */
+  const installedState = typeof props.installed?.state === 'function' ? props.installed.state() : null
+  const maintenanceFor = (project) => {
+    const packageName = project.package ?? 'dsh-ui-projects'
+    /** @type {{ kind: string, name?: string, version?: string, when?: string, current?: string }} */
+    let version = { kind: 'unavailable' }
+    const scan = installedState !== null && installedState.status === 'ready' ? installedState.scan : undefined
+    if (scan !== undefined && scan !== null) {
+      if (scan.versions === undefined) {
+        version = { kind: 'host-stale' }
+      }
+      else {
+        const list = Array.isArray(scan.versions[packageName]) ? scan.versions[packageName] : undefined
+        if (list !== undefined && list.length === 0) {
+          version = { kind: 'none' }
+        }
+        else if (list !== undefined) {
+          const newest = list[0]
+          const installed = (scan.dependencies ?? []).find((entry) => entry.name === packageName)
+          const current = String(installed?.version ?? 'unknown')
+          version = {
+            kind: String(newest.version) === current ? 'same' : 'different',
+            name: String(newest.name ?? ''),
+            version: String(newest.version ?? 'unknown'),
+            when: String(newest.createdAt ?? ''),
+            current,
+          }
+        }
+      }
+    }
+    return { packageName, version }
+  }
+
   const activeNames = snapshot.projects.filter((project) => project.enabled).map((project) => project.name)
   const skinProjects = snapshot.projects.filter((project) => project.type === 'skin')
   /*
@@ -171,6 +221,7 @@ function UiProjectsSection(props) {
               onReset: () => run(project.id, store.resetOne(project.id)),
               onConfirmChecks: (itemIds) => run(project.id, store.confirmChecks(project.id, itemIds)),
               onClearChecks: () => run(project.id, store.clearChecks(project.id)),
+              maintenance: maintenanceFor(project),
             }),
           ),
         ),
@@ -319,7 +370,7 @@ function Checklist(props) {
  * @returns {any}
  */
 function createCard(input) {
-  const { React: R, project, t, pending, activeNames, outOfOrder, conflictsHere, onToggle, onReset, onConfirmChecks, onClearChecks } = input
+  const { React: R, project, t, pending, activeNames, outOfOrder, conflictsHere, onToggle, onReset, onConfirmChecks, onClearChecks, maintenance } = input
   const name = project.name
 
   const badges = [
@@ -412,6 +463,56 @@ function createCard(input) {
   for (const control of project.controls ?? []) {
     body.push(createControl({ R, control, t, pending }))
   }
+  /*
+   * THE MAINTENANCE COMMANDS, folded away but not hidden.
+   *
+   * The summary carries a badge exactly when a recorded version differs from the installed one, so the
+   * one state worth acting on is visible without expanding anything — a collapsed block that hides the
+   * only thing that changed is a block that hides its own reason for existing.
+   *
+   * The version sentence appears ONLY when the page actually knows something (see `maintenanceFor`): with
+   * no store, a loading store, or a failed one, there is no `[data-uip-version-state]` element at all.
+   */
+  const versionKind = maintenance?.version?.kind ?? 'unavailable'
+  const versionLine =
+    versionKind === 'host-stale'
+      ? t.snapshotHostStale
+      : versionKind === 'none'
+        ? t.snapshotNone
+        : versionKind === 'same'
+          ? t.snapshotNewer(maintenance.version.name, maintenance.version.version, maintenance.version.when)
+          : versionKind === 'different'
+            ? t.snapshotDifferent(
+                maintenance.version.name,
+                maintenance.version.version,
+                maintenance.version.current,
+              )
+            : null
+  body.push(
+    R.createElement(
+      'details',
+      {
+        className: 'uip-tests',
+        key: 'maintenance',
+        'data-uip-maintenance-panel': project.id,
+      },
+      R.createElement(
+        'summary',
+        { className: 'uip-testsSummary' },
+        t.maintenanceTitle(maintenance?.packageName ?? 'dsh-ui-projects'),
+        versionKind === 'different'
+          ? R.createElement('span', { 'data-uip-maintenance-badge': 'different' }, ' · ' + t.maintenanceBadge)
+          : null,
+      ),
+      R.createElement('p', { className: 'uip-hint' }, t.maintenanceHint),
+      R.createElement('pre', null, t.maintenanceSnapshot),
+      R.createElement('pre', null, t.maintenanceUpdate),
+      R.createElement('pre', null, t.maintenanceRollback),
+      versionLine === null
+        ? null
+        : R.createElement('p', { className: 'uip-hint', 'data-uip-version-state': versionKind }, versionLine),
+    ),
+  )
   if (project.testItems.length > 0) {
     body.push(
       R.createElement(Checklist, {

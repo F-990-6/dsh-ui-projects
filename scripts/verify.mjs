@@ -3393,7 +3393,17 @@ await test('a checklist is declared, validated, and rendered as a disclosure', a
    * Asserted here so a rename cannot silently unhook every browser assertion at once.
    */
   contains(cardOf('checkable'), 'data-uip-action="confirm-checks"', "the confirm button's stable hook")
-  excludes(cardOf('no-items'), '<details', 'a project with no items gets no empty disclosure')
+  /*
+   * Narrowed in 7d-2, and the narrowing is the point: a card now legitimately carries a `<details>` for
+   * the maintenance commands, so "no empty disclosure" has to mean "no empty CHECKLIST disclosure". The
+   * claim being protected is that a project declaring no items renders no checklist — not that the card
+   * contains no disclosure of any kind.
+   */
+  excludes(
+    cardOf('no-items'),
+    'data-uip-action="confirm-checks"',
+    'a project with no items gets no empty checklist disclosure',
+  )
   contains(cardOf('liquid-glass'), 'Verification checklist', 'and the shipped skin declares a real one')
   contains(cardOf('liquid-glass'), 'data-uip-action="confirm-checks"', 'with the same hook')
 })

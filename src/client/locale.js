@@ -26,6 +26,21 @@ export const STRINGS = {
     perf: { low: 'Performance: reduced', medium: 'Performance: balanced', high: 'Performance: full' },
     perfDemoted: (names, tier) => `${names} is running at "${tier}" because this device reported less capacity.`,
     persistError: (message) => `Your last change could not be saved: ${message}`,
+    /*
+     * The maintenance block on a project's card. It names the PACKAGE for the same reason the column
+     * does: the command maintains the package that owns the project, and today the framework and the
+     * built-in skin are one package.
+     */
+    maintenanceTitle: (name) => `Maintaining the ${name} package (printed, not run)`,
+    maintenanceHint: 'These act on the package that owns this project, not on the project itself.',
+    maintenanceBadge: 'maintenance commands (printed) · a recorded version differs',
+    maintenanceSnapshot: 'install.ps1 -Snapshot',
+    maintenanceUpdate: 'install.ps1 -Update',
+    maintenanceRollback: 'install.ps1 -Rollback -To <name>',
+    snapshotNewer: (name, version, when) => `The newest snapshot is ${name} (package v${version}, ${when}); it matches what is installed.`,
+    snapshotDifferent: (name, version, current) => `The newest snapshot is ${name} (package v${version}); ${current} is installed. The two differ, so the recorded version is not the running one.`,
+    snapshotNone: 'No version snapshot has been recorded yet; -Snapshot is what makes a rollback possible.',
+    snapshotHostStale: 'Snapshot information needs a dsh web restart before this page can show it (the host code is newer than the running process).',
     pluginsLabel: 'UI plugins',
     plugins: {
       title: 'UI plugins',
@@ -146,6 +161,20 @@ export const STRINGS = {
     perf: { low: '性能：已降低', medium: '性能：均衡', high: '性能：完整' },
     perfDemoted: (names, tier) => `${names} 正以“${tier}”运行——此设备报告的能力较低。`,
     persistError: (message) => `最后一次修改没能保存：${message}`,
+    /*
+     * 项目卡片上的维护块。与列表一样把**包**写出来：命令维护的是拥有这个项目的包，
+     * 而今天框架包与内建皮肤包是同一个包。
+     */
+    maintenanceTitle: (name) => `维护 ${name} 包（只打印，不执行）`,
+    maintenanceHint: '这些命令作用于拥有本项目的包，而不是项目本身。',
+    maintenanceBadge: '维护命令（只打印）· 有未记录的快照',
+    maintenanceSnapshot: 'install.ps1 -Snapshot',
+    maintenanceUpdate: 'install.ps1 -Update',
+    maintenanceRollback: 'install.ps1 -Rollback -To <name>',
+    snapshotNewer: (name, version, when) => `最新快照是 ${name}（包 v${version}，${when}）；与当前安装的一致。`,
+    snapshotDifferent: (name, version, current) => `最新快照是 ${name}（包 v${version}）；当前安装的是 ${current}。两者不同，说明记录下来的版本并不是正在运行的那个。`,
+    snapshotNone: '还没有记录任何快照；跑一次 -Snapshot 才能回滚。',
+    snapshotHostStale: '快照信息需要重启 dsh web 之后才能在这个页面显示（host 代码比运行中的进程新）。',
     pluginsLabel: 'UI 插件',
     plugins: {
       title: 'UI 插件',
