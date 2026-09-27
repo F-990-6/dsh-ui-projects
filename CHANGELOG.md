@@ -29,7 +29,9 @@ Verification vocabulary used below:
 
 **Status: done. `suite` 878 assertions / 0 failing (829 → 878), `load` 70 / 0 (65 → 70), `host` green,
 `conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged, and the first real browser
-run of this phase: gate 11 / 0, suite 173 / 0.** Shipped as two commits — 7d-1 (the plugins column) and
+run of this phase: gate 11 / 0, then **172 / 1** — where the one failure was a TEST ISOLATION bug
+introduced and fixed inside this same round (see Lesson 4), not a product defect.** The number is recorded
+as it happened rather than as it should have been. Shipped as two commits — 7d-1 (the plugins column) and
 7d-2 (the projects panel, in two halves: its tests, then the rest).
 
 ### What a person can now see
@@ -63,7 +65,7 @@ The property the two columns' no-shared-state test protects is therefore asserte
 failed, loading, idle or absent store renders every card and every command, with no
 `[data-uip-version-state]` in the markup.
 
-### Three lessons from this round
+### Four lessons from this round
 
 1. **Changing `src/**` means rebuilding before verifying.** The first run of 7d-1's tests failed on two
    assertions that looked like real defects and were nothing of the kind: the suite loads `lib/client.js`,
@@ -76,6 +78,27 @@ failed, loading, idle or absent store renders every card and every command, with
    `__internals` with a plain `require` broke exactly that contract, and two existing tests named it
    (`module-table miss: the shell exposes no "react"`; `nothing is requested at load time: got ["react"]`).
    A **getter** defers the require to first access and restores both.
+4. **An independent `test()` makes a failure readable; it does not make its side effects go away.** The new
+   card test opened with `ensurePanel`, whose name suggests "the panel is open" and whose behaviour is
+   "the PROJECTS page is visible" (it early-returns on `.uip-root` and otherwise clicks the UI section). It
+   therefore switched the panel away from the plugins page and left it there, and the next test — the one
+   that has guarded the unreadable-listing path for five rounds — failed with `no refresh control`. A real
+   FAIL, caused entirely by the previous test's leftovers.
+
+   **The remedy is symmetric, and the first attempt at it was not** — which is worth recording, because the
+   mistake is the instructive part. That attempt deleted the test's `ensurePanel` opening and kept its
+   switch back at the end: the "go" without the "return". The test then looked for the projects page's hook
+   while the panel was still on the plugins page and failed with `[]`, so the repair had moved the failure
+   rather than removed it. What the earlier test left dirty was never "having switched" but "not switching
+   back"; both halves now live in the same test, which is also the contract written where it is kept.
+
+   **The chosen form is (c) from the report that found it — the test that changes the page state restores
+   it, and says so in a comment the next person can copy.** Not an `afterEach` hook, because this suite is a
+   linear script and the state that matters is *which page the panel is showing*: a property of the journey,
+   not of any one test, and a hook that reset it would silently change what every test is allowed to assume.
+   Not "each test returns to a default state first" either, because the tests that follow need the plugins
+   page and the ones before need the projects page — such a rule would have to be re-derived per test
+   anyway. Stating the contract where it is kept is the version a reader can verify by reading.
 
 ### A number that needed reconciling
 

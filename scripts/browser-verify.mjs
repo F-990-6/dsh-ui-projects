@@ -2793,6 +2793,23 @@ try {
    * inside an existing test prints nothing of its own, so only the count would ever show it had run.
    */
   await test('a project card offers the maintenance commands, folded and hooked', async () => {
+    /*
+     * BOTH DIRECTIONS, OWNED BY THIS TEST.
+     *
+     * `ensurePanel` does not mean "the panel is open": it early-returns on `.uip-root`, the PROJECTS page's
+     * root, and otherwise clicks the UI section — so it is how a test gets to this page. That is this
+     * test's precondition, and it takes it here.
+     *
+     * The first fix for the isolation bug removed this line and kept the switch back at the end: the "go"
+     * without the "return". The test then looked for `[data-uip-maintenance-panel]` while the panel was
+     * still on the plugins page, found none, and failed with `[]` — a fix that moved the failure rather
+     * than removing it. What the earlier test left dirty was never "having switched" but "not switching
+     * back", so the repair is both halves in the same test, which is also the contract stated at the end.
+     *
+     * THE CONTRACT, for the next person adding a test: go where you need to go, and hand the panel back on
+     * the PLUGINS page, where the tests that follow look for their controls. Making a test independent
+     * makes its failure readable; it does not make its side effects go away.
+     */
     await ensurePanel(page)
     const cards = await evaluate(
       session,
@@ -2821,6 +2838,20 @@ try {
       `Array.from(document.querySelectorAll('details[data-uip-maintenance-panel]')).filter((node) => node.open === true).length`,
     )
     equal(open, 0, 'and they start folded, so a card stays a card')
+
+    // Hand the panel back where the tests that follow expect it (see the contract above).
+    const backToPlugins = await evaluate(
+      session,
+      `(() => {
+        const items = Array.from(document.querySelectorAll('button,[role="button"],[role="tab"],a'))
+        const wanted = items.find((el) => /UI 插件|UI plugins/.test((el.textContent || '').trim()))
+        if (!wanted) return { ok: false }
+        wanted.click()
+        return { ok: true }
+      })()`,
+    )
+    truthy(backToPlugins.ok === true, 'and this test hands the panel back on the plugins page')
+    await sleep(300)
   })
 
   await test('a listing that cannot be read degrades to a message, never to an empty list', async () => {
