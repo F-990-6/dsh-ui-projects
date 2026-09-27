@@ -4694,6 +4694,21 @@ await test('the update mode is a read-only plan, and refuses to pretend otherwis
    */
   equal(branch.split('.Substring(0, 16)').length - 1, 0, 'no short hash is taken with a raw Substring')
   truthy(branch.includes('Get-ShortSha'), 'and the helper is what takes them')
+
+  /*
+   * A label printed twice: the `settings:` line already carries its own label, and prefixing it printed
+   * `settings: settings: {}`. Only a real run shows the output, so this pins the construction — the
+   * manual dry run is what proves the line itself, which is the same split Round 40 learned the hard way.
+   */
+  equal(
+    branch.includes('"  settings: $($settingsLine'),
+    false,
+    'the recorded settings line is not labelled twice',
+  )
+  truthy(
+    branch.includes('Write-Note "  $($settingsLine[0].Trim())"'),
+    'and its label is taken from the line itself',
+  )
 })
 
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)

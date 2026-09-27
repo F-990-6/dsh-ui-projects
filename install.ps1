@@ -1164,7 +1164,9 @@ if ($Update) {
         if ($enabledIds.Count -eq 0) { Write-Note '  enabled : (nothing recorded)' }
         else { Write-Note "  enabled : $($enabledIds -join ', ')" }
         $settingsLine = @($blockLines | Where-Object { $_ -match '^\s{2}settings:' })
-        if ($settingsLine.Count -gt 0) { Write-Note "  settings: $($settingsLine[0].Trim())" }
+        # The line already carries its own label, so it is printed as it is: prefixing it printed
+        # `settings: settings: {}` on the first manual run of this mode.
+        if ($settingsLine.Count -gt 0) { Write-Note "  $($settingsLine[0].Trim())" }
     }
 
     Write-Head 'Will not be touched'
