@@ -577,7 +577,7 @@ function materializeEntry(source, require) {
 /* ── boot helper ──────────────────────────────────────────────────────────── */
 
 const { plugin, sandbox, origin, source: bundleSource } = await loadClientBundle()
-const { createInstalledStore, UiPluginsSection } = plugin.__internals
+const { createInstalledStore, UiPluginsSection, UiProjectsSection } = plugin.__internals
 setSandbox(sandbox)
 const { Registry, scopeCss, strings, detectLocale } = plugin.__internals
 /**
@@ -5053,6 +5053,109 @@ await test('the host modules that read the version store contain no write API', 
   const scan = await readFile(join(packageRoot, 'src', 'host', 'profile-scan.js'), 'utf8')
   truthy(scan.includes('VERSIONS_DIR_NAME'), 'and the version store is named in one place')
   truthy(scan.includes('VERSIONS_MAX'), 'with a bounded number of snapshots crossing the wire')
+})
+
+/*
+ * THE VERSION SENTENCE ON A PROJECT'S CARD (7d-2a).
+ *
+ * Four states, and only three of them are claims about the profile: the fourth is the page saying nothing
+ * because it has read nothing. The card's maintenance block is rendered through the section WITH props,
+ * which is the only way to reach the optional `installed` store — the registered section is a
+ * zero-argument closure, so a test through it could not exercise any of this.
+ */
+const renderProjectsWith = (harness, installed) =>
+  server.renderToStaticMarkup(
+    react.createElement(UiProjectsSection, {
+      store: harness.store,
+      t: strings('en'),
+      installed,
+    }),
+  )
+const installedStoreLike = (state) => ({ state: () => state })
+const scanWith = (versions, version = '0.1.0') => ({
+  profileName: 'web',
+  dependencies: [{ name: 'dsh-ui-projects', version, kind: 'ui-project', bundled: true, problems: [] }],
+  orphanedBindings: [],
+  ...(versions === undefined ? {} : { versions }),
+})
+
+await test('the card says which state the version information is in, and never more than it knows', async () => {
+  const harness = await boot()
+  const packageName = harness.store.snapshot().projects[0]?.package ?? 'dsh-ui-projects'
+
+  // No `versions` field at all: the host that answered has no such code.
+  const stale = renderProjectsWith(harness, installedStoreLike({ status: 'ready', scan: scanWith(undefined) }))
+  contains(stale, 'data-uip-version-state="host-stale"', 'a host without the field is reported as needing a restart')
+  contains(stale, strings('en').snapshotHostStale, 'in words that say so')
+
+  // The field is there and this package has none recorded: a fact about the profile.
+  const none = renderProjectsWith(harness, installedStoreLike({ status: 'ready', scan: scanWith({ [packageName]: [] }) }))
+  contains(none, 'data-uip-version-state="none"', 'an empty list is a different state from a missing field')
+  contains(none, strings('en').snapshotNone, 'with its own sentence')
+
+  // Entries, matching what is installed.
+  const same = renderProjectsWith(
+    harness,
+    installedStoreLike({
+      status: 'ready',
+      scan: scanWith({ [packageName]: [{ name: '01-v0.1.0', version: '0.1.0', createdAt: '2026-09-27T08:15:00Z' }] }),
+    }),
+  )
+  contains(same, 'data-uip-version-state="same"', 'a snapshot matching the installed version says so')
+  contains(same, '01-v0.1.0', 'and names the snapshot')
+
+  // Entries that differ: the state the badge exists for.
+  const different = renderProjectsWith(
+    harness,
+    installedStoreLike({
+      status: 'ready',
+      scan: scanWith({ [packageName]: [{ name: '01-v0.0.9', version: '0.0.9', createdAt: '2026-09-20T08:15:00Z' }] }),
+    }),
+  )
+  contains(different, 'data-uip-version-state="different"', 'a snapshot that differs is its own state')
+  contains(different, 'data-uip-maintenance-badge="different"', 'and the folded summary carries the badge, so the state is visible unexpanded')
+  contains(different, strings('en').snapshotDifferent('01-v0.0.9', '0.0.9', '0.1.0'), 'with a sentence naming both versions, and no guess about which is newer')
+})
+
+await test('the card makes no version claim when nothing has been read', async () => {
+  const harness = await boot()
+  const cases = [
+    ['the listing failed', installedStoreLike({ status: 'failed', error: 'connection refused' })],
+    ['the listing is still loading', installedStoreLike({ status: 'loading' })],
+    ['the listing is idle', installedStoreLike({ status: 'idle' })],
+    ['no store was passed in at all', undefined],
+  ]
+  for (const [what, installed] of cases) {
+    const markup = renderProjectsWith(harness, installed)
+    contains(markup, 'data-uip-maintenance-panel=', `${what}: the card still renders its maintenance block`)
+    contains(markup, 'install.ps1 -Snapshot', `${what}: and the commands are still printed`)
+    excludes(markup, 'data-uip-version-state=', `${what}: and no version state is claimed, not even "none"`)
+  }
+  // The positive control: with a ready listing the element DOES appear, so the four exclusions above are
+  // not passing because the marker can never be rendered.
+  const ready = renderProjectsWith(
+    harness,
+    installedStoreLike({ status: 'ready', scan: scanWith({ 'dsh-ui-projects': [] }) }),
+  )
+  contains(ready, 'data-uip-version-state=', 'with a ready listing the marker is there, so those exclusions mean something')
+})
+
+await test('a project that declares no checklist still gets the maintenance disclosure, and only that', async () => {
+  const harness = await boot()
+  harness.registry.register({ id: 'bare', name: 'Bare', version: '1.0.0' })
+  const markup = renderProjectsWith(harness, undefined)
+  contains(markup, 'data-uip-maintenance-panel="bare"', 'a card with no checklist still offers the commands')
+  /*
+   * And no empty CHECKLIST is rendered for it — asserted on this card's own fragment rather than on the
+   * page, because the page also holds the built-in skin's card, which legitimately has one. (The property
+   * itself is asserted where it belongs: `a project with no items gets no empty checklist disclosure`.)
+   */
+  const bareCard = markup.slice(markup.indexOf('data-uip-maintenance-panel="bare"'))
+  excludes(
+    bareCard.slice(0, bareCard.indexOf('</details>')),
+    'data-uip-action="confirm-checks"',
+    'and no checklist controls are rendered inside it',
+  )
 })
 
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)

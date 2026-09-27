@@ -390,6 +390,19 @@ module.exports = {
      */
     createInstalledStore,
     UiPluginsSection: require('./panel-plugins.js').UiPluginsSection,
+    /*
+     * The projects section, exported for the same reason its sibling is: the suite has to be able to
+     * render it WITH props. The registered section is a zero-argument closure over the live store, so a
+     * test that went through it could never exercise the optional `installed` prop — and the four states
+     * of the version sentence on a card are exactly what needs testing.
+     *
+     * A GETTER, not a value, and that is a load-time contract rather than a style choice: `panel.js`
+     * requires React, and the entry module must reach neither React nor a project while it loads. A plain
+     * `require` here broke exactly that, and two contract tests said so by name.
+     */
+    get UiProjectsSection() {
+      return require('./panel.js').UiProjectsSection
+    },
     scopeCss,
     strings,
     detectLocale,
