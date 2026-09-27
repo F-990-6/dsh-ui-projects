@@ -25,6 +25,65 @@ Verification vocabulary used below:
 
 ---
 
+## Round 38 — Step 6c: the uninstall audit, and the residue it found on a real machine
+
+**Status: done. `install.ps1` extended in five places; parse-checked (1117 lines); `-Uninstall -DryRun`
+run twice: exit 0 both times, byte-identical output, and ZERO writes across six fingerprints
+(`settings.yaml` whole-file and `ui-projects` block, profile `package.json`, `pnpm-lock.yaml`, the
+install record, the node_modules inventory). No suite change, so no suite run. The real uninstall was
+NOT run: that is the user's to do.**
+
+### What the audit found
+
+The uninstall branch (originally lines 594-731) was already careful in the two places that matter most:
+`Remove-DirectoryLink` deletes through the reparse point and refuses anything that is not a link, and
+both source files are hashed before and after to prove the source tree was never reached. What it did
+not do was look at anything it had not been told about:
+
+| # | Gap | Impact |
+| --- | --- | --- |
+| 6 | nothing asserted that `settings.yaml` was left alone | Round 36's decision rested on "we never wrote it", which is a claim until something checks |
+| 8 | `.ignored_*` tombstones were never looked for | disk residue whose name reads as "still installed" |
+| 8 | the recorded node_modules inventory was never read back | an uninstall could take a neighbour's link and still exit 0 |
+| 8 | a lockfile still naming the package was not noticed | a lock the manifest no longer agrees with |
+| 12 | `-DryRun` printed a generic plan | no way to see what it would find without removing anything |
+
+### The changes
+
+- **A1** — `Get-SettingsBlock` extracts the `ui-projects:` block as text, and the uninstall hashes it
+  before and after. A block, not a whole-file hash: Round 35 measured that dsh rewrites its own
+  bookkeeping in that file even when the write is refused, so a whole-file hash reports changes this
+  script did not make. Losing the block is reported more severely than changing it.
+- **B** — tombstone scan for `.ignored_*` (and `node_modules/.ignored/<name>`): a tombstone that is a
+  link is removed with the same guard as the leftover link; a real directory is reported, not deleted.
+- **C** — the neighbours check, comparing the inventory before and after THIS run.
+- **D** — lockfile residue: reported, NOT failed, until someone measures whether a `link:` dependency
+  legitimately survives in the lockfile's importers section.
+- **E** — `-DryRun` now reports what it FOUND (wired state, the node_modules entry and its type, a
+  tombstone, the settings block) and prints four explicit "will not be touched" lines: the source tree,
+  `settings.yaml`, every other node_modules entry, and the checklist record.
+- **F** — the real-directory case keeps its Warn (not a failure) and now says what it is and how to
+  delete it: a real copy of the package inside the profile, which the uninstall leaves alone.
+
+### Two findings, both measured on the machine this ran on
+
+**A tombstone was really there.** The first dry run reported
+`pnpm tombstone present: …\node_modules\.ignored_dsh-ui-projects` — a REAL directory (not a link)
+holding a stale copy of the package: 20 entries, 141,551 bytes, with its own `lib/`, `CHANGELOG.md` and
+`cordis.patch.yml`. Two consequences, both intended: the listing never sees it (`profile-scan.js`
+resolves BY NAME from `dependencies`, so pnpm's furniture can never be mistaken for an installed
+package), and a real uninstall will now report it and count it as a failure — so that uninstall will
+exit 1 with the `Remove-Item -Recurse` hint until somebody decides what that directory is.
+
+**The install record's inventory is stale by construction.** It is captured BEFORE `dsh plugin add`
+runs, so on this machine it holds 4 entries against 20 present today and does not contain the package
+itself. The neighbours check as originally proposed would have compared against it and reported sixteen
+"gained entries" on a healthy uninstall — a check that teaches its reader to ignore it. It now compares
+this run's own before and after, and reports the record's drift as a note. Simulated both ways, read
+only: old baseline `added=16 → FAILURE (false)`, new baseline `gone=[dsh-ui-projects], added=0 → OK`.
+
+---
+
 ## Round 37 — Step 6b: the uninstall block, and an assertion that assumed an empty checklist
 
 **Status: done. `suite` 729 assertions / 0 failing (701 → 729), `load` 64 / 0, `host` green,

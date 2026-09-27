@@ -236,6 +236,32 @@ function Get-PatchEntryCount([string]$Path) {
     return $entries.Count
 }
 
+# The `ui-projects:` block of the settings document, as text, or $null when absent.
+#
+# Read as a BLOCK rather than hashed whole. dsh rewrites its own bookkeeping in that
+# file while it runs -- measured in Round 35: with `--no-write` in force, the mtime
+# and the revision keys still moved -- so a whole-file hash reports changes this
+# script did not make, and a check that cries wolf is a check that gets ignored.
+# What must not move is the SUBTREE, which is where the user's choices live: the
+# switch list and the per-project settings (a recorded verification among them).
+#
+# The extraction is deliberately line-based: a YAML parser is not available in
+# Windows PowerShell 5.1, and this file's shape is one top-level key per column 0.
+function Get-SettingsBlock([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $lines = @(Read-TextLines $Path)
+    $start = -1
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ($lines[$index] -match '^ui-projects:') { $start = $index; break }
+    }
+    if ($start -lt 0) { return $null }
+    $end = $lines.Count
+    for ($index = $start + 1; $index -lt $lines.Count; $index++) {
+        if ($lines[$index] -match '^\S') { $end = $index; break }
+    }
+    return (($lines[$start..($end - 1)]) -join "`n")
+}
+
 # Resolve a directory symlink's absolute target, or $null when the path is not a
 # link. A relative target resolves against the link's own directory, not the
 # process working directory.
@@ -608,11 +634,70 @@ if ($Uninstall) {
     $sourceManifestSha = Get-Sha256 $sourceManifest
     $sourceBundle = Join-Path $SourceDir 'lib/client.js'
     $sourceBundleSha = if (Test-Path -LiteralPath $sourceBundle -PathType Leaf) { Get-Sha256 $sourceBundle } else { $null }
+    # The user's data in the settings document, captured before anything runs. See
+    # Get-SettingsBlock for why this is a block and not a whole-file hash.
+    $settingsPath = Join-Path $dshHome 'settings.yaml'
+    $settingsBlockBefore = Get-SettingsBlock $settingsPath
+    # The inventory as it stands NOW, for the neighbours check below.
+    #
+    # Not the one in the install record: that one is a snapshot taken BEFORE the install
+    # ran, so it is stale by construction. Measured on the machine this was written on:
+    # 4 entries recorded, 20 present, and the package itself missing from its own record.
+    # Comparing against it would report sixteen "gained entries" on a healthy uninstall.
+    $inventoryBefore = @(Get-NodeModulesInventory $NodeModulesDir)
 
     if ($DryRun) {
         Write-Plan "run: $(Format-Dsh @('plugin', '--profile', $Profile, 'remove', $PackageName))"
         Write-Plan 'then assert: dependency gone, bundle layer gone, patch entries unchanged'
         Write-Plan 'then assert: the source tree is byte-unchanged'
+        Write-Plan 'then assert: the ui-projects block of settings.yaml unchanged, no pnpm tombstone left, no other node_modules entry changed'
+
+        <#
+          The plan above is generic; this section is about THIS profile. A dry run that
+          only prints what it would do leaves the reader to find out what it would find
+          -- and the questions that matter are answerable by reading, which is free.
+        #>
+        Write-Head 'What this run found'
+        $dryManifest = Read-JsonFile $ManifestPath
+        $dryDeclared = Test-ProfileDependency $dryManifest $PackageName
+        $dryBundled = (Get-ProfileBundles $dryManifest) -contains $PackageName
+        if ($dryDeclared -or $dryBundled) {
+            Write-Note "wired already: dependency=$dryDeclared, bundle layer=$dryBundled -- the command above is what removes it"
+        }
+        else {
+            Write-Note 'the profile does not declare it any more; the run would skip the command and go straight to the checks'
+        }
+        if (-not (Test-Path -LiteralPath $LinkPath)) {
+            Write-Note 'node_modules entry: absent'
+        }
+        else {
+            $dryLink = Get-LinkTarget $LinkPath
+            if ($dryLink -eq $null) { Write-Warn "node_modules entry: a REAL DIRECTORY (not a link) at $LinkPath" }
+            else { Write-Note "node_modules entry: a link to $dryLink" }
+        }
+        $dryTombstones = @(Get-ChildItem -LiteralPath $NodeModulesDir -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like '.ignored_*' -and $_.Name -like "*$PackageName*" })
+        if ($dryTombstones.Count -eq 0) { Write-Note 'pnpm tombstone (.ignored_*): none' }
+        else { Write-Warn "pnpm tombstone present: $(($dryTombstones | ForEach-Object { $_.FullName }) -join ', ')" }
+        if ($settingsBlockBefore -eq $null) {
+            Write-Note 'settings.yaml: no ui-projects block (nothing to preserve)'
+        }
+        else {
+            Write-Note 'settings.yaml: a ui-projects block is present and will be compared before and after'
+        }
+
+        <#
+          The four things a person about to paste a removal command most needs to read
+          before they paste it. Three of them are user data (the switch list, the
+          per-project settings including a recorded verification, and the source tree
+          they built this package in); the fourth is every other package in the profile.
+        #>
+        Write-Head 'Will not be touched'
+        Write-Note "the source tree          $SourceDir"
+        Write-Note "settings.yaml            $settingsPath"
+        Write-Note "other packages           every other entry under $NodeModulesDir, compared before and after this run"
+        Write-Note 'the checklist record     ui-projects.settings in settings.yaml (user data; see Round 36)'
+
         Write-Head 'Dry run'
         Write-Host '   Nothing was run. Re-run without -DryRun to apply.'
         exit 0
@@ -673,7 +758,9 @@ if ($Uninstall) {
         Write-Ok 'the profile node_modules entry is gone'
     }
     elseif ((Get-LinkTarget $LinkPath) -eq $null) {
-        Write-Warn "a real directory (not a link) remains at $LinkPath; left in place, remove it yourself if it is stale"
+        Write-Warn "a real directory (not a link) remains at $LinkPath"
+        Write-Host '         this is a real COPY of the package inside the profile, not a symlink. The uninstall does not touch it.'
+        Write-Host "         to delete it:  Remove-Item -Recurse `"$LinkPath`"   (confirm first that you did not put it there)"
     }
     else {
         $leftoverTarget = Get-LinkTarget $LinkPath
@@ -685,6 +772,46 @@ if ($Uninstall) {
         catch {
             Write-Warn "could not remove the leftover link: $($_.Exception.Message)"
             $failed++
+        }
+    }
+
+    # pnpm's tombstone: instead of deleting a package directory it cannot release, pnpm
+    # renames it to `.ignored_<name>` (and can also park it under `node_modules/.ignored`).
+    #
+    # The listing never consults one -- `src/host/profile-scan.js` resolves BY NAME from
+    # the profile's `dependencies` and never walks node_modules, so a tombstone can never
+    # be mistaken for an installed package, and that is documented there as deliberate.
+    # What is left is disk residue whose NAME reads as "still installed" to a person
+    # looking at the folder, which is exactly the kind of thing an uninstall should not
+    # leave unexplained. A tombstone that is a link is removed with the same guard as the
+    # leftover link above; a real directory is reported and left alone, like the case above.
+    $tombstones = New-Object System.Collections.ArrayList
+    foreach ($entry in @(Get-ChildItem -LiteralPath $NodeModulesDir -Force -ErrorAction SilentlyContinue)) {
+        if ($entry.Name -like '.ignored_*' -and $entry.Name -like "*$PackageName*") { [void]$tombstones.Add($entry.FullName) }
+    }
+    $ignoredParked = Join-Path (Join-Path $NodeModulesDir '.ignored') $PackageName
+    if (Test-Path -LiteralPath $ignoredParked) { [void]$tombstones.Add($ignoredParked) }
+
+    if ($tombstones.Count -eq 0) {
+        Write-Ok 'no pnpm tombstone (.ignored_*) left for this package'
+    }
+    else {
+        foreach ($tombstone in @($tombstones)) {
+            if ((Get-LinkTarget $tombstone) -eq $null) {
+                Write-Warn "a pnpm tombstone is a REAL DIRECTORY, left in place: $tombstone"
+                Write-Host "         remove it yourself if it is stale:  Remove-Item -Recurse `"$tombstone`""
+                $failed++
+            }
+            else {
+                try {
+                    Remove-DirectoryLink $tombstone
+                    Write-Ok "tombstone link removed (its target was not touched): $tombstone"
+                }
+                catch {
+                    Write-Warn "could not remove the tombstone link $tombstone : $($_.Exception.Message)"
+                    $failed++
+                }
+            }
         }
     }
 
@@ -704,6 +831,30 @@ if ($Uninstall) {
         }
     }
 
+    # The user's data, which an uninstall must not touch (Round 36): the switch list in
+    # `ui-projects.enabled` and the per-project settings, a recorded verification among
+    # them. Nothing in this script edits that file, and this is the assertion that says
+    # so -- "we did not write it" is a claim until something checks.
+    $settingsBlockAfter = Get-SettingsBlock $settingsPath
+    if ($settingsBlockBefore -eq $null -and $settingsBlockAfter -eq $null) {
+        Write-Skip 'settings.yaml has no ui-projects block (nothing to preserve)'
+    }
+    elseif ($settingsBlockBefore -eq $null) {
+        Write-Note 'settings.yaml gained a ui-projects block during the uninstall (that is dsh writing, not this script)'
+    }
+    elseif ($settingsBlockAfter -eq $null) {
+        Write-Warn "settings.yaml LOST its ui-projects block during the uninstall: switches and recorded verifications are user data"
+        $failed++
+    }
+    elseif ($settingsBlockBefore -eq $settingsBlockAfter) {
+        Write-Ok 'settings.yaml: the ui-projects block is byte-unchanged (switches and recorded verifications survive)'
+    }
+    else {
+        Write-Warn 'settings.yaml: the ui-projects block CHANGED during the uninstall'
+        Write-Host '         expected it to be identical; compare the file against your own copy before trusting the result'
+        $failed++
+    }
+
     if ($state -ne $null) {
         $lockRecord = Get-JsonProperty $state 'before' $null
         $lockRecord = Get-JsonProperty $lockRecord 'lockFile' $null
@@ -714,6 +865,60 @@ if ($Uninstall) {
                 Write-Note "lockfile backup kept (NOT restored): $lockBackup"
                 Write-Note 'restore it yourself only if you know the current lockfile is wrong'
             }
+        }
+    }
+
+    # Did the removal take anything else with it, or bring something new in?
+    #
+    # The baseline is this run's OWN before-snapshot, not the install record. The record's
+    # inventory is taken before the install runs, so it goes stale the moment anything else
+    # is installed -- on the machine this was written on it holds 4 entries against 20
+    # present today, and does not even contain this package. A check built on it would
+    # report sixteen "gained entries" on a healthy uninstall, which is how a check teaches
+    # its reader to ignore it.
+    #
+    # Run after the link and tombstone handling above, because both of those are supposed
+    # to change the inventory.
+    $nowInventory = @(Get-NodeModulesInventory $NodeModulesDir)
+    $gone = @($inventoryBefore | Where-Object { $nowInventory -notcontains $_ })
+    $added = @($nowInventory | Where-Object { $inventoryBefore -notcontains $_ })
+    $unexpectedGone = @($gone | Where-Object { $_ -ne $PackageName })
+    if ($unexpectedGone.Count -eq 0 -and $added.Count -eq 0) {
+        $removed = if ($gone.Count -eq 0) { 'nothing' } else { $gone -join ', ' }
+        Write-Ok "no other node_modules entry changed (this run removed: $removed)"
+    }
+    else {
+        if ($unexpectedGone.Count -gt 0) {
+            Write-Warn "node_modules lost entries that are NOT $PackageName : $($unexpectedGone -join ', ')"
+        }
+        if ($added.Count -gt 0) {
+            Write-Warn "node_modules gained entries during an uninstall: $($added -join ', ')"
+        }
+        $failed++
+    }
+
+    # The install record's own inventory, reported for context and never as a verdict: it
+    # is the pre-install snapshot described above, so drift is expected rather than wrong.
+    if ($state -ne $null) {
+        $beforeRecord = Get-JsonProperty $state 'before' $null
+        $recordedInventory = Get-JsonProperty $beforeRecord 'nodeModules' $null
+        if ($recordedInventory -ne $null) {
+            $recordedDrift = @(@($recordedInventory) | Where-Object { $nowInventory -notcontains $_ })
+            Write-Note "install record lists $(@($recordedInventory).Count) node_modules entries (taken before the install); $($recordedDrift.Count) of them are gone now"
+        }
+    }
+
+    # A lockfile that still names the package would mean pnpm removed the dependency from
+    # the manifest without rewriting its lock. Reported, NOT failed: whether a `link:`
+    # dependency legitimately survives in the lockfile's importers section has not been
+    # measured here, and asserting an unmeasured rule is how a check starts lying (see the
+    # refusal self-check that once validated an invented payload).
+    if (Test-Path -LiteralPath $LockPath -PathType Leaf) {
+        $lockHits = @(Select-String -LiteralPath $LockPath -SimpleMatch -Pattern $PackageName -ErrorAction SilentlyContinue)
+        if ($lockHits.Count -eq 0) { Write-Ok "$LockFileName no longer names $PackageName" }
+        else {
+            Write-Warn "$LockFileName still names $PackageName on $($lockHits.Count) line(s)"
+            Write-Note 'check by hand whether that is legitimate for a link dependency before treating it as a failure'
         }
     }
 
