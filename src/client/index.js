@@ -220,6 +220,33 @@ function apply(ctx) {
      *
      * `installedStore` is declared below and read only when this runs, which is after apply has finished.
      */
+    /*
+     * OPENING THIS PAGE IS ALSO WHAT ASKS THE HOST, by the same rule the plugins column uses at the
+     * bottom of this file: a side effect in a render, because this slot API has no mount hook, and a
+     * listing fetched at boot would be a request for a page most sessions never open.
+     *
+     * It was missing here, and the four version states were reachable only from the OTHER page: a
+     * session that opened Settings › UI and nothing else left the store `idle` for its whole life, so
+     * every card's maintenance block stayed silent and the feature looked, from the only page the
+     * reader was on, like it had never been built. The suite did not catch it because the suite opens
+     * the plugins column first and visits this page second — the one order in which the store happens
+     * to be ready already.
+     *
+     * Guarded rather than assumed. `installedStore` is created further down this same function body,
+     * and a missing or half-built store must not turn a render into a thrown error that takes the whole
+     * settings page down: without `state`/`refresh` there is simply nothing to ask, the panel renders
+     * exactly what it renders today when nothing has been read, and the browser suite is where that
+     * shows up as a failure rather than as silence.
+     */
+    if (
+      installedStore !== undefined &&
+      installedStore !== null &&
+      typeof installedStore.state === 'function' &&
+      typeof installedStore.refresh === 'function' &&
+      installedStore.state().status === 'idle'
+    ) {
+      void installedStore.refresh()
+    }
     return UiProjectsSection({ store, t: strings(detectLocale(ctx)), installed: installedStore })
   }
   LOADED_PLUGIN.section = render

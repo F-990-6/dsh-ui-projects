@@ -2893,6 +2893,113 @@ try {
     }
   })
 
+  /*
+   * THE READER'S ROUTE (7d-2c), which this suite had never walked.
+   *
+   * The card test above reaches its assertions along the suite's own path: the plugins column is opened
+   * FIRST, and that is what asks the host — the projects page is visited afterwards, so the listing is
+   * already in hand before the first card renders. A person does not do that. They open Settings › UI to
+   * look at the skin, and on that path nothing had ever requested the listing: the store stayed `idle`
+   * for the life of the page, every card stayed silent, and the four version states existed unreachable.
+   * The suite was green and the feature was missing, because both the suite and the code only ever went
+   * the other way round.
+   *
+   * So this test starts from a RELOADED page and takes the reader's route: settings, UI section, nothing
+   * else. The reload is what makes "the plugins page was never opened" true of this page instance rather
+   * than a claim about the run's history.
+   *
+   * WHICH state appears is not this test's business — `host-stale` (a host whose code predates the
+   * `versions` field: a restart that has not happened yet), `none`, `same` and `different` are all the
+   * page knowing something. The outcome it exists to catch is the fifth one: no attribute at all.
+   */
+  await test('opening the projects page alone asks the host once, and a card states its version', async () => {
+    await navigate(pageUrl)
+    try {
+      /*
+       * The count is MEASURED, not assumed, and that is what makes the word "once" in this test's name a
+       * claim rather than a hope. Installed after the reload and before the section is opened, so it sees
+       * every request this page makes for that one path.
+       */
+      await evaluate(
+        session,
+        `(() => {
+          const real = window.fetch
+          window.__uipRealFetch = real
+          window.__uipInstalledCalls = 0
+          window.fetch = (input, init) => {
+            const url = typeof input === 'string' ? input : (input && input.url) || ''
+            if (url.includes('/api/ui-projects/installed.json')) window.__uipInstalledCalls += 1
+            return real(input, init)
+          }
+          return { ok: true }
+        })()`,
+      )
+      await ensurePanel(session)
+      await sleep(500)
+      const scene = await evaluate(
+        session,
+        `(async () => {${HELPERS}
+          const cards = () => Array.from(document.querySelectorAll('details[data-uip-maintenance-panel]'))
+          /*
+           * 500ms is the suite's own pacing; this waits longer only if the answer has genuinely not
+           * arrived, so a slow host reports the scene below instead of a bare timeout. Nothing here
+           * assumes the state will appear — the assertions are what decide that.
+           */
+          const startedAt = Date.now()
+          while (Date.now() - startedAt < 8000
+            && !cards().some((card) => card.querySelector('[data-uip-version-state]') !== null)) {
+            await new Promise((resolve) => setTimeout(resolve, 100))
+          }
+          for (const card of cards()) card.open = true
+          const states = cards().map((card) => card.querySelector('[data-uip-version-state]'))
+          return {
+            cards: cards().length,
+            states: states.map((node) => (node === null ? null : node.getAttribute('data-uip-version-state'))),
+            said: states.map((node) => (node === null ? '' : (node.textContent || '').trim())),
+            visible: states.filter((node) => node !== null && isVisible(node)).length,
+            calls: window.__uipInstalledCalls,
+          }
+        })()`,
+      )
+      truthy(scene !== null && scene.cards >= 1, `the projects page rendered cards (${JSON.stringify(scene ?? null)})`)
+      truthy(
+        Array.isArray(scene?.states) && scene.states.some((state) => state !== null),
+        `at least one card states its version situation, having asked the host from this page alone (${JSON.stringify(scene ?? null)})`,
+      )
+      truthy(
+        scene?.visible >= 1,
+        `and the sentence is one a reader can see once the card is expanded (${JSON.stringify(scene ?? null)})`,
+      )
+      equal(scene?.calls, 1, `this page asked the host for the listing exactly once (${JSON.stringify(scene ?? null)})`)
+    } finally {
+      await evaluate(
+        session,
+        `(() => {
+          if (window.__uipRealFetch) window.fetch = window.__uipRealFetch
+          delete window.__uipRealFetch
+          delete window.__uipInstalledCalls
+          return { ok: true }
+        })()`,
+      )
+      /*
+       * The same contract the card test keeps: hand the panel back on the PLUGINS page, in a `finally`,
+       * because the test that follows looks for its refresh control there and a failure here must not
+       * become a second, misleading one there.
+       */
+      await evaluate(
+        session,
+        `(() => {
+          const items = Array.from(document.querySelectorAll('button,[role="button"],[role="tab"],a'))
+          const wanted = items.find((el) => /UI 插件|UI plugins/.test((el.textContent || '').trim()))
+          if (!wanted) return { ok: false }
+          wanted.click()
+          return { ok: true }
+        })()`,
+      )
+      await sleep(300)
+    }
+  })
+
   await test('a listing that cannot be read degrades to a message, never to an empty list', async () => {
     /*
      * The endpoint works, so the failure is simulated IN THE PAGE: `fetch` is failed for this one

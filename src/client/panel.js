@@ -45,6 +45,35 @@ function UiProjectsSection(props) {
     return store.subscribe(() => setLive(store.snapshot()))
   }, [store, props.snapshot])
   const snapshot = props.snapshot ?? live
+  /*
+   * The listing the version sentence is derived from, read and SUBSCRIBED TO in the shape `live` above
+   * already uses.
+   *
+   * READING IT ONCE WAS NOT ENOUGH, and this block is the whole of that correction. `maintenanceFor`
+   * reads the store synchronously at render, and a store read once and never subscribed to cannot report
+   * that anything arrived: opening Settings › UI is what ASKS the host (`index.js` starts the read from
+   * the section's own render, because the slot API offers no mount hook), so the answer necessarily lands
+   * AFTER the first render — and with no subscription there is no second one. The card would stay silent
+   * for the rest of the session on the very page the reader is looking at, which is the failure this
+   * round exists to remove. The plugins column has always done this (`panel-plugins.js`: "a render that
+   * reads it once and never subscribes never learns that anything changed"); this panel was the half
+   * that did not, and the browser suite only ever reached it through the other page, where the listing
+   * was already in hand before the first render.
+   *
+   * A source that cannot notify still works: `useState` reads whatever it can, and the effect subscribes
+   * only when there is something that can. Every unit test passes a bare `{ state }` stub, and a stub
+   * with no `subscribe` renders from that single read exactly as it did before.
+   */
+  const [installedState, setInstalledState] = React_.useState(() =>
+    typeof props.installed?.state === 'function' ? props.installed.state() : null,
+  )
+  React_.useEffect(() => {
+    const source = props.installed
+    if (source === undefined || source === null) return undefined
+    if (typeof source.state !== 'function' || typeof source.subscribe !== 'function') return undefined
+    setInstalledState(source.state())
+    return source.subscribe(() => setInstalledState(source.state()))
+  }, [props.installed])
   /** @type {[Record<string, boolean>, any]} */
   const [pending, setPending] = React_.useState({})
   const [failure, setFailure] = React_.useState(undefined)
@@ -70,11 +99,12 @@ function UiProjectsSection(props) {
   /*
    * Snapshot information for the maintenance block, read SYNCHRONOUSLY.
    *
-   * `props.installed` is the plugins column's store, passed in optionally. This panel never awaits it,
-   * never asks it for anything and never depends on it: when it is absent, or still loading, or failed,
-   * every card renders exactly as before and the version sentence is simply not there. That is the
-   * property the two columns' no-shared-state test protects — a listing that cannot be read must not take
-   * this page down — and here it is a decision in the code rather than a hope in a comment.
+   * `props.installed` is the plugins column's store, passed in optionally, and its state is held in
+   * `installedState` above. This panel never awaits it and never depends on it: when it is absent, or
+   * still loading, or failed, every card renders exactly as before and the version sentence is simply
+   * not there. That is the property the two columns' no-shared-state test protects — a listing that
+   * cannot be read must not take this page down — and here it is a decision in the code rather than a
+   * hope in a comment. It does LISTEN to it, for the reason stated where that state is declared.
    *
    * FOUR STATES, in this order, and the third one is the correction:
    *   1. no store, or status !== 'ready'  -> SAY NOTHING. Nothing has been read, so "no snapshots" would be
@@ -89,7 +119,6 @@ function UiProjectsSection(props) {
    *   4. ready + entries                  -> compare the newest with what is installed, without guessing
    *                                          which of the two is newer.
    */
-  const installedState = typeof props.installed?.state === 'function' ? props.installed.state() : null
   const maintenanceFor = (project) => {
     const packageName = project.package ?? 'dsh-ui-projects'
     /** @type {{ kind: string, name?: string, version?: string, when?: string, current?: string }} */

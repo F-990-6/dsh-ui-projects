@@ -5179,6 +5179,93 @@ await test('a project that declares no checklist still gets the maintenance disc
   )
 })
 
+/*
+ * OPENING THIS PAGE IS WHAT ASKS THE HOST (7d-2c).
+ *
+ * Every wiring test above passes `installed` in BY HAND, which is precisely how the gap this test covers
+ * stayed green for a whole round: the prop was always there in a test, and the question of who starts the
+ * read was never asked. Here the section is rendered the way the shell renders it — the registered,
+ * zero-argument renderer — and the only thing standing in for the host is `fetch`.
+ *
+ * The trigger is a side effect in a render, because this slot API has no mount hook and a listing fetched
+ * at boot would be a request for a page most sessions never open. What that buys is worth stating
+ * precisely, and it is measured here rather than assumed: the FIRST render asks, and asking is guarded on
+ * `idle`, so a React double render, a remount or a second visit asks nothing more. That is why the
+ * browser test can assert "once" instead of "at least once".
+ */
+await test('opening the settings section is what asks the host for the listing, and only once', async () => {
+  const harness = await boot()
+  /** @type {string[]} */
+  const asked = []
+  /*
+   * `fetch` is installed on the BUNDLE'S OWN global, not on Node's: the module factories were created
+   * inside the vm context, so a bare `fetch` in the client half resolves there — patching
+   * `globalThis.fetch` reaches nothing, which is how the first version of this test measured zero
+   * requests while the code under it was already correct.
+   */
+  const realFetch = sandbox.fetch
+  sandbox.fetch = async (input) => {
+    asked.push(typeof input === 'string' ? input : String(input?.url ?? input))
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        schemaVersion: 1,
+        scan: {
+          profileName: 'web',
+          dependencies: [
+            { name: 'dsh-ui-projects', version: '0.1.0', kind: 'ui-project', bundled: true, problems: [] },
+          ],
+          orphanedBindings: [],
+          versions: {},
+        },
+      }),
+    }
+  }
+  try {
+    const first = harness.render()
+    equal(asked.length, 1, `the section's own render asks the host for the listing (${JSON.stringify(asked)})`)
+    equal(asked[0], '/api/ui-projects/installed.json', 'at the path the host mounted, under the fenced /api prefix')
+    excludes(first, 'data-uip-version-state=', 'and the first paint claims nothing: no answer has arrived yet')
+
+    harness.render()
+    harness.render()
+    equal(asked.length, 1, 'a second and a third render ask nothing more — the store is no longer idle')
+
+    /*
+     * The answer is applied by the store, and the render AFTER it is the one that can use it. This half is
+     * only about the read reaching a render; that the arrival itself re-renders the card is a hook, and
+     * `--no-write` in the browser suite is where that is proved.
+     */
+    let settled = ''
+    for (let attempt = 0; attempt < 10 && !settled.includes('data-uip-version-state='); attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve))
+      settled = harness.render()
+    }
+    contains(settled, 'data-uip-version-state="none"', 'once the listing lands, the next render states the version situation')
+    equal(asked.length, 1, 'and the whole exchange was still one request')
+  } finally {
+    if (realFetch === undefined) delete sandbox.fetch
+    else sandbox.fetch = realFetch
+  }
+})
+
+/*
+ * The other half of the same question, and it cannot be checked by rendering: a component that reads a
+ * store once and never subscribes to it cannot learn that the answer arrived. A static render re-reads
+ * everything from scratch, so `renderToStaticMarkup` would pass either way — which is exactly the shape of
+ * the bug. Prose in the file is not evidence, hence `stripComments`: this guard reads the code, not the
+ * explanation of why the code matters.
+ */
+await test('the panel subscribes to the listing it reads, so an answer arriving later still reaches the card', async () => {
+  const code = stripComments(await readFile(join(packageRoot, 'src', 'client', 'panel.js'), 'utf8'))
+  contains(
+    code,
+    'source.subscribe(() => setInstalledState(source.state()))',
+    'the installed store is subscribed to, and re-read on every change it reports',
+  )
+})
+
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
 if (onlyTest !== '') {
   process.stdout.write(`[filter] DSH_TEST_ONLY=${JSON.stringify(onlyTest)} skipped ${skipped} test(s)\n`)
