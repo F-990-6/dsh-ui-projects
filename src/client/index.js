@@ -35,7 +35,7 @@ const { readHostRowsAtBoot, bootFragmentPresent, bodyMarkerPresent } = require('
 const { createRuntime } = require('./runtime.js')
 const { createStore, detectLocale, onLocaleChange } = require('./store.js')
 const { collectDiagnostics, mountDiagnostics } = require('./diagnostics.js')
-const { strings } = require('./locale.js')
+const { strings, formatStamp } = require('./locale.js')
 const { scopeCss } = require('./scope-css.js')
 const perf = require('./perf.js')
 const cssFilter = require('./css-filter.js')
@@ -441,6 +441,12 @@ module.exports = {
     },
     scopeCss,
     strings,
+    /**
+     * How a host timestamp is shown to a reader, exported so the suite can assert the shapes directly
+     * rather than only through a rendered sentence. Pure string surgery over a UTC stamp: seven
+     * fractional digits and a `T` in, `2026-09-27 04:47 UTC` out, and anything unrecognized unchanged.
+     */
+    formatStamp,
     detectLocale,
     /**
      * The diagnostics collector, so the suite can check the instrument itself.

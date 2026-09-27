@@ -25,14 +25,105 @@ Verification vocabulary used below:
 
 ---
 
+## Round 44 — Step 7e: the maintenance workflow is written down, and a stamp a person can read
+
+**Status: done. `suite` 909 assertions / 0 failing (891 → 909), `load` 70 / 0, `host` green,
+`conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged (13 blocks, 10484 bytes),
+`browser --self-check` green. NO browser run of this round: the URL token this session held had been
+invalidated by a restart (401 on the page, 404 on the bundle route), so the browser suite was left to the
+user — `browser (user)` is the pending step, and it is one look at Settings › UI. `install.ps1` was NOT
+executed in any mode, and nothing under `$DSH_HOME` was written while preparing this round.**
+
+### `docs/update-and-rollback.md` — the workflow, its layout, and what each mode refuses
+
+Three commands with three promises, and the ORDER is the part that is easy to get wrong, so the document
+states it first: `-Snapshot` records a restorable version, `git pull && npm run build` brings the new one,
+`-Update` records it as the new baseline, and `-Rollback -To` — the only mode allowed to write inside the
+source tree — puts an older one back. It then documents the on-disk layout
+(`.dsh-ui-projects-versions/<pkg>/<name>/{manifest.json,payload/**}`, every manifest field), retention
+(`-Keep`, default 3, with the detail that **snapshots sort by `createdAt` and backups by name**, because a
+backup name embeds the UTC stamp), the restore rules (exactly `package.json` + `lib/**`; `cordis.patch.yml`
+and `CHANGELOG.md` are in the snapshot and deliberately not restored), the seven refusals that all happen
+BEFORE anything is written, the rollback's rollback, the read-only modes and the three exit codes, and one
+operational trap: **preflight is unconditional**, so even `-ListVersions` needs a resolvable `dsh` launcher
+and `pnpm` on PATH.
+
+Every behavioural claim cites the `install.ps1` line it came from, and the document says plainly what only
+a real run can verify — the same boundary `docs/uninstall.md` draws. Its manual acceptance list ends with
+the truncation negative case: take a scratch snapshot, truncate one file inside it, and watch all three of
+`-ListVersions` (exit 1), `-Rollback -List` (`NOT restorable`, exit 1) and `-Rollback -To` (refused before
+the backup, source tree untouched) refuse it.
+
+A narrow guard accompanies it — `the maintenance workflow is written down, and names the three commands` —
+asserting that the document exists and names them. It does not lock the prose: a documentation guard that
+fails on a reworded sentence teaches people to edit the guard instead of the document.
+
+### A stamp a person can read
+
+`createdAt` reached the screen exactly as the host records it — `2026-09-27T04:47:12.2663764Z`, seven
+fractional digits and all — which is right to RECORD and wrong to SHOW. `locale.js` now exports
+`formatStamp`, which renders a UTC stamp as `2026-09-27 04:47 UTC` and returns anything it does not
+recognize **unchanged**. Two decisions in it are deliberate: the `Z` is required before the word UTC may be
+printed (labelling a value that never said it was UTC would be a nicer-looking lie, so an offset like
+`+08:00` is left as it arrived), and it is string surgery rather than `new Date(...)`, so no reader's
+timezone can move the number. Both dictionaries go through the one formatter. `-ListVersions` still prints
+the raw value, because that is a machine-readable listing and not a sentence.
+
+The four-state test's `same` fixture now uses the host's REAL 7-digit shape rather than a tidied
+`…T08:15:00Z`, and a new test asserts both directions: the readable form is present, the raw one is absent,
+no seven-digit fraction survives, and the unrecognized shapes come back as themselves. +18 assertions:
+12 in the new test, 2 in the four-state one, 4 in the document guard.
+
+### `CONTRIBUTING.md` gained the standing rules, and lost a stale number
+
+A new `## Verification discipline` section states four rules in one line each, each pointing at the
+incident in this file that produced it: **rebuild before verifying** (Round 43, lesson 1), **an assertion
+inside an existing `test()` prints nothing of its own** (lesson 2), **verify the artifact the source
+becomes** — `lib/index.js` is the entry only; the host half is copied file by file ("And one about
+verifying a build"), and **never round-trip a file through PowerShell text cmdlets** (lesson 5, added to
+Round 43 in this same round). The reasoning behind that split: a changelog is where an incident is
+recorded and forgotten, a contributing guide is what the next reader meets before writing code, and these
+four are met by anyone who changes `src/**`, adds an assertion, checks a build, or edits a file from a
+shell.
+
+Two smaller corrections went with it: the `docs/` row now names both documents, and `npm test`'s stale
+`# 649 assertions` became a sentence saying where the count is recorded — a number in a standing document
+goes stale, a number in a round does not.
+
+### Negative results
+
+- **The browser suite could not be run this round.** The page answered 401 and the bundle route 404 with
+  the token this session held, and no token is readable from `$DSH_HOME`, so the gate and `--no-write` were
+  not attempted rather than run against a page that would have failed for an unrelated reason. The
+  formatting change is therefore `suite`-verified and `browser (user)`-pending.
+- **The first version of 7d-2c's offline trigger test measured zero requests** while the code under it was
+  correct, because it patched Node's `globalThis.fetch` instead of the sandbox's. Recorded in Round 43's
+  7d-2c section, where the fix and the reason live.
+
+---
+
 ## Round 43 — Step 7d: the interface offers the commands, and says only what it knows
 
-**Status: done. `suite` 878 assertions / 0 failing (829 → 878), `load` 70 / 0 (65 → 70), `host` green,
+**Status: done. `suite` 891 assertions / 0 failing (829 → 891), `load` 70 / 0 (65 → 70), `host` green,
 `conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged, and the first real browser
-run of this phase: gate 11 / 0, then **172 / 1** — where the one failure was a TEST ISOLATION bug
-introduced and fixed inside this same round (see Lesson 4), not a product defect.** The number is recorded
-as it happened rather than as it should have been. Shipped as two commits — 7d-1 (the plugins column) and
-7d-2 (the projects panel, in two halves: its tests, then the rest).
+runs of this phase: gate 11 / 0, then a run that ended **172 / 1** — the one failure a TEST ISOLATION bug
+introduced and fixed inside this same round (see Lesson 4), not a product defect — and after 7d-2c a full
+`--no-write` run of **182 / 0**. The numbers are recorded as they happened rather than as they should have
+been; the 178 → 182 step is 7d-2c's new browser test, which asserts four things of its own.** Five steps,
+seven commits:
+
+| Step | Commit |
+| --- | --- |
+| 7d-1 — the plugins column prints the maintenance commands | `03afaa6` |
+| 7d-2 — the projects panel: the card's own block, first half | `c648f5b` |
+| 7d-2a — the card's block, tested | `c33ea5f` |
+| 7d-2b — the card hook test, the load-check version assertions, this changelog | `4319e1e` |
+| 7d-2b — again, with the test-isolation fix | `96cfe3a` |
+| 7d-2 — the maintenance block reaches every row, and the version store is read correctly | `f154b43` |
+| 7d-2c — the projects page asks the host itself, and listens for the answer | `8207608` |
+
+A step name appearing twice is not a mistake: a follow-up commit that repairs the step it belongs to keeps
+the step's name, and both are listed so the history stays traceable.
 
 ### What a person can now see
 
@@ -60,12 +151,52 @@ empty list is a fact about the profile: nothing recorded yet. With no store, or 
 or failed, the card claims **nothing at all** — not even "no snapshots", because nothing has been read.
 Four states, three of them claims.
 
-The panel reads the store **synchronously** (`props.installed?.state()`), never awaited, never triggered.
-The property the two columns' no-shared-state test protects is therefore asserted from both sides: a
-failed, loading, idle or absent store renders every card and every command, with no
+The panel reads the store **synchronously** (`props.installed?.state()`), never awaited — and since 7d-2c
+it is no longer passive: this panel both asks for the read and listens for the answer (see
+"The reader's route" below). The property the two columns' no-shared-state test protects is asserted from
+both sides: a failed, loading, idle or absent store renders every card and every command, with no
 `[data-uip-version-state]` in the markup.
 
-### Four lessons from this round
+### The reader's route (7d-2c): nothing had asked the host
+
+**The version sentence was missing on the one page a person actually opens.** The user opened Settings › UI
+and nothing else, expanded the Liquid Glass card, and found the three commands and no version line. The
+suite was green at that moment — 178 / 0 — because it reaches that page along its own route: the plugins
+column opens FIRST, and opening it is what asks the host, so by the time the card test visits the projects
+page the listing has been in hand since long before the first card rendered. Suite and code were both
+walking the other road.
+
+Two halves were missing, and only the first is the obvious one:
+
+1. **Nothing triggered the read from this page.** The trigger now sits in the section's own render, by the
+   same rule the plugins column uses (this slot API has no mount hook, and a listing fetched at boot would
+   be a request for a page most sessions never open). It fires only while the store is `idle`, and `refresh`
+   publishes `loading` **synchronously**, so a React double render, a remount or a second visit asks nothing
+   more — measured, not assumed: the browser test counts requests to that path and asserts exactly one.
+2. **The panel read the store once per render and never subscribed to it.** The answer necessarily lands
+   AFTER the first paint — that is what triggering from the render means — and a store read once and never
+   subscribed to cannot report that anything arrived. Without this half the fix would have turned "never
+   asked" into "asked and nobody listened", which looks identical on the screen. The plugins column has
+   always subscribed (`panel-plugins.js`); the projects panel now does too, with the same shape, and
+   re-reads the state on mount so an answer that lands between render and effect is not lost.
+
+**A test-harness fact worth recording, because it cost a false negative:** the first version of the offline
+trigger test measured **zero** requests while the code under it was already correct. It patched Node's
+`globalThis.fetch`; the bundle's module factories were created inside the suite's `vm` context, so a bare
+`fetch` in the client half resolves against the SANDBOX's globals and never saw the patch. The test now
+installs its fake on `sandbox.fetch` — the bundle's own global — and measures one request on the first
+render, none on the second or third, and the state sentence on the render after the answer.
+
+**How it was verified.** `suite` grew 878 → 891 (the trigger test, and a source guard pinning the
+subscription, since a static render cannot observe a hook). Browser: a new independent test that reloads
+the page, opens ONLY the projects page, waits, expands the cards and asserts that a card states its version
+situation, that the sentence is visible, and that the page asked exactly once; the next test's refresh
+control still works because the test hands the panel back on the plugins page in a `finally`. Full
+`--no-write`: **182 / 0**. `browser (user)`: the sentence appeared on the reporter's own screen — "最新快照
+是 0.1.0-20260927T044712Z（包 v0.1.0，2026-09-27T04:47:12.2663764Z）；与当前安装的一致。" — whose
+timestamp is what Round 44 then made readable.
+
+### Five lessons from this round
 
 1. **Changing `src/**` means rebuilding before verifying.** The first run of 7d-1's tests failed on two
    assertions that looked like real defects and were nothing of the kind: the suite loads `lib/client.js`,
@@ -99,6 +230,28 @@ failed, loading, idle or absent store renders every card and every command, with
    Not "each test returns to a default state first" either, because the tests that follow need the plugins
    page and the ones before need the projects page — such a rule would have to be re-derived per test
    anyway. Stating the contract where it is kept is the version a reader can verify by reading.
+
+5. **A demonstration must not leave the tree in a state that only a test could have caught.** The source
+   guard added by 7d-2c was being shown sensitive — delete the line, watch the guard fail, put it back — and
+   the "put it back" was a PowerShell round-trip of `src/client/panel.js`:
+   `Get-Content -Raw` followed by `Set-Content`, which on the Windows PowerShell available here decodes and
+   re-encodes through the ANSI code page. Fifteen lines lost their `—`, `·` and `›` to U+FFFD, and one CRLF
+   inside a block comment collapsed. Three properties kept it out of sight:
+
+   - **The suite stayed green through it** — 891 / 0 — because the damage was in comments and one error
+     string. A green suite says nothing about bytes it never reads.
+   - **The check that appeared to confirm the restore passed.** It was
+     `(Get-Content -Raw).Contains('<needle>')`, and the needle was ASCII; **a verification that only inspects
+     ASCII cannot see an encoding change.**
+   - **What caught it was a habit, not a test:** reading `git diff` before reporting. Fifteen lines showed
+     as changed that were supposed to be untouched.
+
+   The repair is the part worth copying: `git checkout -- <file>` for the committed bytes, re-apply every
+   edit with the file tools, rebuild, and then PROVE it — a U+FFFD scan over every touched file returning 0,
+   and the rebuilt bundle's `sha256` back at exactly `9735cff5f874`, the value it had before the incident.
+   The standing rule lives in `CONTRIBUTING.md` under "Verification discipline", beside the other three it
+   belongs with: rebuild before verifying, an assertion inside an existing `test()` prints nothing of its
+   own, and verify the artifact the source becomes.
 
 ### The maintenance block shipped broken twice, and both causes are recorded
 

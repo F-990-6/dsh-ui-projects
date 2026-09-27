@@ -42,18 +42,21 @@ Two consequences worth carrying into new code:
 | `src/client/` | the browser half: the registry, the runtime, the settings section. CJS-dialect sources, bundled by `scripts/build.mjs` and never loaded by Node directly |
 | `src/host/` | the host half: the loader row, the `uiProjectsHost` service, the conformance checker. Plain ESM, copied verbatim into `lib/` |
 | `scripts/` | builds, suites and tools. `bundle-client.mjs` and `fake-dom.mjs` are shared with sibling UI project packages |
-| `docs/` | `uninstall.md`: the twelve things a removal consists of, which driver holds each one, and the manual acceptance steps — the host half can only be verified by a real run |
+| `docs/` | `uninstall.md` (the twelve things a removal consists of, which driver holds each one) and `update-and-rollback.md` (the snapshot → update → rollback workflow, its on-disk layout, and what each mode refuses to do). Both end in manual acceptance steps, because the host half can only be verified by a real run |
 
 ## The verification set
 
 ```powershell
 npm run build            # src/** → lib/**
-npm test                 # 649 assertions against the built bundle
+npm test                 # behavioural assertions against the built bundle
 npm run test:host        # the host half loads, applies, and answers the index injection
 npm run test:load        # both halves on the real Cordis from the deployment
 npm run test:conformance # the installed-package checker, over fixtures
 npm run check:installed  # read-only against a real profile
 ```
+
+`npm test` is the count that moves; the number is recorded per round in `CHANGELOG.md` rather than here,
+so that this file states what to run and the changelog states what it found.
 
 ### What `--no-write` protects
 
@@ -73,6 +76,30 @@ browser suite on it — that is not what this flag buys.
 results — a change that did not fix the problem is worth more than one that was never tried, because
 it eliminates a hypothesis. Keep that up: state the command, state the count, and say plainly when
 something was not verified.
+
+## Verification discipline
+
+Four rules, each one learned by getting it wrong. They live here because every reader of this file touches
+one of them; the incidents that produced them, with their numbers, are in `CHANGELOG.md`.
+
+1. **Changing `src/**` means rebuilding before verifying.** The suite and the browser both load `lib/`, so a
+   stale build makes correct code fail and a broken bundle pass. `npm run build` first, always.
+   — Round 43, lesson 1.
+2. **An assertion added inside an existing `test()` prints nothing of its own.** The count moving is the
+   only evidence it ran, and nobody reads a count that did not change. A new claim gets its own `test()`
+   with its own name. — Round 43, lesson 2.
+3. **Verify the artifact the source becomes, not the file you remember.** `lib/index.js` is the host
+   ENTRY only; the host half is copied file by file, so a constant added to `profile-scan.js` lives in
+   `lib/profile-scan.js` and nowhere else. Grep the file the source becomes. — Round 43, "And one about
+   verifying a build".
+4. **Never round-trip a file through PowerShell text cmdlets.** `Get-Content -Raw` with `Set-Content`
+   decodes and re-encodes through the ANSI code page on the Windows PowerShell available here, which
+   destroys every non-ASCII character in the file and reports nothing. Edit through the file tools or
+   Node; if a shell round-trip is unavoidable, move bytes and compare hashes. — Round 43, lesson 5.
+
+Rule 4 is the same discipline as `## Tool discipline` below, applied to bytes rather than to anchors:
+mutate with the file tools, or in memory, and never leave the tree in a state only a test could have
+caught.
 
 ## Test the path, not the function
 

@@ -579,7 +579,7 @@ function materializeEntry(source, require) {
 const { plugin, sandbox, origin, source: bundleSource } = await loadClientBundle()
 const { createInstalledStore, UiPluginsSection, UiProjectsSection } = plugin.__internals
 setSandbox(sandbox)
-const { Registry, scopeCss, strings, detectLocale } = plugin.__internals
+const { Registry, scopeCss, strings, detectLocale, formatStamp } = plugin.__internals
 /**
  * The `localStorage` key the fallback adapter uses, taken from the module that owns it.
  *
@@ -5114,16 +5114,21 @@ await test('the card says which state the version information is in, and never m
   contains(none, 'data-uip-version-state="none"', 'an empty list is a different state from a missing field')
   contains(none, strings('en').snapshotNone, 'with its own sentence')
 
-  // Entries, matching what is installed.
+  // Entries, matching what is installed. The stamp is the shape the host really sends — .NET's
+  // round-trip format, seven fractional digits and all — because that is the value a reader was shown.
   const same = renderProjectsWith(
     harness,
     installedStoreLike({
       status: 'ready',
-      scan: scanWith({ [packageName]: [{ name: '01-v0.1.0', version: '0.1.0', createdAt: '2026-09-27T08:15:00Z' }] }),
+      scan: scanWith({
+        [packageName]: [{ name: '01-v0.1.0', version: '0.1.0', createdAt: '2026-09-27T08:15:00.1234567Z' }],
+      }),
     }),
   )
   contains(same, 'data-uip-version-state="same"', 'a snapshot matching the installed version says so')
   contains(same, '01-v0.1.0', 'and names the snapshot')
+  contains(same, '2026-09-27 08:15 UTC', 'and shows when it was taken, as a reader can read it (7e)')
+  excludes(same, '2026-09-27T08:15:00.1234567Z', 'never as the raw host stamp, whose precision is noise on a card')
 
   // Entries that differ: the state the badge exists for.
   const different = renderProjectsWith(
@@ -5136,6 +5141,61 @@ await test('the card says which state the version information is in, and never m
   contains(different, 'data-uip-version-state="different"', 'a snapshot that differs is its own state')
   contains(different, 'data-uip-maintenance-badge="different"', 'and the folded summary carries the badge, so the state is visible unexpanded')
   contains(different, strings('en').snapshotDifferent('01-v0.0.9', '0.0.9', '0.1.0'), 'with a sentence naming both versions, and no guess about which is newer')
+})
+
+/*
+ * A STAMP A PERSON CAN READ (7e).
+ *
+ * The card used to print what the host records: `2026-09-27T04:47:12.2663764Z`. Recording that precision
+ * is right; showing it is not, and the user read it on their own screen before this was fixed. The
+ * assertions are deliberately two-sided — the readable form must be there AND the raw one must not be —
+ * because a formatter that silently did nothing satisfies either half on its own.
+ *
+ * Its own `test()`, for the rule recorded in `CONTRIBUTING.md`: an assertion added inside an existing
+ * test prints nothing of its own, so the count moving is the only evidence it ran.
+ */
+await test('a host timestamp is shown without its fractional seconds, and relabelled only when it is really UTC', async () => {
+  const real = '2026-09-27T04:47:12.2663764Z'
+  const shown = formatStamp(real)
+  equal(shown, '2026-09-27 04:47 UTC', 'the stamp a reader actually saw becomes a readable one')
+  excludes(shown, 'T04:47', 'with no ISO separator left in it')
+  equal(/\.\d{7}/.test(shown), false, 'and none of the seven fractional digits the host records')
+  equal(/\d{2}:\d{2}:\d{2}/.test(shown), false, 'nor the seconds, which add nothing at this scale')
+
+  // Only a value that SAYS it is UTC is labelled UTC.
+  equal(formatStamp('2026-09-27T08:15:00Z'), '2026-09-27 08:15 UTC', 'seconds without a fraction are the same shape')
+  equal(formatStamp('2026-09-27T08:15Z'), '2026-09-27 08:15 UTC', 'and so is a stamp without seconds')
+  equal(
+    formatStamp('2026-09-27T08:15:00+08:00'),
+    '2026-09-27T08:15:00+08:00',
+    'an offset is NOT relabelled as UTC — it is left exactly as it arrived',
+  )
+  equal(formatStamp('2026-09-27'), '2026-09-27', 'a date with no time is already readable')
+  equal(formatStamp('not a date'), 'not a date', 'a value that is not a date is shown as itself, never as Invalid Date')
+  equal(formatStamp(''), '', 'nothing stays nothing')
+  equal(formatStamp(undefined), '', 'and an absent stamp does not become the word "undefined"')
+
+  // Both dictionaries go through the one formatter, so a reader in either language sees the same stamp.
+  contains(
+    strings('zh').snapshotNewer('01-v0.1.0', '0.1.0', real),
+    '2026-09-27 04:47 UTC',
+    'the Chinese sentence formats it identically',
+  )
+})
+
+/*
+ * THE DOCUMENT THAT DESCRIBES THE THREE COMMANDS (7e).
+ *
+ * Deliberately narrow: it asserts that the document exists and that the three commands a reader arrives
+ * looking for are named in it. It does not lock the prose, because a documentation guard that fails on a
+ * reworded sentence teaches the next person to edit the guard instead of the document.
+ */
+await test('the maintenance workflow is written down, and names the three commands', async () => {
+  const text = await readFile(join(packageRoot, 'docs', 'update-and-rollback.md'), 'utf8')
+  truthy(text.length > 2000, `the document has content (${text.length} bytes)`)
+  for (const command of ['install.ps1 -Snapshot', 'install.ps1 -Update', 'install.ps1 -Rollback -To']) {
+    contains(text, command, `${command} is named in it`)
+  }
 })
 
 await test('the card makes no version claim when nothing has been read', async () => {

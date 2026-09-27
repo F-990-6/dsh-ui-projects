@@ -5,6 +5,34 @@
  * third language (falling back to English).
  */
 
+/**
+ * A timestamp from the host, as a person should read it.
+ *
+ * The host records `createdAt` in .NET's round-trip format — `2026-09-27T04:47:12.2663764Z`, seven
+ * fractional digits and all — which is the right thing to RECORD and the wrong thing to SHOW: the
+ * precision is noise to a reader, and `T` is not how a date is said out loud. The sentence therefore
+ * carries `2026-09-27 04:47 UTC`.
+ *
+ * The zone is kept, and that is not decoration: the value IS UTC (the host formats
+ * `(Get-Date).ToUniversalTime()`), so printing it bare would present a UTC instant as though it were
+ * local time — silently wrong by hours for every reader who is not in UTC.
+ *
+ * `Z` is REQUIRED before this function will call a value UTC, and anything it does not recognize comes
+ * back UNCHANGED. A stamp it cannot parse is not one it may re-label, and the raw string is at least
+ * true; the alternative — printing "UTC" over a value that never said so — is a nicer-looking lie.
+ *
+ * It is string surgery rather than `new Date(...)` on purpose: no timezone of the reader's machine can
+ * move the number, and a value from a future host format survives as itself rather than as `Invalid
+ * Date`.
+ * @param {string} value
+ * @returns {string}
+ */
+export function formatStamp(value) {
+  const text = typeof value === 'string' ? value : ''
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?Z$/.exec(text)
+  return match === null ? text : `${match[1]} ${match[2]} UTC`
+}
+
 export const STRINGS = {
   en: {
     sectionLabel: 'UI',
@@ -37,7 +65,7 @@ export const STRINGS = {
     maintenanceSnapshot: 'install.ps1 -Snapshot',
     maintenanceUpdate: 'install.ps1 -Update',
     maintenanceRollback: 'install.ps1 -Rollback -To <name>',
-    snapshotNewer: (name, version, when) => `The newest snapshot is ${name} (package v${version}, ${when}); it matches what is installed.`,
+    snapshotNewer: (name, version, when) => `The newest snapshot is ${name} (package v${version}, ${formatStamp(when)}); it matches what is installed.`,
     snapshotDifferent: (name, version, current) => `The newest snapshot is ${name} (package v${version}); ${current} is installed. The two differ, so the recorded version is not the running one.`,
     snapshotNone: 'No version snapshot has been recorded yet; -Snapshot is what makes a rollback possible.',
     snapshotHostStale: 'Snapshot information needs a dsh web restart before this page can show it (the host code is newer than the running process).',
@@ -171,7 +199,7 @@ export const STRINGS = {
     maintenanceSnapshot: 'install.ps1 -Snapshot',
     maintenanceUpdate: 'install.ps1 -Update',
     maintenanceRollback: 'install.ps1 -Rollback -To <name>',
-    snapshotNewer: (name, version, when) => `最新快照是 ${name}（包 v${version}，${when}）；与当前安装的一致。`,
+    snapshotNewer: (name, version, when) => `最新快照是 ${name}（包 v${version}，${formatStamp(when)}）；与当前安装的一致。`,
     snapshotDifferent: (name, version, current) => `最新快照是 ${name}（包 v${version}）；当前安装的是 ${current}。两者不同，说明记录下来的版本并不是正在运行的那个。`,
     snapshotNone: '还没有记录任何快照；跑一次 -Snapshot 才能回滚。',
     snapshotHostStale: '快照信息需要重启 dsh web 之后才能在这个页面显示（host 代码比运行中的进程新）。',
