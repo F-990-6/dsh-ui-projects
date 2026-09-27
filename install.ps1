@@ -333,6 +333,18 @@ function Get-TreeFingerprint([string]$Root, [string[]]$Exclude) {
     return [pscustomobject]@{ files = $files; bytes = $bytes; sha256 = $sha }
 }
 
+# A hash's first 16 characters, or whatever there is when it is not a hash at all.
+#
+# `'n/a'.Substring(0, 16)` throws, and the places that print a short hash are exactly the places that
+# can be handed a placeholder: a tree that is not there, a file that was never hashed. Under StrictMode
+# that throw is the end of the whole run, which is how a missing build becomes a stack trace instead of
+# a diagnosis. Every short hash in this script goes through here.
+function Get-ShortSha([string]$Value) {
+    if ([string]::IsNullOrEmpty($Value)) { return '(none)' }
+    if ($Value.Length -le 16) { return $Value }
+    return $Value.Substring(0, 16)
+}
+
 # Remove a directory LINK, never its target.
 #
 # `pnpm remove` has been observed deleting the dependency and the bundle layer
@@ -1031,8 +1043,23 @@ if ($Update) {
 
     $currentManifest = Read-JsonFile $sourceManifest
     $currentVersion = Get-JsonProperty $currentManifest 'version' '?'
+
+    # Both paths are resolved HERE, in this branch, and that is not decoration.
+    #
+    # `Set-StrictMode -Version 2.0` turns a reference to an undefined variable into a thrown
+    # VariableIsUndefined, which is how the FIRST manual dry run of this mode ended: `$sourceBundle` was
+    # defined in the UNINSTALL branch and assumed here, and the run died on it before printing anything.
+    # A branch that reads a name must define it, even when the same name exists further up the file --
+    # and only a real run could have found this: the source guards were green throughout.
     $nowManifestSha = Get-Sha256 $sourceManifest
-    $nowBundleSha = Get-Sha256 $sourceBundle
+    $sourceBundle = Join-Path $SourceDir 'lib/client.js'
+    $nowBundleSha = $null
+    if (Test-Path -LiteralPath $sourceBundle -PathType Leaf) {
+        $nowBundleSha = Get-Sha256 $sourceBundle
+    }
+    else {
+        Write-Warn "lib/client.js is missing at $sourceBundle; run: node scripts/build.mjs"
+    }
 
     Write-Head 'What this run found'
     if ($recorded -eq $null) {
@@ -1046,26 +1073,29 @@ if ($Update) {
         Write-Skip 'package.json        : no recorded hash to compare against'
     }
     elseif ($recordedManifestSha -eq $nowManifestSha) {
-        Write-Ok "package.json        : unchanged since the record ($($nowManifestSha.Substring(0, 16)))"
+        Write-Ok "package.json        : unchanged since the record ($(Get-ShortSha $nowManifestSha))"
     }
     else {
-        Write-Warn "package.json        : CHANGED since the record (was $($recordedManifestSha.Substring(0, 16)), now $($nowManifestSha.Substring(0, 16)))"
+        Write-Warn "package.json        : CHANGED since the record (was $(Get-ShortSha $recordedManifestSha), now $(Get-ShortSha $nowManifestSha))"
     }
-    if ($recordedBundleSha -eq $null) {
+    if ($nowBundleSha -eq $null) {
+        Write-Skip 'lib/client.js       : not built, so there is nothing to compare (see the warning above)'
+    }
+    elseif ($recordedBundleSha -eq $null) {
         Write-Skip 'lib/client.js       : no recorded hash to compare against'
     }
     elseif ($recordedBundleSha -eq $nowBundleSha) {
-        Write-Ok "lib/client.js       : unchanged since the record ($($nowBundleSha.Substring(0, 16)))"
+        Write-Ok "lib/client.js       : unchanged since the record ($(Get-ShortSha $nowBundleSha))"
     }
     else {
-        Write-Warn "lib/client.js       : CHANGED since the record (was $($recordedBundleSha.Substring(0, 16)), now $($nowBundleSha.Substring(0, 16)))"
+        Write-Warn "lib/client.js       : CHANGED since the record (was $(Get-ShortSha $recordedBundleSha), now $(Get-ShortSha $nowBundleSha))"
     }
 
     $libTree = Get-TreeFingerprint (Join-Path $SourceDir 'lib') @()
-    Write-Note "lib/**              : $($libTree.files) files, $($libTree.bytes) bytes, sha $($libTree.sha256.Substring(0, 16))"
+    Write-Note "lib/**              : $($libTree.files) files, $($libTree.bytes) bytes, sha $(Get-ShortSha $libTree.sha256)"
     $sourceTree = Get-TreeFingerprint $SourceDir @('.git', 'node_modules', 'lib')
-    Write-Note "source tree         : $($sourceTree.files) files, $($sourceTree.bytes) bytes, sha $($sourceTree.sha256.Substring(0, 16))   (excludes .git, node_modules, lib)"
-    if ($recorded -ne $null -and $recordedManifestSha -eq $nowManifestSha -and $recordedBundleSha -eq $nowBundleSha) {
+    Write-Note "source tree         : $($sourceTree.files) files, $($sourceTree.bytes) bytes, sha $(Get-ShortSha $sourceTree.sha256)   (excludes .git, node_modules, lib)"
+    if ($recorded -ne $null -and $nowBundleSha -ne $null -and $recordedManifestSha -eq $nowManifestSha -and $recordedBundleSha -eq $nowBundleSha) {
         Write-Note 'verdict             : NOTHING TO UPDATE -- the build matches what the record was taken against'
     }
     elseif ($recorded -ne $null) {

@@ -27,7 +27,7 @@ Verification vocabulary used below:
 
 ## Round 40 — Step 7a: `-Update` as a read-only plan
 
-**Status: done. `suite` 772 assertions / 0 failing (760 → 772), `load` 65 / 0, `host` green,
+**Status: done. `suite` 777 assertions / 0 failing (760 → 777), `load` 65 / 0, `host` green,
 `conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged, `browser --self-check`
 green. No browser run: nothing user-visible changed.**
 **`install.ps1` was NOT executed in any mode, including `-DryRun`.** That is this round's discipline, and
@@ -94,6 +94,36 @@ guard. A second guard covers the update branch itself, and its sensitivity was d
 
 Slice 8,566 characters against a 2,000-character floor, so scanning a fragment or an empty string fails
 instead of passing.
+
+### The first manual run found a crash the guards could not
+
+The dry run died before printing anything:
+
+```
+install.ps1 : 检索不到变量"$sourceBundle"，因为未设置该变量。   (VariableIsUndefined)
+```
+
+`$sourceBundle` was defined in the UNINSTALL branch and read in UPDATE, and `Set-StrictMode -Version 2.0`
+turns a reference to an undefined variable into a thrown error. Two source guards were green, the whole
+suite was green, and the mode could not run at all.
+
+Fixed, as three things rather than one line:
+
+- the branch resolves `$sourceBundle` itself, with a comment saying why: a branch that reads a name must
+  define it, even when the same name exists further up the file;
+- a missing `lib/client.js` is now a WARN naming the fix (`node scripts/build.mjs`) instead of a crash;
+- the same class was found next door — `'n/a'.Substring(0, 16)` throws, and every short hash in the
+  branch now goes through `Get-ShortSha`. The guard asserts that no raw `Substring(0, 16)` remains in the
+  slice, so the class cannot creep back one call site at a time;
+- and the guard now compares **positions**: `$sourceBundle = Join-Path` must appear before
+  `Get-Sha256 $sourceBundle`. A guard that only asserted the check EXISTS would have stayed green through
+  exactly this defect, because the check was there — it just could not run.
+
+**This is Round 39's lesson again, in a sharper form.** There, a source guard could not catch a check
+being weakened; here it could not catch a check that never executes. A source guard proves a promise is
+still written down. Only running the thing proves it holds. One mitigation did work as designed: the
+crash happened **before any write**, and the fingerprint check showed the profile byte-identical
+afterwards — the mode was broken, not dangerous.
 
 ### What this round does NOT show
 

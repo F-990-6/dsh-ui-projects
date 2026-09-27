@@ -4673,6 +4673,27 @@ await test('the update mode is a read-only plan, and refuses to pretend otherwis
     '[]',
     `the four things the update plan promises not to touch are named (missing: ${JSON.stringify(unkept)})`,
   )
+
+  /*
+   * DEFINITION BEFORE USE, which is where the first manual dry run of this mode died: `$sourceBundle`
+   * was defined in the UNINSTALL branch and read here, and `Set-StrictMode -Version 2.0` turned that
+   * into `VariableIsUndefined` — the whole run stopped before printing anything. A guard that only
+   * asserts a check EXISTS cannot see it; this one compares positions, because the order is the defect.
+   */
+  const definedAt = branch.indexOf('$sourceBundle = Join-Path')
+  const usedAt = branch.indexOf('Get-Sha256 $sourceBundle')
+  truthy(definedAt > 0, 'the update branch defines $sourceBundle itself rather than assuming the uninstall branch did')
+  truthy(usedAt > 0, 'and uses it for the bundle hash')
+  truthy(definedAt < usedAt, `the definition comes first (defined at ${definedAt}, used at ${usedAt})`)
+
+  /*
+   * And the same crash from the other direction: `'n/a'.Substring(0, 16)` throws, and the places that
+   * print a short hash are exactly the places that can be handed a placeholder — a tree that is not
+   * there, a file that was never hashed. Every short hash goes through `Get-ShortSha`, so a raw
+   * Substring in this branch is that crash waiting for a different input.
+   */
+  equal(branch.split('.Substring(0, 16)').length - 1, 0, 'no short hash is taken with a raw Substring')
+  truthy(branch.includes('Get-ShortSha'), 'and the helper is what takes them')
 })
 
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
