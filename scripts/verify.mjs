@@ -4898,6 +4898,39 @@ await test('the rollback mode writes only the two source files it promises to, i
   }
 
   /*
+   * THE NAME USED FOR THE COPY AND THE NAME RECORDED IN THE MANIFEST MUST BE ONE NAME.
+   *
+   * They were two: the copy dropped the `lib/` prefix that the manifest carried, so every file in the
+   * backup read back as "missing" while sitting on disk one level up. The verification was right and the
+   * layout was wrong. A guard cannot run the copy — but it can assert that those two lines cannot drift
+   * apart, which IS the defect.
+   */
+  truthy(
+    writing.split('\n').some((line) => line.includes("$relFull = 'lib/'")),
+    'the backup builds one name per file, prefixed with lib/',
+  )
+  truthy(
+    writing.split('\n').some(
+      (line) => line.includes('Copy-Item') && line.includes('$RollbackBackupPayload') && line.includes('$relFull'),
+    ),
+    'the copy destination uses that one name',
+  )
+  truthy(writing.split('\n').some((line) => line.includes('rel = $relFull')), 'and so does the manifest entry')
+  equal(writing.includes('rel = "lib/$rel"'), false, 'the form that prefixed the manifest but not the copy is not back')
+
+  /*
+   * And the order inside the backup is explicit: copy, then write the manifest, then verify it. Written
+   * the other way round, the manifest would describe files that had not been copied yet.
+   */
+  const copyAt = writing.indexOf('Copy-Item -LiteralPath $entry.FullName')
+  const manifestAt = writing.indexOf("Write-TextFile (Join-Path $RollbackBackupDir 'manifest.json')")
+  const backupVerifyAt = writing.indexOf('Test-VersionSnapshot $RollbackBackupDir')
+  truthy(
+    copyAt > 0 && manifestAt > copyAt && backupVerifyAt > manifestAt,
+    `the backup copies, then writes its manifest, then verifies it (${copyAt} < ${manifestAt} < ${backupVerifyAt})`,
+  )
+
+  /*
    * The order, which IS the safety property: refuse a bad snapshot, back the tree up, read that backup
    * back, only then write, and re-verify afterwards. Pruning and the record come after the re-verification.
    */

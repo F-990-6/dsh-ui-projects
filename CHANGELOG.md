@@ -27,11 +27,44 @@ Verification vocabulary used below:
 
 ## Round 42 — Step 7c: recording a state, and the one command allowed to write the source tree
 
-**Status: done. `suite` 824 assertions / 0 failing (794 → 824), `load` 65 / 0, `host` green,
+**Status: done. `suite` 829 assertions / 0 failing (794 → 829), `load` 65 / 0, `host` green,
 `conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged, `browser --self-check`
-green. No browser run. `install.ps1` was NOT executed in any mode**: neither the record write nor a
-rollback has ever run here. Both are the user's manual acceptance steps; what this round verifies is
-static — five source guards — plus the suites.
+green. No browser run. `install.ps1` was NOT executed in any mode here**: the record write and the
+rollback are the user's manual acceptance steps, and both were run there — which is how the bug recorded
+at the end of this entry was found.
+
+### The manual run found a copy that landed one level up
+
+The rollback's own safety net caught it, before anything was written to the source tree:
+
+```
+REFUSED  the backup did not verify (missing: lib/boot-css.js; missing: lib/client.js;
+missing: lib/conformance.js; missing: lib/index.js; missing: lib/installed-endpoint.js)
+```
+
+**Root cause, in the backup loop.** The copy destination used the name relative to `lib/` while the
+manifest recorded that name with a `lib/` prefix. So every file was copied to `payload\<name>` and then
+looked for at `payload\lib\<name>`: the verification was right and the layout was wrong. All eight files
+were on disk, one level too high. The SNAPSHOT branch had the same shape and was consistent — which is
+why 7b passed and 7c did not.
+
+**A second defect hid the first one's extent.** The refusal printed only the first five problems
+(`Select-Object -First 5`), so a total layout failure read exactly like a partial copy: five missing, three
+"present". The message now prints the problem count and up to eight names, with the remainder counted.
+
+**The safety properties held**, and they are worth stating because they were the point of the design: the
+refusal happened *before* the first write into the source tree, fingerprint 7 (the source tree) was
+unchanged, `git status` was clean, `before` was untouched, and `lastRollback` was never written.
+
+**Fixed** by giving the copy and the manifest ONE name (`$relFull`, built once with the `lib/` prefix) —
+and the guard now asserts that those two lines cannot drift apart again, plus that the backup copies,
+then writes its manifest, then verifies it, in that order. A probe over a `%TEMP%` fixture showed the rule
+behaviourally: consistent naming → PASS; the 7c defect → CAUGHT with 8 problems; a copy of only five of
+eight → CAUGHT with the three missing names.
+
+**Third time this pattern is the finding**: a source guard proves a shape, and only a run proves it works.
+Round 39 was a weakened check, Round 40 a check that could not execute, and this one a correct check
+reading a layout the code never produced.
 
 ### `-Update`: verify, then record
 

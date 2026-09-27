@@ -1708,10 +1708,16 @@ if ($Rollback -and -not $List) {
     Copy-Item -LiteralPath $sourceManifest -Destination (Join-Path $RollbackBackupPayload 'package.json') -Force
     $backupEntries = New-Object System.Collections.ArrayList
     foreach ($entry in @(Get-ChildItem -LiteralPath $sourceLib -Recurse -File -Force -ErrorAction SilentlyContinue | Sort-Object FullName)) {
-        $rel = $entry.FullName.Substring($sourceLib.Length).TrimStart('\', '/').Replace('\', '/')
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent (Join-Path $RollbackBackupPayload $rel.Replace('/', '\'))) | Out-Null
-        Copy-Item -LiteralPath $entry.FullName -Destination (Join-Path $RollbackBackupPayload $rel.Replace('/', '\')) -Force
-        [void]$backupEntries.Add([pscustomobject]@{ rel = "lib/$rel"; bytes = $entry.Length; sha256 = Get-Sha256 $entry.FullName })
+        # ONE name, used for BOTH the destination and the manifest entry.
+        #
+        # They were two different names once -- the copy dropped the `lib/` prefix that the manifest
+        # recorded -- and every file in the backup was therefore "missing" when it was read back. The
+        # verification was right and the layout was wrong; `scripts/verify.mjs` now asserts that these two
+        # lines cannot drift apart again.
+        $relFull = 'lib/' + $entry.FullName.Substring($sourceLib.Length).TrimStart('\', '/').Replace('\', '/')
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent (Join-Path $RollbackBackupPayload $relFull.Replace('/', '\'))) | Out-Null
+        Copy-Item -LiteralPath $entry.FullName -Destination (Join-Path $RollbackBackupPayload $relFull.Replace('/', '\')) -Force
+        [void]$backupEntries.Add([pscustomobject]@{ rel = $relFull; bytes = $entry.Length; sha256 = Get-Sha256 $entry.FullName })
     }
     $backupManifest = [pscustomobject]@{
         schemaVersion = 1
@@ -1726,7 +1732,11 @@ if ($Rollback -and -not $List) {
     Write-TextFile (Join-Path $RollbackBackupDir 'manifest.json') (($backupManifest | ConvertTo-Json -Depth 6) + "`n")
     $backupCheck = Test-VersionSnapshot $RollbackBackupDir
     if (-not $backupCheck.ok) {
-        Write-Warn "REFUSED  the backup did not verify ($(($backupCheck.problems | Select-Object -First 5) -join '; ')); nothing was written to the source tree"
+        # The count is printed as well as the names: with a cap alone, a total layout failure reads like a
+        # partial copy -- which is exactly how this message was misread the first time it appeared.
+        $shownBackup = @($backupCheck.problems | Select-Object -First 8)
+        $moreBackup = $backupCheck.problems.Count - $shownBackup.Count
+        Write-Warn "REFUSED  the backup did not verify: $($backupCheck.problems.Count) problem(s) -- $($shownBackup -join '; ')$(if ($moreBackup -gt 0) { " ... and $moreBackup more" }); nothing was written to the source tree"
         exit 1
     }
     Write-Ok "backup verified ($($backupCheck.checked)/$($backupCheck.total) files) at $RollbackBackupDir"
@@ -1754,7 +1764,9 @@ if ($Rollback -and -not $List) {
         $restoredCount += 1
     }
     if ($restoreProblems.Count -gt 0) {
-        Write-Warn "the restored tree does not match the snapshot: $(($restoreProblems | Select-Object -First 5) -join '; ')"
+        $shownRestore = @($restoreProblems | Select-Object -First 8)
+        $moreRestore = $restoreProblems.Count - $shownRestore.Count
+        Write-Warn "the restored tree does not match the snapshot: $($restoreProblems.Count) problem(s) -- $($shownRestore -join '; ')$(if ($moreRestore -gt 0) { " ... and $moreRestore more" })"
         Write-Warn 'putting the tree back from the backup taken moments ago'
         Copy-Item -LiteralPath (Join-Path $RollbackBackupPayload 'package.json') -Destination $sourceManifest -Force
         foreach ($rel in $backupEntries) {
