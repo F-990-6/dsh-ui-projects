@@ -227,6 +227,16 @@ export function createStore(input) {
       status: registry.status(project.id),
       error: registry.error(project.id),
       removable: project.defaultEnabled === true,
+      /*
+       * The PACKAGE a project came from, for the maintenance commands on its card.
+       *
+       * Commands address packages, not projects: `install.ps1 -Update` maintains the package that owns
+       * the project, and today the framework and the built-in skin ship in ONE package — so a person
+       * looking at the Liquid Glass card would reasonably read the command as maintaining Liquid Glass.
+       * The card names the package for exactly that reason, and once step 8 splits the skin out, this is
+       * also the field that makes the `-SourceDir` argument possible.
+       */
+      package: project.source?.package ?? 'dsh-ui-projects',
       controls: resolveControls(project, runtime, ctx),
     })),
     /*

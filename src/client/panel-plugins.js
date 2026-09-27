@@ -216,5 +216,34 @@ function CommandBlock({ copy, React, name, profileName }) {
         ),
       ),
     ),
+    /*
+     * THE MAINTENANCE COMMANDS, and the title names what they maintain.
+     *
+     * Commands address PACKAGES, not projects or pages: `install.ps1 -Update` maintains the package that
+     * owns this row. Today the framework and the built-in skin ship in one package, so a person who
+     * recognises "Liquid Glass" and not "dsh-ui-projects" would read the command as maintaining the skin
+     * — which is why the heading says the package name out loud rather than "maintenance".
+     *
+     * Printed, never run, like every other command in this file: `$DSH_HOME` is written by install.ps1
+     * and by nothing else in this project.
+     */
+    React.createElement(
+      'div',
+      { className: 'uip-maintenance', 'data-uip-maintenance': name, key: 'maintenance' },
+      React.createElement('p', { className: 'uip-hint', 'data-uip-maintenance-title': name }, copy.maintenanceTitle(name)),
+      React.createElement('p', { className: 'uip-hint' }, copy.maintenanceHint),
+      React.createElement('p', { className: 'uip-hint' }, copy.cmdSnapshotWhy),
+      React.createElement('pre', { 'data-uip-command-maintenance': 'snapshot' }, 'install.ps1 -Snapshot'),
+      React.createElement('p', { className: 'uip-hint' }, copy.cmdUpdateWhy),
+      React.createElement('pre', { 'data-uip-command-maintenance': 'update' }, 'install.ps1 -Update'),
+      React.createElement('p', { className: 'uip-hint' }, copy.cmdRollbackWhy),
+      React.createElement(
+        'pre',
+        { 'data-uip-command-maintenance': 'rollback' },
+        'install.ps1 -Rollback -To <name>',
+      ),
+      React.createElement('p', { className: 'uip-hint' }, copy.cmdRollbackList),
+      React.createElement('p', { className: 'uip-hint' }, copy.restartReminder),
+    ),
   )
 }

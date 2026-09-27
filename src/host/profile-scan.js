@@ -21,6 +21,12 @@
  */
 
 import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises'
+
+/** Where `install.ps1` keeps a package's version snapshots, inside the profile directory. */
+const VERSIONS_DIR_NAME = '.dsh-ui-projects-versions'
+
+/** How many snapshots are worth sending: the panel offers the newest and lists the rest on request. */
+const VERSIONS_MAX = 5
 import { join, resolve } from 'node:path'
 
 import {
@@ -280,10 +286,65 @@ export async function scanProfile({ profileDir }) {
     scan.problems.push(...problems)
   }
 
+  // Version snapshots, for the packages a row can be rendered for. Read here rather than in the
+  // endpoint so that the wire projection stays a projection: what crosses the channel is decided in
+  // one place (`projectScan`), and what is read is decided in this one.
+  scan.versions = await readVersions(profileDir, scan.uiProjectPackages.map((entry) => entry.name))
+
   // Every package's problems were appended as it was scanned. Re-appending the unresolved ones here
   // would double every one of those warnings in the listing, which is exactly the kind of noise that
   // teaches a reader to stop reading.
   return scan
+}
+
+/**
+ * The version snapshots a package has recorded, newest first — identity and counts only.
+ *
+ * READ-ONLY like the rest of this module, and deliberately blind to paths: a snapshot NAME is what a
+ * person pastes into `-Rollback -To`, and the directory it lives in is none of the page's business.
+ *
+ * THE DISTINCTION THAT MATTERS TO A CALLER: a package this function was not asked about is absent from
+ * the map, which is NOT the same as a package with an empty list. A host whose code predates this field
+ * sends no `versions` object at all, and the client renders a different sentence for that than for "no
+ * snapshots yet" — one is a restart that has not happened, the other is a fact about the profile.
+ */
+async function readVersions(profileDir, names) {
+  /** @type {Record<string, any[]>} */
+  const out = {}
+  for (const name of names) {
+    /** @type {any[]} */
+    const list = []
+    const packageDir = join(profileDir, VERSIONS_DIR_NAME, name)
+    try {
+      const entries = await readdir(packageDir, { withFileTypes: true })
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue
+        try {
+          const manifest = JSON.parse(await readFile(join(packageDir, entry.name, 'manifest.json'), 'utf8'))
+          const payload = manifest?.payload ?? {}
+          list.push({
+            name: entry.name,
+            version: String(manifest.version ?? 'unknown'),
+            createdAt: String(manifest.createdAt ?? ''),
+            files: Number(payload.files ?? 0),
+            bytes: Number(payload.bytes ?? 0),
+            ours: String(manifest.tool ?? '') === 'install.ps1 -Snapshot',
+          })
+        } catch {
+          /*
+           * A directory without a readable manifest is not a snapshot this page can describe. It is
+           * left out rather than rendered as a broken row: the column's subject is the package, and a
+           * half-read snapshot would invite a rollback to something that cannot be verified.
+           */
+        }
+      }
+    } catch {
+      /* no versions directory for this package — an empty list, which is a fact about the profile */
+    }
+    list.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    out[name] = list.slice(0, VERSIONS_MAX)
+  }
+  return out
 }
 
 /**

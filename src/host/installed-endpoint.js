@@ -53,6 +53,16 @@ export function projectScan(scan) {
     orphanedBindings: scan.orphanedBindings,
     unresolved: scan.unresolved,
     problems: scan.problems,
+    /*
+     * Version snapshots per package, and the field is the reason the client can say something useful
+     * rather than "no snapshots": `undefined` means the host that answered has no such code (a restart
+     * that has not happened yet), while `{}` or `{ pkg: [] }` means it looked and there were none. The
+     * client renders a different sentence for each, so the two must not be collapsed here.
+     *
+     * The schema version is deliberately NOT bumped: the field is additive, a client that does not know
+     * it ignores it, and a client that does reads `scan.versions ?? {}`.
+     */
+    versions: scan.versions,
   }
 }
 

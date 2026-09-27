@@ -3926,6 +3926,15 @@ await test('a per-package problem is rendered against its own row, and a failed 
       keptTitle: 'kept',
       kept: ['kept: your switch', 'kept: this package settings'],
     },
+    maintenanceTitle: (name) => `maintaining ${name}`,
+    maintenanceHint: 'acts on the package',
+    cmdSnapshotWhy: 'snapshot why',
+    cmdUpdateWhy: 'update why',
+    cmdRollbackWhy: 'rollback why',
+    cmdRollbackList: 'list them',
+    noSnapshots: 'no snapshots',
+    snapshotNames: (count) => `${count} versions`,
+    restartReminder: 'restart dsh',
     kinds: { bundle: 'bundle' },
   }
   const render = (state) => renderSection({ store: { state: () => state, refresh: async () => {} }, t: { plugins: flatCopy }, state, React: react })
@@ -4004,6 +4013,15 @@ await test('the plugins column renders each state, and never pretends to be empt
       keptTitle: 'kept',
       kept: ['kept: your switch', 'kept: this package settings'],
     },
+    maintenanceTitle: (name) => `maintaining ${name}`,
+    maintenanceHint: 'acts on the package',
+    cmdSnapshotWhy: 'snapshot why',
+    cmdUpdateWhy: 'update why',
+    cmdRollbackWhy: 'rollback why',
+    cmdRollbackList: 'list them',
+    noSnapshots: 'no snapshots',
+    snapshotNames: (count) => `${count} versions`,
+    restartReminder: 'restart dsh',
     kinds: { bundle: 'bundle', 'ui-project': 'UI project' },
   }
   const render = (state) => renderSection({ store: { state: () => state, refresh: async () => {} }, t: { plugins: flatCopy }, state, React: react })
@@ -4053,7 +4071,9 @@ await test('the column reads the dictionary it is actually given', async () => {
    * was tested against one while production threw.
    */
   const READ_KEYS = ['title', 'intro', 'loading', 'failed', 'failedHint', 'refresh', 'empty', 'composed',
-    'notComposed', 'framework', 'project', 'orphaned', 'commandsHint', 'restartHint', 'restartBlock', 'kinds', 'uninstall']
+    'notComposed', 'framework', 'project', 'orphaned', 'commandsHint', 'restartHint', 'restartBlock', 'kinds', 'uninstall',
+    'maintenanceTitle', 'maintenanceHint', 'cmdSnapshotWhy', 'cmdUpdateWhy', 'cmdRollbackWhy', 'cmdRollbackList',
+    'noSnapshots', 'snapshotNames', 'restartReminder']
   const readyScan = {
     profileName: 'web',
     dependencies: [{ name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] }],
@@ -4114,7 +4134,7 @@ await test('the uninstall block answers all three questions, in both languages',
     contains(markup, copy.kept[0], 'and what is deliberately left alone (' + locale + ')')
     equal(copy.automatic.length, 6, 'six things the framework removes by itself (' + locale + ')')
     equal(copy.command.length, 2, 'two the command removes (' + locale + ')')
-    equal(copy.kept.length, 4, 'four it never touches (' + locale + ')')
+    equal(copy.kept.length, 5, 'five it never touches, the version snapshots among them (' + locale + ')')
   }
   /*
    * The two decisions, in the words the interface itself uses. Asserted on the copy rather than on the
@@ -4956,6 +4976,73 @@ await test('the rollback listing half is read-only', async () => {
   const found = verbs.filter((verb) => listing.includes(verb))
   equal(JSON.stringify(found), '[]', `the listing half contains no write verb at all (found: ${JSON.stringify(found)})`)
   truthy(listing.includes('can be restored'), 'and it says how many snapshots can be restored')
+})
+
+/*
+ * THE MAINTENANCE COMMANDS IN THE PLUGINS COLUMN (7d-1).
+ *
+ * Printed, never run — the whole file's rule — and addressed at a PACKAGE, which the heading has to say
+ * because the framework and the built-in skin ship in one package today: a person reading the Liquid
+ * Glass card would otherwise take `install.ps1 -Update` for Liquid Glass maintenance.
+ */
+await test('the plugins column prints the maintenance commands, addressed at the package', async () => {
+  const readyScan = {
+    profileName: 'web',
+    dependencies: [{ name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] }],
+    orphanedBindings: [],
+  }
+  for (const locale of ['en', 'zh']) {
+    const dictionary = strings(locale)
+    const copy = dictionary.plugins
+    const markup = renderSection({
+      store: { state: () => ({ status: 'ready', scan: readyScan }), refresh: async () => {} },
+      t: dictionary,
+      React: react,
+    })
+    contains(markup, 'data-uip-maintenance="dsh-ui-project-x"', 'the row carries the maintenance block (' + locale + ')')
+    contains(markup, copy.maintenanceTitle('dsh-ui-project-x'), 'whose heading names the package (' + locale + ')')
+    for (const verb of ['snapshot', 'update', 'rollback']) {
+      contains(
+        markup,
+        'data-uip-command-maintenance="' + verb + '"',
+        'and the ' + verb + ' command is printed with its hook (' + locale + ')',
+      )
+    }
+    contains(markup, 'install.ps1 -Snapshot', 'the snapshot command is the exact one (' + locale + ')')
+    contains(markup, 'install.ps1 -Update', 'so is the update command (' + locale + ')')
+    contains(markup, 'install.ps1 -Rollback -To', 'and the rollback command (' + locale + ')')
+    contains(markup, copy.restartReminder, 'with the restart reminder (' + locale + ')')
+    contains(markup, copy.cmdRollbackList, 'and how to list the restorable names (' + locale + ')')
+  }
+  // The fifth "not touched" item is rendered, not merely present in the dictionary.
+  contains(
+    renderSection({
+      store: { state: () => ({ status: 'ready', scan: readyScan }), refresh: async () => {} },
+      t: strings('en'),
+      React: react,
+    }),
+    'version snapshots',
+    'and the fifth thing a removal leaves alone is on the page',
+  )
+})
+
+/*
+ * THE HOST HALF'S READ-ONLY PROMISE, GUARDED BY SOURCE.
+ *
+ * `readVersions` walks a directory the user owns and reads manifests out of it. A write there would be a
+ * write to `$DSH_HOME` from a code path nobody runs by hand — the same technique the conformance suite
+ * uses for `check-installed.mjs`, applied to the module that now touches the version store.
+ */
+await test('the host modules that read the version store contain no write API', async () => {
+  const writeApis = ['writeFile', 'appendFile', 'mkdir', 'rmdir', 'unlink', 'rename', 'copyFile', 'createWriteStream', 'truncate']
+  for (const file of ['profile-scan.js', 'installed-endpoint.js']) {
+    const text = await readFile(join(packageRoot, 'src', 'host', file), 'utf8')
+    const found = writeApis.filter((api) => text.includes(api))
+    equal(JSON.stringify(found), '[]', `${file} writes nothing (found: ${JSON.stringify(found)})`)
+  }
+  const scan = await readFile(join(packageRoot, 'src', 'host', 'profile-scan.js'), 'utf8')
+  truthy(scan.includes('VERSIONS_DIR_NAME'), 'and the version store is named in one place')
+  truthy(scan.includes('VERSIONS_MAX'), 'with a bounded number of snapshots crossing the wire')
 })
 
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)

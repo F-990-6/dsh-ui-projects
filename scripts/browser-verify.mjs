@@ -2758,6 +2758,30 @@ try {
       0,
       'every row that offers a removal command says what goes on its own, what the command does, and what is left alone',
     )
+
+    /*
+     * The maintenance commands (7d-1), matched by hook rather than by copy.
+     *
+     * Without these, a browser run after that round could only show that the columns still worked -- not
+     * that anything new reached the page. "Not broken" and "delivered" are different claims, and this is
+     * the suite that can tell them apart.
+     */
+    const maintenanceRows = await evaluate(
+      session,
+      `document.querySelectorAll('[data-uip-maintenance]').length`,
+    )
+    truthy(maintenanceRows >= 1, `at least one row prints maintenance commands (${maintenanceRows})`)
+    const missingMaintenance = await evaluate(
+      session,
+      `Array.from(document.querySelectorAll('[data-uip-maintenance]')).filter((block) =>
+        ['snapshot','update','rollback'].some((verb) => block.querySelector('[data-uip-command-maintenance="' + verb + '"]') === null)
+      ).length`,
+    )
+    equal(
+      missingMaintenance,
+      0,
+      'and every one of them offers all three commands: snapshot, update and rollback',
+    )
   })
 
   await test('a listing that cannot be read degrades to a message, never to an empty list', async () => {
