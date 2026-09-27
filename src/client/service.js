@@ -162,8 +162,20 @@ export function createUiProjectsService(deps) {
    * Only then does the registry entry go.
    *
    * The user's record is touched by neither half: `retire` deactivates with `persist: false`, and
-   * the registry never writes `enabled` at all. The id stays in the settings document, so
-   * reinstalling the package restores the choice the user actually made.
+   * the registry never writes `enabled` at all. BOTH things the record holds for this id stay — the
+   * id in `enabled`, and its entry in `settings` (a recorded verification, a control's value). They
+   * are the user's data, not the package's cache: a package going away removes what the package owns
+   * — its registration, its stylesheets, its markers, its CSS variables — and nothing else.
+   * Reinstalling then restores the configuration the user had, which is the whole reason the two are
+   * treated the same way here.
+   *
+   * (The specification originally said to clear `settings[id]` at this point. That predates the
+   * checklist: the entry held nothing but a package's cached state then, and it holds user data now.)
+   *
+   * A package-owned `localStorage` key would be cleaned up here as well. There is none to clean: the
+   * framework writes one record key plus a debug flag, and a project gets no key of its own — the
+   * suite asserts that inventory, so a future key convention arrives with a failing test rather than
+   * with a leak.
    * @param {string} id
    */
   async function withdraw(id) {

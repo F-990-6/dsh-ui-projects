@@ -4240,6 +4240,90 @@ await test('adopt applies exactly what the record asks for', async () => {
   )
 })
 
+/*
+ * WHAT AN UNINSTALL LEAVES BEHIND — the rule in the fallback store, and the inventory it rests on.
+ *
+ * `load-check.mjs` asserts the same split against the real service on the real Cordis, in the
+ * settings document: a package going away removes what the PACKAGE owns (its registration, its
+ * stylesheets, its markers, its CSS variables) and keeps what the USER owns (the id in `enabled`,
+ * and its entry in `settings`). These two tests are the half that file cannot reach — the
+ * `localStorage` fallback record, which stores the same shape and therefore follows the same rule,
+ * and the reason a package-owned key needs no cleanup: a package gets no key of its own.
+ */
+await test("a departed package's settings survive in the fallback record too", async () => {
+  const storage = createStorage()
+  storage.map.set(
+    LOCAL_STORAGE_KEY,
+    JSON.stringify({
+      v: 1,
+      initialized: true,
+      touched: true,
+      enabled: ['ghost', 'keeper'],
+      settings: {
+        ghost: { checks: { version: '1.0.0', items: { one: true } }, strength: 7 },
+        keeper: { strength: 3 },
+      },
+    }),
+  )
+  const harness = await boot({ withStorage: storage })
+  equal(harness.persistKind, 'local', 'this boot keeps its record in localStorage, so this is that store')
+  harness.registry.register({ id: 'keeper', name: 'Keeper', version: '1.0.0', testItems: [{ id: 'one', label: 'One' }] })
+  await harness.runtime.start()
+
+  // The package that owned `ghost` is gone: the client half of an uninstall, in the fallback store.
+  await harness.runtime.retire('ghost')
+  harness.registry.unregister('ghost')
+
+  const record = JSON.parse(String(storage.map.get(LOCAL_STORAGE_KEY)))
+  equal(
+    JSON.stringify(record.settings?.ghost),
+    JSON.stringify({ checks: { version: '1.0.0', items: { one: true } }, strength: 7 }),
+    "the departed package's entry is still there: settings are the user's data in this store as in the document",
+  )
+  equal(record.enabled.includes('ghost'), true, 'and its id is still in the switch record beside it')
+  equal(
+    JSON.stringify(record.settings?.keeper),
+    '{"strength":3}',
+    "while the installed package's entry was never in question",
+  )
+})
+
+await test('a UI project gets no localStorage key of its own, so an uninstall has none to clean', async () => {
+  /*
+   * The cleanup half of the decision, made checkable. `withdraw` would remove a package-owned key if
+   * one existed; this asserts that none does, and names the inventory so that the day a fifth key
+   * appears the suite fails here instead of leaving a key behind on every uninstall.
+   *
+   * Both halves are PARSED from the sources rather than restated: the key constants are read out of
+   * the modules that declare them, and the sweep list out of `LEGACY_LOCAL_KEYS`. A hand-typed copy
+   * of a storage key has already been wrong once in this file (see `LOCAL_STORAGE_KEY` above).
+   */
+  const { readdir } = await import('node:fs/promises')
+  const dir = join(packageRoot, 'src', 'client')
+  const files = (await readdir(dir, { recursive: true })).filter((name) => String(name).endsWith('.js'))
+  /** @type {Set<string>} */
+  const declared = new Set()
+  /** @type {string[]} */
+  const inlineKeys = []
+  for (const name of files) {
+    const code = stripComments(await readFile(join(dir, String(name)), 'utf8'))
+    for (const match of code.matchAll(/const (?:LOCAL_KEY|DEBUG_KEY) = '([^']+)'/g)) declared.add(match[1])
+    const legacy = code.match(/LEGACY_LOCAL_KEYS = \[([^\]]*)\]/)
+    if (legacy !== null) for (const entry of legacy[1].matchAll(/'([^']+)'/g)) declared.add(entry[1])
+    for (const match of code.matchAll(/localStorage\s*\.\s*(?:get|set|remove)Item\(\s*'([^']+)'/g)) inlineKeys.push(match[1])
+  }
+  equal(
+    [...declared].sort().join(','),
+    'dsh-liquid-glass.settings,dsh-liquid-glass.settings.version,dsh.ui-projects.debug,dsh.ui-projects.v1',
+    'the declared keys are one record, one debug flag, and the two leftovers that are swept on sight',
+  )
+  equal(
+    inlineKeys.join(','),
+    '',
+    'and no storage call takes a key written inline, which is how a per-project key would arrive unnoticed',
+  )
+})
+
 await test('a failed write is reported globally, not blamed on a project', async () => {
   const harness = await boot()
   harness.registry.register({ id: 'will-fail-write', name: 'W' })

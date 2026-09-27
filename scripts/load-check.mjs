@@ -347,6 +347,29 @@ equal(
   'a registered, enabled project whose host announced it reads as ok',
 )
 
+/*
+ * WHAT A PACKAGE OWNS, AND WHAT THE USER OWNS — asserted together, because the interesting failure is
+ * a cleanup that takes the second with the first.
+ *
+ * The record is seeded to look like a used installation: the id in `enabled` (the switch the user
+ * threw), a settings entry of its own (a recorded confirmation and an option), and a SECOND package's
+ * entry, which no part of this withdrawal has any business touching.
+ *
+ * The decision this pins is deliberate, and it reverses an earlier reading of the specification:
+ * `settings[id]` is the USER's data, exactly like `enabled`, so a package going away does not take it
+ * with it. Reinstalling restores the configuration the user had, instead of the defaults — and the
+ * same rule holds in the `localStorage` fallback record, which stores the same shape.
+ */
+persistedRecord = {
+  ...persistedRecord,
+  enabled: ['skeleton'],
+  settings: {
+    skeleton: { checks: { version: manifest.version, items: { 'readable-copy': true } }, strength: 7 },
+    'other-package-project': { strength: 3 },
+  },
+}
+const recordBeforeWithdrawal = JSON.stringify(persist.read())
+
 // The whole reason for binding a registration to its caller's fiber.
 await skinFiber.dispose()
 equal(service.list().length, 0, 'disposing the package withdraws its project: nothing is left registered')
@@ -355,10 +378,46 @@ equal(appliedProjects, 1, 'the project was applied, so this is a retirement of s
 equal(cleanedUp, 1, "and retirement ran the project's cleanup, because it goes through the runtime")
 equal(insertedCss.length, 0, "every stylesheet the project owned is gone with it")
 equal(writes, 0, "and the user's record was not written by the withdrawal")
+equal(
+  JSON.stringify(persist.read()),
+  recordBeforeWithdrawal,
+  "the user's record is byte-identical afterwards: the switch, this project's own settings and the other package's entry all survive",
+)
+equal(
+  persist.read().enabled.includes('skeleton'),
+  true,
+  'the id stays in `enabled`, so a reinstall restores the choice the user made rather than the default',
+)
+equal(
+  persist.read().settings?.skeleton?.checks?.items?.['readable-copy'],
+  true,
+  "and the recorded confirmation survives with it: settings are the user's data, not the package's cache",
+)
+equal(
+  persist.read().settings?.['other-package-project']?.strength,
+  3,
+  "while a different package's entry was never in question",
+)
 
 // Ownership: the same id from another package is refused, and both packages are named.
 const holder = clientRoot.plugin(skinClient)
 await holder.await()
+/*
+ * The other half of the decision above, and the reason for it: a package that comes back finds what
+ * the user had. Not "reinstalling is as good as a fresh install" — that would quietly throw away a
+ * recorded verification, which is the one piece of configuration a person cannot reproduce by
+ * clicking around.
+ */
+equal(
+  appliedProjects,
+  2,
+  'reinstalling the package applies the project again, because the record still says the user wants it',
+)
+equal(
+  persist.read().settings?.skeleton?.checks?.items?.['readable-copy'],
+  true,
+  'and the configuration it had recorded is still there for it to come back to',
+)
 let conflict
 try {
   const intruder = clientRoot.plugin({

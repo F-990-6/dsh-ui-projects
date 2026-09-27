@@ -289,6 +289,11 @@ export class UiProjectRuntime {
    * immediately for a project the registry does not have, and `canonicalOrder` sorts an
    * unregistered id defensively. What the user chose survives the package that could not honour it.
    *
+   * Its `settings` entry stays for the same reason — what the user recorded or configured is theirs,
+   * and a reinstall is meant to find it again. `withdraw` in `service.js` states the full split
+   * between what a package owns (registration, stylesheets, markers, variables) and what the user
+   * owns (both halves of the record).
+   *
    * `#syncPerfAttribute` is not optional here: if this project was the heaviest applied one, the
    * body's `data-ui-perf` has to drop with it, or the page keeps a tier with nothing behind it.
    *

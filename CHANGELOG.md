@@ -25,6 +25,54 @@ Verification vocabulary used below:
 
 ---
 
+## Round 36 — Step 6a: what an uninstall owns, and what the user owns
+
+**Status: done. `suite` 701 assertions / 0 failing (695 → 701), `load` 64 / 0 (58 → 64), `host` green,
+`conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged. No browser run: nothing
+user-visible changed — this round is about the semantics of a package leaving, which the real-Cordis
+check covers directly.**
+
+### A decision that reverses the specification
+
+The specification's uninstall flow says to clear `settings['<id>']`. That sentence predates the
+checklist, when a project's settings entry held nothing but a package's cached state. It holds user
+data now — a recorded verification, and any control the project offers — so it belongs to the user,
+exactly like the id in `enabled`, and an uninstall keeps both. The two are one decision: a package
+going away removes what the PACKAGE owns (its registration, its stylesheets, its markers, its CSS
+variables) and nothing else. Reinstalling then restores the configuration the person had, instead of
+the defaults.
+
+The amended line, in the spec's own words: 「保留 settings['<id>']，与 enabled 同理」. It holds for the
+`localStorage` fallback record too, which stores the same shape and therefore follows the same rule.
+
+### What was actually missing: the proof, not the behaviour
+
+`withdraw` (`service.js`) already retired before unregistering, and already wrote nothing to the
+record. No test asserted any of it — which is how a future implementer following the old
+specification would have deleted user data with the suite still green. That is the gap this round
+closed, and it is the same shape as Round 35's: the behaviour was there, the assertion was not.
+
+- `load-check.mjs`, on the real Cordis: the record is seeded the way a used installation looks — the id
+  in `enabled`, a settings entry holding a recorded confirmation and an option, and a SECOND package's
+  entry — and after the package's fiber is disposed the record is asserted **byte-identical**. The id
+  is still in `enabled`, the confirmation is still readable, the other package's entry was never in
+  question, and reinstalling the package applies the project again and finds its configuration.
+- `verify.mjs`: the same rule in the fallback store — the departed id's entry survives in the
+  `localStorage` blob, the installed package's entry is untouched — plus the inventory the cleanup half
+  rests on: the plugin declares exactly four storage keys (one record, one debug flag, and the two
+  leftovers that are swept on sight), and no storage call takes a key written inline, so a per-project
+  key convention cannot appear without failing a test.
+
+### Design note on the guard
+
+The inventory guard's first form would have passed vacuously: every `localStorage` call site passes a
+CONSTANT, so scanning for inline key literals finds nothing whether or not an undeclared key exists.
+Both halves are therefore parsed out of the sources that declare them — the key constants from the
+modules that define them, the sweep list out of `LEGACY_LOCAL_KEYS` — and asserted as an exact set, so
+a fifth key fails the test and forces the cleanup question to be answered.
+
+---
+
 ## Round 35 — a confirmation that recorded nothing, and the run that was not `--no-write`
 
 **Status: done. `suite` 695 assertions / 0 failing (676 → 695), `host` green, `load` 58 / 0,
