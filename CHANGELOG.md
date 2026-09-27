@@ -25,6 +25,67 @@ Verification vocabulary used below:
 
 ---
 
+## Round 43 — Step 7d: the interface offers the commands, and says only what it knows
+
+**Status: done. `suite` 878 assertions / 0 failing (829 → 878), `load` 70 / 0 (65 → 70), `host` green,
+`conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged, and the first real browser
+run of this phase: gate 11 / 0, suite 173 / 0.** Shipped as two commits — 7d-1 (the plugins column) and
+7d-2 (the projects panel, in two halves: its tests, then the rest).
+
+### What a person can now see
+
+The plugins column prints, per package, a maintenance block: `-Snapshot`, `-Update`, `-Rollback -To <name>`
+and `-Rollback -List`, with the restart reminder. A project's card carries the same commands folded into a
+`<details>` whose summary takes a badge when a recorded version differs from the installed one — folded but
+not hidden, because a collapsed block that conceals the only thing that changed conceals its own reason for
+existing.
+
+**The commands act on a PACKAGE, and both blocks say so out loud.** Today the framework and the built-in
+skin ship in one package, so a person reading the Liquid Glass card would reasonably take
+`install.ps1 -Update` for Liquid Glass maintenance. Once step 8 splits the skin out, the same field
+(`project.source?.package`) is what makes a `-SourceDir` argument possible.
+
+### The host reads the version store, read-only
+
+`profile-scan.js` gained `readVersions`: it reads `<profile>/.dsh-ui-projects-versions/<pkg>/*/manifest.json`
+and sends `{ name, version, createdAt, files, bytes, ours }`, newest first, at most five, with **no absolute
+paths** — a snapshot NAME is what a person pastes, and where it lives is not the page's business. The
+endpoint adds it as an optional field and the schema version is deliberately **not** bumped.
+
+**`undefined` is not `[]`, and the interface says different things about them.** A host whose code predates
+the field sends no `versions` object at all — a restart that has not happened, and the card says so. An
+empty list is a fact about the profile: nothing recorded yet. With no store, or one that is idle, loading
+or failed, the card claims **nothing at all** — not even "no snapshots", because nothing has been read.
+Four states, three of them claims.
+
+The panel reads the store **synchronously** (`props.installed?.state()`), never awaited, never triggered.
+The property the two columns' no-shared-state test protects is therefore asserted from both sides: a
+failed, loading, idle or absent store renders every card and every command, with no
+`[data-uip-version-state]` in the markup.
+
+### Three lessons from this round
+
+1. **Changing `src/**` means rebuilding before verifying.** The first run of 7d-1's tests failed on two
+   assertions that looked like real defects and were nothing of the kind: the suite loads `lib/client.js`,
+   and `lib/` had not been rebuilt.
+2. **An assertion inside an existing `test()` prints nothing of its own.** Two browser assertions added in
+   7d-1 were read as "not run" because no new line appeared; they had run, and the count moving from 171 to
+   173 was the only evidence. The third is therefore its own `test()`: a failure there should read as "the
+   card's block did not render", not as one of a dozen assertions in a bigger test.
+3. **The entry module must not touch React while it loads.** Exporting the projects section from
+   `__internals` with a plain `require` broke exactly that contract, and two existing tests named it
+   (`module-table miss: the shell exposes no "react"`; `nothing is requested at load time: got ["react"]`).
+   A **getter** defers the require to first access and restores both.
+
+### A number that needed reconciling
+
+The three new 7d-2a tests reported 10, 14 and 3 assertions while the suite grew by 24, so the arithmetic
+looked wrong. It was not: **every filtered run also counts the suite's one module-level assertion**, so the
+tests' own totals are 9, 13 and 2. Recorded because the next person to add three tests will meet the same
+gap, and a report whose numbers do not reconcile is a report nobody can check.
+
+---
+
 ## Round 42 — Step 7c: recording a state, and the one command allowed to write the source tree
 
 **Status: done. `suite` 829 assertions / 0 failing (794 → 829), `load` 65 / 0, `host` green,

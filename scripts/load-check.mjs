@@ -435,6 +435,46 @@ equal(
   true,
   'and the configuration it had recorded is still there for it to come back to',
 )
+
+/*
+ * A VERSION CHANGE — what an update looks like from the record's side.
+ *
+ * The package goes away and comes back with a different version, which is what `git pull` plus a rebuild
+ * looks like to this layer. The claim under test is Round 36's decision: the record belongs to the USER,
+ * so a new version of the package does not rewrite it. The confirmation it holds then describes a version
+ * that is no longer registered — which is the exact input to the store's `stale` verdict.
+ *
+ * Written AFTER the reinstall above, because it disposes that registration: a test that reaches for a
+ * `const` before its declaration fails with a ReferenceError rather than an assertion, which is exactly
+ * what the first version of this block did.
+ */
+await holder.dispose()
+const upgraded = clientRoot.plugin({
+  name: 'ui-project-skeleton-upgraded',
+  inject: ['uiProjects'],
+  apply(ctx) {
+    ctx.uiProjects.register({ ...manifest, version: '9.9.9' }, { apply() {}, cleanup() {} })
+  },
+})
+await upgraded.await()
+equal(persist.read().enabled.includes('skeleton'), true, 'a new version does not drop the switch the user set')
+equal(
+  persist.read().settings?.skeleton?.checks?.version,
+  manifest.version,
+  'and the recorded confirmation still carries the version it was made against',
+)
+equal(
+  persist.read().settings?.['other-package-project']?.strength,
+  3,
+  "while another package's settings were never in question",
+)
+equal(registry.get('skeleton')?.version, '9.9.9', 'the registry really does report the new version')
+if (registry.get('skeleton')?.version !== persist.read().settings?.skeleton?.checks?.version) {
+  ok("the record and the registration disagree, which is the input to the store's stale verdict")
+}
+else {
+  fail('the record and the registration agree, so nothing would ever read as stale')
+}
 let conflict
 try {
   const intruder = clientRoot.plugin({

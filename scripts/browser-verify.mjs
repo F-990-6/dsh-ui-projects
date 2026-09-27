@@ -2784,6 +2784,45 @@ try {
     )
   })
 
+  /*
+   * THE CARD'S MAINTENANCE DISCLOSURE (7d-2b), as its OWN test rather than one more assertion inside the
+   * row test above.
+   *
+   * Split out on purpose: when this fails, the reader should see "the card's block did not render" instead
+   * of having to work out which of a dozen assertions in a bigger test produced it — and an assertion
+   * inside an existing test prints nothing of its own, so only the count would ever show it had run.
+   */
+  await test('a project card offers the maintenance commands, folded and hooked', async () => {
+    await ensurePanel(page)
+    const cards = await evaluate(
+      session,
+      `Array.from(document.querySelectorAll('[data-uip-maintenance-panel]')).map((node) => ({
+        project: node.getAttribute('data-uip-maintenance-panel'),
+        commands: Array.from(node.querySelectorAll('pre')).map((pre) => pre.textContent.trim()),
+      }))`,
+    )
+    truthy(
+      Array.isArray(cards) && cards.length >= 1,
+      `at least one project card carries the maintenance block (${JSON.stringify(cards ?? null)})`,
+    )
+    const withCommands = (cards ?? []).filter(
+      (card) =>
+        card.commands.some((command) => command.startsWith('install.ps1 -Snapshot')) &&
+        card.commands.some((command) => command.startsWith('install.ps1 -Update')) &&
+        card.commands.some((command) => command.startsWith('install.ps1 -Rollback')),
+    )
+    equal(
+      withCommands.length,
+      (cards ?? []).length,
+      `every card carrying the block prints all three commands (${JSON.stringify(cards ?? null)})`,
+    )
+    const open = await evaluate(
+      session,
+      `Array.from(document.querySelectorAll('details[data-uip-maintenance-panel]')).filter((node) => node.open === true).length`,
+    )
+    equal(open, 0, 'and they start folded, so a card stays a card')
+  })
+
   await test('a listing that cannot be read degrades to a message, never to an empty list', async () => {
     /*
      * The endpoint works, so the failure is simulated IN THE PAGE: `fetch` is failed for this one
