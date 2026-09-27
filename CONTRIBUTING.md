@@ -74,6 +74,20 @@ results — a change that did not fix the problem is worth more than one that wa
 it eliminates a hypothesis. Keep that up: state the command, state the count, and say plainly when
 something was not verified.
 
+## Test the path, not the function
+
+**Any path that carries arguments from a component into a function must be tested THROUGH the
+component. Calling the target function directly does not test the path, and a suite full of such calls
+stays green through a defect that makes the feature do nothing.**
+
+That is not a style preference, it is measured. A checklist confirmation was broken for five rounds by
+one re-passed argument — the card passed `project.id` to a callback that already closed over it, so the
+store received a string where a list of item ids belonged, `for…of` walked its characters, matched
+nothing, and wrote `{ version, items: {} }`. Five assertions on `confirmChecks` passed the entire time:
+each handed the store a well-formed array, which is the layer BELOW the defect. The regression test
+that ends it renders the card through React and invokes the props the card hands its checklist; Round
+35 of `CHANGELOG.md` records the failing control that proves it can fail.
+
 ## Tool discipline: never build a multi-line anchor inside a template literal
 
 **A patch script must not hold a multi-line code anchor inside a template literal.** Escaping,

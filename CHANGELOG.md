@@ -29,7 +29,9 @@ Verification vocabulary used below:
 
 **Status: done. `suite` 695 assertions / 0 failing (676 → 695), `host` green, `load` 58 / 0,
 `conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged, gate
-(`--verify-refusal`) 11 / 0, `browser` 168 assertions / 0 failing under `--no-write`.**
+(`--verify-refusal`) 11 / 0, `browser` 168 assertions / 0 failing under `--no-write`, and
+`browser (user)`: the three items ticked in the running instance, with all three keys on disk — the
+first correct record since Round 29.**
 
 ### The bug: a record with a version and no items
 
@@ -61,6 +63,18 @@ CHARACTERS, matched no declared item, and wrote nothing — silently, because it
 legal and the loop simply never matched. `onClear` on the next line never had the bug: it passes no
 arguments at all.
 
+### The chain, in one place
+
+1. `panel.js` — `onConfirm: (itemIds) => onConfirmChecks(project.id, itemIds)`. The id is passed a
+   SECOND time, to a callback that already closes over it.
+2. The array of ids therefore binds to that callback's second parameter, and `'liquid-glass'` takes the
+   first — the one named `itemIds`.
+3. `store.confirmChecks(id, itemIds)` receives a STRING where the ids belong.
+4. `for (const itemId of itemIds)` iterates the string's characters: `'l'`, `'i'`, `'q'`, `'u'`, …
+5. `project.testItems.some((item) => item.id === 'l')` is false for every one of them.
+6. `items` stays `{}` and the record is written as `{ version: '3.0.0', items: {} }` — 58 bytes, the
+   payload the refusal gate printed. Nothing threw, nothing warned, and the card reported success.
+
 ### The fixes
 
 - `panel.js` passes `onConfirm: (itemIds) => onConfirmChecks(itemIds)`. The id is closed over, not
@@ -72,18 +86,50 @@ arguments at all.
   just been ticked and the button pressed. It only checked that a record was PRESENT before, and an
   empty record satisfies presence — which is how two runs of this suite watched the bug happen.
 
-### Why the suite did not catch it, and the test that does
+### Why it survived five rounds, and the test that ends that
 
-Five assertions called `harness.store.confirmChecks('confirmable', ['one'])`: a well-formed array,
-handed to the layer BELOW the bug. All five stayed green while the card recorded nothing. The new test
-renders the card through React and invokes the props the card hands its checklist, so the assertion is
-on the CONNECTION between the component and the store, which is where the defect lived.
+Five assertions in this file called `harness.store.confirmChecks('confirmable', ['one'])`: a
+well-formed array, handed to the layer BELOW the bug. Every one of them passed — in every round since
+the checklist was written — while the card in the browser recorded nothing at all. The assertions were
+not weak; they were aimed one layer too low.
+
+The new test renders the card through React and invokes the props the card hands its checklist, so the
+assertion is on the CONNECTION between the component and the store, which is where the defect lived.
+`CONTRIBUTING.md` now carries the rule this earned.
 
 **Negative control.** The one line was put back and the suite was run against it: `FAIL the card hands
 the item ids to the store, not the project id`, with the plugin's own action handler printing
 `TypeError: confirmChecks expects a non-empty array of item ids, received "three-items"` — while the
 store-boundary test beside it stayed green, which is precisely the gap this round closed. A regression
 test that has never been seen to fail is not evidence; this one has been seen to.
+
+### `browser (user)`: the first correct record since Round 29
+
+The persistence path itself was never in question — the skin toggle's reload assertions cover it — but
+no correct set of ids had ever reached it. After the fix, ticking the three items in the running
+instance and pressing the button wrote, on disk:
+
+```yaml
+checks:
+  version: 3.0.0
+  items: { text-readable: true, settings-centred: true, no-first-frame-flash: true }
+```
+
+Every record before this one was `items: {}`, so every one of them read back as `incomplete` on the
+next boot. That is the observation this round was about, confirmed by the person who made it rather
+than by a harness — `browser (user)`, in this file's vocabulary, and the strongest evidence here
+because it did not go through any code written in this round.
+
+### Two lessons, stated so the next component inherits them
+
+1. **`for…of` over a string is legal, silent and total.** It walks the characters, throws nothing and
+   warns nothing, so a wrong argument produced a plausible-looking WRITE — `{ version, items: {} }` —
+   instead of an error, and the record then survived a reload because the version it carried was
+   correct. Where a loop's body can match nothing, that outcome has to be refused explicitly; the store
+   does now, which is why the same mistake fails loudly today.
+2. **An assertion tests the layer it calls.** Five assertions that handed the store a good array
+   verified the callee's contract and said nothing about the caller's. A path carrying arguments from a
+   component into a function needs an assertion made THROUGH the component.
 
 ### `waitFor` is not a boolean, and the diagnostic that could never run
 
