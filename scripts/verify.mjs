@@ -3903,6 +3903,15 @@ await test('a per-package problem is rendered against its own row, and a failed 
     commandsHint: 'run this:',
     restartHint: 'restart dsh',
     restartBlock: '# 1. stop dsh web',
+    uninstall: {
+      title: 'what changes',
+      automaticTitle: 'automatic',
+      automatic: ['gone: the registry entry', 'gone: its stylesheet'],
+      commandTitle: 'by the command',
+      command: ['gone: the package directory'],
+      keptTitle: 'kept',
+      kept: ['kept: your switch', 'kept: this package settings'],
+    },
     kinds: { bundle: 'bundle' },
   }
   const render = (state) => renderSection({ store: { state: () => state, refresh: async () => {} }, t: { plugins: flatCopy }, state, React: react })
@@ -3972,6 +3981,15 @@ await test('the plugins column renders each state, and never pretends to be empt
     commandsHint: 'run this:',
     restartHint: 'restart dsh',
     restartBlock: '# 1. stop dsh web',
+    uninstall: {
+      title: 'what changes',
+      automaticTitle: 'automatic',
+      automatic: ['gone: the registry entry', 'gone: its stylesheet'],
+      commandTitle: 'by the command',
+      command: ['gone: the package directory'],
+      keptTitle: 'kept',
+      kept: ['kept: your switch', 'kept: this package settings'],
+    },
     kinds: { bundle: 'bundle', 'ui-project': 'UI project' },
   }
   const render = (state) => renderSection({ store: { state: () => state, refresh: async () => {} }, t: { plugins: flatCopy }, state, React: react })
@@ -4021,7 +4039,7 @@ await test('the column reads the dictionary it is actually given', async () => {
    * was tested against one while production threw.
    */
   const READ_KEYS = ['title', 'intro', 'loading', 'failed', 'failedHint', 'refresh', 'empty', 'composed',
-    'notComposed', 'framework', 'project', 'orphaned', 'commandsHint', 'restartHint', 'restartBlock', 'kinds']
+    'notComposed', 'framework', 'project', 'orphaned', 'commandsHint', 'restartHint', 'restartBlock', 'kinds', 'uninstall']
   const readyScan = {
     profileName: 'web',
     dependencies: [{ name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] }],
@@ -4048,6 +4066,53 @@ await test('the column reads the dictionary it is actually given', async () => {
   const withoutKinds = { plugins: { ...strings('en').plugins, kinds: undefined } }
   const fallback = renderSection({ store: { state: () => ({ status: 'ready', scan: readyScan }), refresh: async () => {} }, t: withoutKinds, React: react })
   contains(fallback, 'bundle', 'a missing kinds table falls back to the raw kind instead of throwing')
+})
+
+await test('the uninstall block answers all three questions, in both languages', async () => {
+  /*
+   * Step 6b. Two of the three groups describe things a person could work out by trying them; the third
+   * cannot be discovered at all — that the switch survives, that this package's settings survive, and
+   * that the source tree is not touched — and it is the only place inside the interface where the two
+   * decisions about user data are visible. So all three are asserted, in both languages, against the
+   * dictionaries the panel is really given.
+   */
+  const readyScan2 = {
+    profileName: 'web',
+    dependencies: [{ name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] }],
+    orphanedBindings: [],
+  }
+  for (const locale of ['en', 'zh']) {
+    const dictionary = strings(locale)
+    const copy = dictionary.plugins.uninstall
+    const markup = renderSection({
+      store: { state: () => ({ status: 'ready', scan: readyScan2 }), refresh: async () => {} },
+      t: dictionary,
+      React: react,
+    })
+    for (const group of ['automatic', 'command', 'kept']) {
+      contains(markup, 'data-uip-uninstall="' + group + '"', 'the ' + group + ' group renders, and carries its hook (' + locale + ')')
+    }
+    contains(markup, copy.automaticTitle, 'the automatic group is headed from the dictionary (' + locale + ')')
+    contains(markup, copy.automatic[0], 'and lists what goes on its own (' + locale + ')')
+    contains(markup, copy.commandTitle, 'the command group is headed from the dictionary (' + locale + ')')
+    contains(markup, copy.command[0], 'and what the command does (' + locale + ')')
+    contains(markup, copy.keptTitle, 'the kept group is headed from the dictionary (' + locale + ')')
+    contains(markup, copy.kept[0], 'and what is deliberately left alone (' + locale + ')')
+    equal(copy.automatic.length, 6, 'six things the framework removes by itself (' + locale + ')')
+    equal(copy.command.length, 2, 'two the command removes (' + locale + ')')
+    equal(copy.kept.length, 4, 'four it never touches (' + locale + ')')
+  }
+  /*
+   * The two decisions, in the words the interface itself uses. Asserted on the copy rather than on the
+   * markup because these are the sentences that make the decision visible to a user, and a reworded
+   * version that dropped either one would leave the block looking complete.
+   */
+  const keptEn = strings('en').plugins.uninstall.kept.join(' | ')
+  const keptZh = strings('zh').plugins.uninstall.kept.join(' | ')
+  contains(keptEn, 'comes back on', 'English says the switch survives a reinstall')
+  contains(keptZh, '重装后仍然是开的', 'and Chinese says the same')
+  contains(keptEn, 'recorded verification', "English says a recorded verification is the user's data, not the package's")
+  contains(keptZh, '验收确认', 'and Chinese says the same')
 })
 
 /**

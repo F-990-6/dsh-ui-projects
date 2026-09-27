@@ -43,6 +43,37 @@ export const STRINGS = {
       commandsHint: 'To remove it, run this in PowerShell:',
       restartHint: 'The command alone does not take effect: the running dsh still holds the old composition. After it finishes, stop dsh web (Ctrl+C) and start it again.',
       restartBlock: '# 1. in PowerShell\ndsh plugin --profile web remove dsh-ui-projects\n\n# 2. stop dsh web (Ctrl+C), then start it again',
+      /*
+       * The three answers a person needs before pasting a removal command: what goes on its own, what
+       * the command does, and what is deliberately left alone. The third list is the one nothing else
+       * in the interface can supply — it is where the two decisions about user data are stated (the
+       * switch survives, and so does the settings entry) — and somebody about to delete a package is
+       * exactly who needs to read them.
+       */
+      uninstall: {
+        title: 'What removing it changes, and what it does not',
+        automaticTitle: 'Removed for you, on the next load',
+        automatic: [
+          'its entry in the UI project registry: the card above goes with it',
+          'the stylesheets it injected, and its own <style> element',
+          'the data attributes it set on <body>, plus data-ui-projects when nothing is left',
+          'the CSS variables it declared inside its own scope',
+          'its own storage keys — no package has one today, and the suite keeps it that way',
+          'every listener, timer and observer it registered',
+        ],
+        commandTitle: 'Done by the command above',
+        command: [
+          'the package directory in the profile, and the symlink that points at the source',
+          'its row in dsh.profile.bundles',
+        ],
+        keptTitle: 'Not touched, on purpose',
+        kept: [
+          'your switch for it: reinstall while it was on, and it comes back on',
+          "its settings, including a recorded verification — your data, not the package's cache",
+          "every other package's settings: this removes one package, not the profile",
+          'the source tree at E:\\dsh\\plugins\\<package>\\, which the command never deletes',
+        ],
+      },
       kinds: { 'ui-project': 'UI project', bundle: 'bundle', library: 'library', 'plugin-with-client': 'plugin', unresolved: 'not installed' },
     },
     priority: (value) => `Priority ${value}`,
@@ -122,6 +153,35 @@ export const STRINGS = {
       commandsHint: '要卸载它，在 PowerShell 里执行：',
       restartHint: '只跑命令不会生效：运行中的 dsh 仍持有旧组合。命令跑完后，停掉 dsh web（Ctrl+C），再启动一次。',
       restartBlock: '# 1. 在 PowerShell 里\ndsh plugin --profile web remove dsh-ui-projects\n\n# 2. 停掉 dsh web（Ctrl+C），再启动一次',
+      /*
+       * 粘贴卸载命令之前需要知道的三件事：什么会自己消失、什么由命令完成、什么是有意不碰的。
+       * 第三组是界面里别处都得不出答案的那一组 —— 两条关于用户数据的决定就写在这里（开关保留、
+       * settings 条目也保留），而正准备删掉一个包的人，正是最需要读到它们的人。
+       */
+      uninstall: {
+        title: '卸载会改变什么，以及不会碰什么',
+        automaticTitle: '下次加载时自动移除',
+        automatic: [
+          '它在 UI 项目注册表里的条目：上面那张卡片随之消失',
+          '它注入的样式表，以及它自己的 <style> 元素',
+          '它写在 <body> 上的 data 属性；没有项目剩下时，data-ui-projects 也一并清掉',
+          '它在自己作用域内声明的 CSS 变量',
+          '它自己的存储键 —— 目前没有任何包持有这样的键，套件会保证一直如此',
+          '它注册的监听器、定时器与 observer',
+        ],
+        commandTitle: '由上面的命令完成',
+        command: [
+          'profile 里的包目录，以及指向源码的符号链接',
+          '它在 dsh.profile.bundles 里的那一行',
+        ],
+        keptTitle: '有意不碰',
+        kept: [
+          '你的开关记录：原本开着，重装后仍然是开的',
+          '它的设置，包括已记录的验收确认 —— 这是你的数据，不是包的缓存',
+          '其他包的设置：卸载只针对这一个包，不是整个 profile',
+          'E:\\dsh\\plugins\\<package>\\ 下的源码目录，命令从不删除它',
+        ],
+      },
       kinds: { 'ui-project': 'UI 项目', bundle: 'bundle', library: '库', 'plugin-with-client': '插件', unresolved: '未安装' },
     },
     priority: (value) => `优先级 ${value}`,

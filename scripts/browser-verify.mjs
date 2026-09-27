@@ -1921,6 +1921,38 @@ try {
     // The button must refuse while the boxes are unticked: the confirmation is an assertion, not an
     // automatic consequence of opening the panel.
     /*
+     * STATE-AGNOSTIC, and it was not before. The card arrives in whatever state the record left it in:
+     * the boxes are the READING and they are seeded from the record, so a machine that already holds a
+     * CURRENT confirmation opens with every box ticked — and this assertion then failed with
+     * `expected true, got false` on the button, which reads as the checklist refusing to work rather
+     * than as an assertion that quietly assumed an empty one. (It held until a real confirmation
+     * existed on this machine, which is exactly when it stopped being true.)
+     *
+     * So the unticked state is CREATED here rather than assumed: untick one box, wait for the button to
+     * refuse, and let the step below tick everything again.
+     */
+    const untick = await evaluate(
+      session,
+      `(() => {
+        const details = document.querySelector('details.uip-tests[data-project="liquid-glass"]')
+        const box = details.querySelector('input[type=checkbox]')
+        if (box === null) return { ok: false, why: 'no boxes' }
+        if (box.checked) box.click()
+        return { ok: true }
+      })()`,
+    )
+    truthy(untick.ok === true, `the checklist has a box to untick (${JSON.stringify(untick)})`)
+    await waitFor(
+      session,
+      `(() => {
+        const details = document.querySelector('details.uip-tests[data-project="liquid-glass"]')
+        const button = details.querySelector('button[data-uip-action="confirm-checks"]')
+        return button !== null && button.disabled
+      })()`,
+      'the button to refuse an incomplete reading',
+    )
+
+    /*
      * Found by its `data-uip-action` hook, never by its label. The label is localized — this
      * interface is Chinese — so looking for the English words found nothing, and the `null` that came
      * back read as the checklist refusing to render rather than as a test that spoke one language.
@@ -1933,7 +1965,7 @@ try {
         return { disabled: button === null ? null : button.disabled, label: button === null ? null : button.textContent }
       })()`,
     )
-    equal(beforeTicking.disabled, true, `the button refuses until every item is ticked (${beforeTicking.label})`)
+    equal(beforeTicking.disabled, true, `the button refuses while an item is unticked (${beforeTicking.label})`)
 
     // Tick them all, the way a click does, then wait for React to re-render the button.
     await evaluate(
@@ -2703,6 +2735,29 @@ try {
     )
     equal(restart?.hint, true, 'the restart instruction is present, matched by hook rather than by copy')
     equal(restart?.block, true, 'and so is the block a person copies')
+
+    /*
+     * The three groups beside the command, in a real page and in the interface's own language: what the
+     * framework removes on its own, what the command removes, and what is deliberately left alone. This
+     * is the real-render half of the pair whose unit half is `the uninstall block answers all three
+     * questions` in the suite — that one proves the copy exists, this one proves it reaches the page.
+     */
+    const uninstallRows = await evaluate(
+      session,
+      `document.querySelectorAll('[data-uip-command]').length`,
+    )
+    truthy(uninstallRows >= 1, `at least one row offers a removal command (${uninstallRows})`)
+    const unexplained = await evaluate(
+      session,
+      `Array.from(document.querySelectorAll('[data-uip-command]')).filter((block) =>
+        ['automatic','command','kept'].some((group) => block.querySelector('[data-uip-uninstall="' + group + '"]') === null)
+      ).length`,
+    )
+    equal(
+      unexplained,
+      0,
+      'every row that offers a removal command says what goes on its own, what the command does, and what is left alone',
+    )
   })
 
   await test('a listing that cannot be read degrades to a message, never to an empty list', async () => {

@@ -88,6 +88,26 @@ each handed the store a well-formed array, which is the layer BELOW the defect. 
 that ends it renders the card through React and invokes the props the card hands its checklist; Round
 35 of `CHANGELOG.md` records the failing control that proves it can fail.
 
+## Cite the path you read, not its parent
+
+**When you report where something came from, give the path the tool returned. A parent directory plus a
+filename is not a path, and it costs the reader a search.**
+
+A specification file was reported as living in `C:\Users\19103\.dsh\attachments\`. It was really read —
+the name came back from a glob and the file was read in full, and its content is what the Step 6 plan
+quoted — but the path quoted was the directory the glob SEARCHED, not the file it found. The reader
+looked there, saw only `v1`, and had to ask whether the citation had been invented. The real location is
+content-addressed and three levels deeper:
+
+```text
+…\attachments\v1\files\b1\b113ae0c…ad871d\UI第二阶段.txt
+```
+
+The lesson is not "do not infer paths" — nothing was inferred here. It is that to the person who goes
+looking, a shortened path and an invented one are indistinguishable, so the full path (or none) is the
+only citation worth giving. The same holds for anything else quoted from a tool: cite the line you read,
+the count you saw, the command you ran.
+
 ## Tool discipline: never build a multi-line anchor inside a template literal
 
 **A patch script must not hold a multi-line code anchor inside a template literal.** Escaping,

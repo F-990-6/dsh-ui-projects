@@ -25,6 +25,55 @@ Verification vocabulary used below:
 
 ---
 
+## Round 37 — Step 6b: the uninstall block, and an assertion that assumed an empty checklist
+
+**Status: done. `suite` 729 assertions / 0 failing (701 → 729), `load` 64 / 0, `host` green,
+`conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged, gate
+(`--verify-refusal`) 11 / 0, `browser` 171 assertions / 0 failing under `--no-write`.**
+
+### The block beside the removal command
+
+Each row that offers a command now answers all three questions, in order: what the framework removes on
+its own (six items), what the command removes (two), and what is deliberately left alone (four). The
+third group is the load-bearing one — everything else can be worked out by trying it, while "your switch
+survives, this package's settings survive, and your source tree is not touched" cannot, and those are the
+facts somebody wants BEFORE pasting the command rather than after. It is also the only place inside the
+interface where the two decisions about user data (Round 36) are visible to the person they affect.
+
+Each group carries `data-uip-uninstall="automatic" | "command" | "kept"`, so both suites assert the
+structure rather than the copy: the unit test renders all three from the real dictionaries in both
+languages, and the browser test asserts that EVERY row offering a command has all three.
+
+### `copy.uninstall` is read without a fallback, on purpose
+
+A missing dictionary key should fail loudly rather than render three empty lists. It did, immediately:
+the third hand-built copy fixture in `verify.mjs` — the one whose `kinds` line differed, so a
+pattern-based edit missed it — came back as
+`TypeError: Cannot read properties of undefined (reading 'automaticTitle')`, which names the group it
+could not read. That is Round 35's lesson applied to a nested key before it could become one.
+
+### The finding: an assertion that assumed an empty checklist
+
+The full run failed on `the button refuses until every item is ticked` — `expected true, got false` —
+and the cause is worth recording, because nothing in this round caused it. The boxes are the READING and
+they are seeded from the record, so on a machine that holds a **current** confirmation the card opens
+with every box already ticked, and the button is correctly enabled. The assertion had been passing only
+because every record on this machine was `items: {}` until Round 35 fixed that — in other words, it broke
+the moment the fix worked and a real confirmation existed.
+
+It is now state-agnostic: the unticked state is CREATED (one box is clicked off), the refusal is waited
+for, and the step below ticks everything again. Same assertion, no assumption about what the document
+holds.
+
+### Attachment paths
+
+The specification's exact path was reported as its parent directory. It had genuinely been read — the
+glob returned it and its content is what the Step 6 plan quotes — but the shortened path sent the reader
+looking one level too high, so `CONTRIBUTING.md` now carries the rule for citing what a tool actually
+returned.
+
+---
+
 ## Round 36 — Step 6a: what an uninstall owns, and what the user owns
 
 **Status: done. `suite` 701 assertions / 0 failing (695 → 701), `load` 64 / 0 (58 → 64), `host` green,

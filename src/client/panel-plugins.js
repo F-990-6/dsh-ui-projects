@@ -172,6 +172,26 @@ export function UiPluginsSection(props) {
  * exactly this reason until the host was restarted.
  */
 function CommandBlock({ copy, React, name, profileName }) {
+  /*
+   * The three answers, in the order a person asks them before running the command above: what goes on
+   * its own, what the command does, and what is deliberately left alone.
+   *
+   * The third list is the load-bearing one. Everything else here can be discovered by trying it; "your
+   * switch and this package's settings survive, and your source tree is not touched" cannot, and those
+   * are precisely the facts somebody about to delete a package wants BEFORE pasting the command rather
+   * than after. It is also the only place the two data decisions are visible from inside the interface:
+   * an uninstall keeps what the user owns (`enabled`'s id, this package's settings entry) and removes
+   * what the package owns.
+   *
+   * `copy.uninstall` is read without a fallback, deliberately: a missing dictionary key should fail
+   * loudly here rather than render three empty lists — the shape of mistake that Round 35 was about.
+   */
+  const uninstall = copy.uninstall
+  const groups = [
+    { key: 'automatic', heading: uninstall.automaticTitle, items: uninstall.automatic },
+    { key: 'command', heading: uninstall.commandTitle, items: uninstall.command },
+    { key: 'kept', heading: uninstall.keptTitle, items: uninstall.kept },
+  ]
   return React.createElement(
     'div',
     { className: 'uip-command', 'data-uip-command': name },
@@ -179,5 +199,22 @@ function CommandBlock({ copy, React, name, profileName }) {
     React.createElement('pre', null, 'dsh plugin --profile ' + profileName + ' remove ' + name),
     React.createElement('p', { className: 'uip-hint', 'data-uip-restart': 'hint' }, copy.restartHint),
     React.createElement('pre', { 'data-uip-restart': 'block' }, copy.restartBlock),
+    React.createElement('p', { className: 'uip-hint' }, uninstall.title),
+    React.createElement(
+      'div',
+      { className: 'uip-uninstall' },
+      groups.map((group) =>
+        React.createElement(
+          'div',
+          { className: 'uip-uninstallGroup', 'data-uip-uninstall': group.key, key: group.key },
+          React.createElement('p', { className: 'uip-hint' }, group.heading),
+          React.createElement(
+            'ul',
+            null,
+            group.items.map((item) => React.createElement('li', { key: item }, item)),
+          ),
+        ),
+      ),
+    ),
   )
 }
