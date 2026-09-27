@@ -25,6 +25,92 @@ Verification vocabulary used below:
 
 ---
 
+## Round 42 — Step 7c: recording a state, and the one command allowed to write the source tree
+
+**Status: done. `suite` 824 assertions / 0 failing (794 → 824), `load` 65 / 0, `host` green,
+`conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged, `browser --self-check`
+green. No browser run. `install.ps1` was NOT executed in any mode**: neither the record write nor a
+rollback has ever run here. Both are the user's manual acceptance steps; what this round verifies is
+static — five source guards — plus the suites.
+
+### `-Update`: verify, then record
+
+The mode now writes exactly **one file**: the install record, and only a new `lastVerified` field beside
+the record's own `before`. That baseline is what the install wrote and what `-Uninstall` compares
+against, so it is never rewritten. `settings.yaml` is opened for reading only — the `ui-projects` block
+is fingerprinted as evidence, never touched.
+
+Preconditions are reported in **both** modes (the profile must still link this source; the record must
+exist; `lib/client.js` must exist), because a dry run that cannot say whether the real run would refuse
+is a plan with a hole in it. The write goes through `$StateNew` (`"$StatePath.new"`), is parsed back, and
+only then replaces the record: `Write-TextFile` truncates first, and a half-written record is worse than
+a stale one. On a bad read-back the original is untouched and the partial file is left where the message
+says it is — deleting it would be a second write, and this mode has exactly one.
+
+### `-Rollback -To <name>`: the only mode that writes the tree
+
+It restores **`package.json` and `lib/**`** and nothing else. `cordis.patch.yml` and `CHANGELOG.md` are
+in the snapshot and are deliberately not restored: making the running version correct does not require
+them, and every extra write is a risk this project has paid for twice.
+
+The order is the safety property, and it is asserted positionally:
+
+1. the snapshot must verify against its own manifest — **`does not verify, so it will not be restored`**,
+   and the refusal happens before this mode has written anything, including before the backup;
+2. it must be a directory this tool wrote (`ours`), its `sourceDir` must be this tree, and its manifest
+   must record `package.json` and `lib/**`;
+3. if `cordis.patch.yml` differs between the snapshot and the tree, the run stops with **`patch differs`**
+   and asks for `-Force` (or a hand-aligned patch) — the file is not restored either way, so what matters
+   is that the difference is visible rather than silent;
+4. **backup before writing**: the current `package.json` and `lib/**` are copied into
+   `.rollback-backup\<name>-<stamp>\` **using the snapshot format**, so `Test-VersionSnapshot` verifies
+   the backup too — the rollback of the rollback is a rollback;
+5. the backup is read back and verified **before** the first write into the tree;
+6. the tree is written, then **re-verified** file by file against the snapshot. A mismatch puts the tree
+   back from the backup and stops with both paths printed, writing nothing further.
+
+The backup lives **beside** the package directories, never inside one: `-ListVersions` walks those, and a
+backup parked there would be listed as a version somebody could roll back to. Backups are pruned to the
+newest three, by name, and only the ones this tool wrote.
+
+`lastRollback` joins `lastVerified`, written the same way (new field, read back, moved over). The one
+thing this mode cannot do is check whether dsh is running — Windows does not lock a file for reading, and
+nothing here can see another process's memory. So it says so, in the plan and in the docs, instead of
+pretending.
+
+### The guards: five slices, and a permission granted where it is used
+
+Sections are now UNINSTALL → UPDATE → SNAPSHOT → ROLLBACK → INSTALL, each with its own slice and its own
+anchor. Two anchors moved (the update guard's end to SNAPSHOT, the snapshot guard's to ROLLBACK), and the
+snapshot guard's write allowlist was tightened to the snapshot's own paths — the parent directory is no
+longer an allowed destination.
+
+The update guard's assertion changed shape rather than disappearing: 7a asserted "no write of any kind",
+and 7c asserts "the only writes are the two aimed at `$StateNew`/`$StatePath`". The permission is granted
+in the same round that starts writing, which is how the 7b guard's comment said it should be.
+
+The pair refusal (`-Snapshot -ListVersions`) moved back into the mode matrix, because a preflight failure
+would otherwise be reported instead of two modes being named; the snapshot section's own copy was deleted
+rather than left unreachable, and the guard now checks the matrix — including that the section no longer
+carries a second copy.
+
+### Two near misses, caught by reading rather than by running
+
+The new rollback section first read `$currentTreeSha` for the record's `from` side (never defined) and
+`$StateNew` (defined in the UPDATE branch). Both are the Round 40 defect — a branch reading a name it does
+not define — and both were caught while writing, because that round's comment says to look for exactly
+this. The record's `from` side also now computes the tree fingerprint *before* the restore, since after it
+there would be nothing left to measure.
+
+### What this round does NOT show
+
+The record has never been written, and nothing has ever been rolled back. Static guarantees here are about
+WHERE writes may go and in WHAT ORDER; they say nothing about whether the write succeeds, whether the
+tree ends up matching the snapshot, or what a real dsh does with a tree swapped underneath it. Those are
+the manual steps, and they are the only evidence there will be.
+
+---
+
 ## Round 41 — Step 7b: version snapshots, and the check that makes a truncated copy visible
 
 **Status: done. `suite` 794 assertions / 0 failing (779 → 794), `load` 65 / 0, `host` green,

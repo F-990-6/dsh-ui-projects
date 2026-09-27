@@ -92,6 +92,10 @@ param(
     [switch]$Update,
     [switch]$Snapshot,
     [switch]$ListVersions,
+    [switch]$Rollback,
+    [string]$To = '',
+    [switch]$List,
+    [switch]$Force,
     [string]$Name = '',
     [string]$Revision = '',
     [int]$Keep = 3,
@@ -511,8 +515,8 @@ if ($Uninstall) { $modeSwitches += '-Uninstall' }
 if ($Update) { $modeSwitches += '-Update' }
 if ($Snapshot) { $modeSwitches += '-Snapshot' }
 if ($ListVersions) { $modeSwitches += '-ListVersions' }
-$pairHandledBelow = ($modeSwitches.Count -eq 2 -and $Snapshot -and $ListVersions)
-if ($modeSwitches.Count -gt 1 -and -not $pairHandledBelow) {
+if ($Rollback) { $modeSwitches += '-Rollback' }
+if ($modeSwitches.Count -gt 1) {
     Write-Host ''
     Write-Host "   REFUSED  $($modeSwitches -join ' and ') are different modes; pass one of them."
     Write-Host '            Nothing was run and nothing was written.'
@@ -520,7 +524,26 @@ if ($modeSwitches.Count -gt 1 -and -not $pairHandledBelow) {
     exit 2
 }
 
-$mode = if ($Uninstall) { 'UNINSTALL' } elseif ($Update) { 'UPDATE' } elseif ($Snapshot) { 'SNAPSHOT' } elseif ($ListVersions) { 'LIST-VERSIONS' } else { 'INSTALL' }
+# Two usage checks, and they live HERE rather than inside their sections: a mode error reported as a
+# preflight failure is a misleading diagnosis. The same reasoning moved the `-Snapshot -ListVersions`
+# pair back into this block -- 7b had left that pair to the snapshot section, where a missing `dsh`
+# would have been reported instead of the two modes being named.
+if ($Rollback -and [string]::IsNullOrWhiteSpace($To) -and -not $List) {
+    Write-Host ''
+    Write-Host '   REFUSED  -Rollback needs -To <name> (restore one snapshot) or -List (show which can be restored).'
+    Write-Host '            Nothing was run and nothing was written.'
+    Write-Host ''
+    exit 2
+}
+if ($Rollback -and -not [string]::IsNullOrWhiteSpace($To) -and $List) {
+    Write-Host ''
+    Write-Host '   REFUSED  -Rollback takes -To <name> or -List, not both.'
+    Write-Host '            Nothing was run and nothing was written.'
+    Write-Host ''
+    exit 2
+}
+
+$mode = if ($Uninstall) { 'UNINSTALL' } elseif ($Update) { 'UPDATE' } elseif ($Snapshot) { 'SNAPSHOT' } elseif ($ListVersions) { 'LIST-VERSIONS' } elseif ($Rollback) { 'ROLLBACK' } else { 'INSTALL' }
 if ($DryRun) { $mode = "$mode (dry run)" }
 
 Write-Head 'Target'
@@ -697,6 +720,9 @@ the profile has no package.json at $ManifestPath
 Write-Ok 'profile manifest exists'
 
 $sourceManifest = Join-Path $SourceDir 'package.json'
+# The two things `-Rollback` may write, named once here so that a reader -- and the source guard -- can
+# see that every write in that section is addressed at one of them and at nothing else in the tree.
+$sourceLib = Join-Path $SourceDir 'lib'
 if (-not (Test-Path -LiteralPath $sourceManifest -PathType Leaf)) {
     Stop-With "no package.json in the source directory: $SourceDir"
 }
@@ -1104,26 +1130,18 @@ if ($Update) {
     Write-Plan 'this mode never runs dsh, never edits YAML, never copies or deletes a file'
 
     <#
-      `-Update` VERIFIES AND REPORTS. It writes nothing at all -- not the source tree, not the install
-      record, not the profile. Three duties live in three commands on purpose, because the ORDER is the
-      part that is easy to get wrong:
+      `-Update` VERIFIES AND RECORDS. It writes exactly ONE file -- the install record, and only its
+      `lastVerified` field -- and nothing else: not the source tree, not settings.yaml, not the profile's
+      manifests. Three duties live in three commands on purpose, because the ORDER is the part that is
+      easy to get wrong:
 
-          install.ps1 -Snapshot           record the version that is running now
+          install.ps1 -Snapshot           record a restorable version
           git pull  &&  npm run build     the user brings the new version
-          install.ps1 -Update             verify what is there, and report the difference
+          install.ps1 -Update             verify what is there, and record it as the new baseline
 
-      This round implements the PLAN only. Without -DryRun the mode refuses rather than half-working, so
-      no path inside this branch can write anything at all; `scripts/verify.mjs` asserts exactly that,
-      and 7c will add the recording step together with the guard that permits it.
+      `scripts/verify.mjs` asserts that allowlist against this branch's own source text: the only write
+      verbs it permits here are the ones aimed at `$StateNew` / `$StatePath`.
     #>
-    if (-not $DryRun) {
-        Write-Host ''
-        Write-Host '   REFUSED  -Update without -DryRun is not implemented yet (7c implements it).'
-        Write-Host '            This round implements the plan only: re-run with -DryRun.'
-        Write-Host '            Nothing was run and nothing was written.'
-        Write-Host ''
-        exit 2
-    }
 
     $settingsPath = Join-Path $dshHome 'settings.yaml'
     $settingsBlock = Get-SettingsBlock $settingsPath
@@ -1200,6 +1218,16 @@ if ($Update) {
         Write-Note 'verdict             : this build DIFFERS from the recorded one; 7c would record the new state'
     }
 
+    # The baseline this run is measured against, and the label that goes into the record so the NEXT run
+    # can say where its own baseline came from. The chain is stated because a diff is only ever as precise
+    # as what somebody wrote down: a snapshot is a full manifest, the record is two hashes.
+    $newestSnapshot = @(Get-VersionSnapshots $PackageVersionsDir | Select-Object -First 1)
+    $baselineLabel = if ($newestSnapshot.Count -gt 0) { "snapshot $($newestSnapshot[0].name)" }
+        elseif ($recordedManifestSha -ne $null) { 'install record' }
+        else { 'none' }
+    Write-Note "baseline            : $baselineLabel"
+    $settingsBlockSha = if ($settingsBlock -eq $null) { '' } else { Get-TextSha $settingsBlock }
+
     # Registry capability, not a registry query: the query itself lands after the packages are published
     # (step 8). What is worth saying today is which case this profile is in.
     $profileManifest = Read-JsonFile $ManifestPath
@@ -1268,29 +1296,91 @@ if ($Update) {
     }
 
     Write-Head 'Will not be touched'
-    Write-Note "the source tree          $SourceDir"
-    Write-Note "settings.yaml            $settingsPath"
+    Write-Note "the source tree          $SourceDir   (this mode never writes inside it)"
+    Write-Note "settings.yaml            $settingsPath   (the ui-projects block is read, never written)"
     Write-Note "other packages           every other entry under $NodeModulesDir"
     Write-Note 'the checklist record     ui-projects.settings in settings.yaml (user data; see Round 36)'
 
-    Write-Head 'Dry run'
-    Write-Host '   Nothing was run. -Update without -DryRun is not implemented yet (7c implements it).'
+    # ---- preconditions, reported in BOTH modes ---------------------------------
+    #
+    # Reported rather than checked only in the writing mode: a dry run that cannot say whether the real
+    # run would refuse is a plan with a hole in it.
+    Write-Head 'Preconditions'
+    $preconditionsFailed = 0
+    if ((Get-LinkTarget $LinkPath) -eq $SourceDir) { Write-Ok 'the profile links this source tree' }
+    else {
+        Write-Warn "the profile does not link this source tree ($LinkPath)"
+        $preconditionsFailed += 1
+    }
+    if ($recorded -ne $null) { Write-Ok "the install record is present ($StateFileName)" }
+    else {
+        Write-Warn "no install record ($StateFileName) to update; run -Install first"
+        $preconditionsFailed += 1
+    }
+    if ($nowBundleSha -ne $null) { Write-Ok 'lib/client.js is present' }
+    else {
+        Write-Warn 'lib/client.js is missing; run: node scripts/build.mjs'
+        $preconditionsFailed += 1
+    }
+
+    if ($DryRun) {
+        Write-Head 'Dry run'
+        if ($preconditionsFailed -gt 0) { Write-Warn "$preconditionsFailed precondition(s) would refuse the real run" }
+        Write-Host '   Nothing was run. Re-run without -DryRun to record this state.'
+        exit 0
+    }
+
+    if ($preconditionsFailed -gt 0) {
+        Write-Warn "REFUSED  $preconditionsFailed precondition(s) failed; nothing was written"
+        exit 1
+    }
+
+    # ---- the one file this mode writes -----------------------------------------
+    #
+    # A NEW field beside the record's own `before`. That baseline is what the install wrote and what
+    # -Uninstall compares against; overwriting it would destroy the thing the other modes read.
+    #
+    # The write goes through `$StateNew` and is read back BEFORE it replaces anything: `Write-TextFile`
+    # truncates first, and a half-written record is worse than a stale one. On a bad read-back the
+    # original is left untouched and the partial file is left where the message says it is -- deleting it
+    # would be another write, and this mode has exactly one.
+    $lastVerified = [pscustomobject]@{
+        at = (Get-Date).ToUniversalTime().ToString('o')
+        by = 'install.ps1 -Update'
+        version = $currentVersion
+        revision = $Revision
+        baseline = $baselineLabel
+        source = [pscustomobject]@{ manifestSha256 = $nowManifestSha; clientBundleSha256 = $nowBundleSha }
+        payload = [pscustomobject]@{ files = $libTree.files; bytes = $libTree.bytes; sha256 = $libTree.sha256 }
+        sourceTree = [pscustomobject]@{ files = $sourceTree.files; bytes = $sourceTree.bytes; sha256 = $sourceTree.sha256 }
+        settingsBlockSha256 = $settingsBlockSha
+        profile = [pscustomobject]@{ dependencySpec = $spec; linkTarget = [string](Get-LinkTarget $LinkPath) }
+    }
+    $recordNext = [ordered]@{}
+    foreach ($property in $recorded.PSObject.Properties) { $recordNext[$property.Name] = $property.Value }
+    $recordNext['lastVerified'] = $lastVerified
+    $StateNew = "$StatePath.new"
+    Write-TextFile $StateNew (($recordNext | ConvertTo-Json -Depth 8) + "`n")
+    $readBack = $null
+    try { $readBack = Read-JsonFile $StateNew } catch { $readBack = $null }
+    $readBackAt = [string](Get-JsonProperty (Get-JsonProperty $readBack 'lastVerified' $null) 'at' '')
+    if ($readBackAt -eq '') {
+        Write-Warn "the record did not read back as written; the original is untouched and the partial file is at $StateNew"
+        exit 1
+    }
+    Move-Item -LiteralPath $StateNew -Destination $StatePath -Force
+    Write-Head 'Recorded'
+    Write-Ok "lastVerified written to $StateFileName (at $readBackAt)"
+    Write-Note "  version    : $currentVersion"
+    Write-Note "  lib tree   : $(Get-ShortSha $libTree.sha256)   (recorded; -Snapshot is what makes it restorable)"
+    Write-Note "  baseline   : $baselineLabel"
+    Write-Head 'Done'
+    Write-Host '   The install record was updated. The source tree, settings.yaml and the version snapshots were'
+    Write-Host '   not touched, and nothing was rolled back: recording is not restoring.'
     exit 0
 }
 
 # =================================================================== SNAPSHOT ===
-
-# Refused with both names in play, before either of them opens the directory they share: one of these
-# modes writes there and the other only reads, and a combined invocation is the one a person reaches for
-# by accident. The general mode matrix above deliberately leaves this pair to this check, so that the
-# refusal sits with the two names it is about instead of making this branch dead code.
-if ($Snapshot -and $ListVersions) {
-    Write-Host ''
-    Write-Host '   REFUSED  -Snapshot and -ListVersions are different modes; pass one of them.'
-    Write-Host '            Nothing was run and nothing was written.'
-    Write-Host ''
-    exit 2
-}
 
 if ($Snapshot) {
     Write-Head 'Snapshot plan'
@@ -1489,6 +1579,261 @@ if ($ListVersions) {
     Write-Note "$($entries.Count - $bad) of $($entries.Count) snapshot(s) verify"
     Write-Note '-Rollback refuses a snapshot that does not (7c)'
     exit $(if ($bad -eq 0) { 0 } else { 1 })
+}
+
+# =================================================================== ROLLBACK ===
+
+# The only mode that writes inside the source tree, and it writes exactly two things: `package.json` and
+# `lib/**`. Everything else in the snapshot -- `cordis.patch.yml`, `CHANGELOG.md` -- is deliberately not
+# restored: making the running version correct does not require them, and every extra write is a risk this
+# project has paid for twice.
+if ($Rollback -and -not $List) {
+    Write-Head 'Rollback plan'
+    Write-Plan 'verify the snapshot against its own manifest'
+    Write-Plan 'copy the CURRENT package.json and lib/** into the backup directory (the rollback''s rollback)'
+    Write-Plan 'verify that backup by reading it back before anything is written'
+    Write-Plan 'restore package.json and lib/** from the snapshot, then re-verify every restored file by sha'
+    Write-Plan 'cordis.patch.yml and CHANGELOG.md are in the snapshot and are deliberately NOT restored'
+    Write-Plan 'STOP dsh web first: this command cannot check whether it is running, and will not pretend to'
+
+    # -To becomes a directory name, so it is validated exactly as -Snapshot -Name is.
+    if ($To -notmatch '^[A-Za-z0-9._-]+$') {
+        Write-Host ''
+        Write-Host "   REFUSED  -To must match ^[A-Za-z0-9._-]+$ (got: $To)."
+        Write-Host '            Nothing was run and nothing was written.'
+        Write-Host ''
+        exit 2
+    }
+
+    $SnapshotDir = Join-Path $PackageVersionsDir $To
+    $SnapshotPayload = Join-Path $SnapshotDir 'payload'
+    if (-not (Test-Path -LiteralPath $SnapshotDir -PathType Container)) {
+        Write-Warn "REFUSED  no snapshot named $To under $PackageVersionsDir"
+        exit 1
+    }
+    if (@(Get-VersionSnapshots $PackageVersionsDir | Where-Object { $_.name -eq $To -and $_.ours }).Count -eq 0) {
+        Write-Warn "REFUSED  $To was not written by this tool, so it will not be restored"
+        exit 1
+    }
+
+    # REFUSE: a snapshot that does not verify is never restored from, and the refusal happens before this
+    # mode has written anything at all -- including before the backup.
+    $snapshotCheck = Test-VersionSnapshot $SnapshotDir
+    if (-not $snapshotCheck.ok) {
+        $snapshotWhy = if ($snapshotCheck.reason -ne '') { $snapshotCheck.reason } else { ($snapshotCheck.problems | Select-Object -First 5) -join ', ' }
+        Write-Warn "REFUSED  $To does not verify, so it will not be restored -- $snapshotWhy"
+        exit 1
+    }
+
+    $snapshotManifest = Read-JsonFile (Join-Path $SnapshotDir 'manifest.json')
+    $snapshotSourceDir = [string](Get-JsonProperty $snapshotManifest 'sourceDir' '')
+    if ($snapshotSourceDir -ne $SourceDir) {
+        Write-Warn "REFUSED  $To was taken from $snapshotSourceDir, not from $SourceDir"
+        exit 1
+    }
+    $snapshotFiles = @(Get-JsonProperty $snapshotManifest 'files' @())
+    $snapshotRels = @($snapshotFiles | ForEach-Object { ([string](Get-JsonProperty $_ 'rel' '')).Replace('\', '/') })
+    $libRels = @($snapshotRels | Where-Object { $_ -like 'lib/*' })
+    if ($snapshotRels -notcontains 'package.json' -or $libRels.Count -eq 0) {
+        Write-Warn "REFUSED  $To does not record package.json and lib/**, so there is nothing to restore"
+        exit 1
+    }
+
+    $SnapshotVersion = [string](Get-JsonProperty $snapshotManifest 'version' '')
+    $SnapshotTreeSha = [string](Get-JsonProperty (Get-JsonProperty $snapshotManifest 'payload' $null) 'sha256' '')
+    $currentManifestNow = Read-JsonFile $sourceManifest
+    $currentVersion = [string](Get-JsonProperty $currentManifestNow 'version' '')
+    $currentManifestSha = Get-Sha256 $sourceManifest
+    $snapshotManifestSha = Get-Sha256 (Join-Path $SnapshotPayload 'package.json')
+    # Read BEFORE anything is restored: this is the "from" side of `lastRollback`, and after the restore
+    # there would be no way to reconstruct it.
+    $currentTree = Get-TreeFingerprint $sourceLib @()
+    # Defined here as well as in the UPDATE branch, and that is the rule this file learned in Round 40: a
+    # branch that reads a name defines it, even when another branch defines the same name for its own use.
+    $StateNew = "$StatePath.new"
+
+    # The loader patch is IN the snapshot and is NOT restored. If it differs, that is a decision for the
+    # person running this, not one to make quietly on their behalf.
+    $patchHere = Join-Path $SourceDir 'cordis.patch.yml'
+    $patchInSnapshot = Join-Path $SnapshotPayload 'cordis.patch.yml'
+    $patchHereThere = Test-Path -LiteralPath $patchHere -PathType Leaf
+    $patchSnapshotThere = Test-Path -LiteralPath $patchInSnapshot -PathType Leaf
+    $patchDiffers = ($patchHereThere -ne $patchSnapshotThere)
+    if (-not $patchDiffers -and $patchHereThere) { $patchDiffers = ((Get-Sha256 $patchHere) -ne (Get-Sha256 $patchInSnapshot)) }
+
+    Write-Head 'What this run found'
+    Write-Note "snapshot        : $To   (version $SnapshotVersion)"
+    Write-Ok "verifies        : $($snapshotCheck.checked)/$($snapshotCheck.total) files match its manifest"
+    Write-Note "current version : $currentVersion"
+    Write-Note "will change     : package.json  $(Get-ShortSha $currentManifestSha) -> $(Get-ShortSha $snapshotManifestSha)"
+    Write-Note "will change     : lib/**  $($libRels.Count) file(s) in the snapshot"
+    if ($patchDiffers) {
+        # A SUMMARY on purpose: this mode does not restore the file, so what matters is THAT it differs.
+        Write-Warn 'patch differs: cordis.patch.yml'
+        Write-Note "  in the tree     : $(if ($patchHereThere) { Get-ShortSha (Get-Sha256 $patchHere) } else { 'absent' })"
+        Write-Note "  in the snapshot : $(if ($patchSnapshotThere) { Get-ShortSha (Get-Sha256 $patchInSnapshot) } else { 'absent' })"
+        if (-not $Force) {
+            Write-Warn 'REFUSED  the cordis.patch.yml in the snapshot differs from the one in the tree.'
+            Write-Host '            This command does not restore that file. Pass -Force to roll back anyway,'
+            Write-Host '            or align the patch by hand first.'
+            exit 1
+        }
+        Write-Warn "FORCED: the patch differs and will NOT be restored; only package.json and lib/** are. (-Force)"
+    }
+    else {
+        Write-Ok 'patch           : cordis.patch.yml is identical, so nothing about it is at stake'
+    }
+
+    Write-Head 'Will not be touched'
+    Write-Note 'settings.yaml and the ui-projects block / other packages / the version snapshots / .git'
+    Write-Note "the backup goes to $VersionsDir\.rollback-backup\ (beside the packages, never inside one)"
+
+    if ($DryRun) {
+        Write-Head 'Dry run'
+        Write-Host '   Nothing was run. Re-run without -DryRun to apply.'
+        exit 0
+    }
+
+    # ---- writes from here ------------------------------------------------------
+    #
+    # `backup before writing` is the rule this whole section exists to obey: the tree is copied out of the
+    # way first, that copy is read back, and only then does anything in the source tree change. The backup
+    # uses the snapshot format, so the same verification covers it.
+    $RollbackStamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+    $RollbackBackupDir = Join-Path (Join-Path $VersionsDir '.rollback-backup') "$To-$RollbackStamp"
+    $RollbackBackupPayload = Join-Path $RollbackBackupDir 'payload'
+
+    Write-Head 'Backup'
+    New-Item -ItemType Directory -Force -Path $RollbackBackupPayload | Out-Null
+    Copy-Item -LiteralPath $sourceManifest -Destination (Join-Path $RollbackBackupPayload 'package.json') -Force
+    $backupEntries = New-Object System.Collections.ArrayList
+    foreach ($entry in @(Get-ChildItem -LiteralPath $sourceLib -Recurse -File -Force -ErrorAction SilentlyContinue | Sort-Object FullName)) {
+        $rel = $entry.FullName.Substring($sourceLib.Length).TrimStart('\', '/').Replace('\', '/')
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent (Join-Path $RollbackBackupPayload $rel.Replace('/', '\'))) | Out-Null
+        Copy-Item -LiteralPath $entry.FullName -Destination (Join-Path $RollbackBackupPayload $rel.Replace('/', '\')) -Force
+        [void]$backupEntries.Add([pscustomobject]@{ rel = "lib/$rel"; bytes = $entry.Length; sha256 = Get-Sha256 $entry.FullName })
+    }
+    $backupManifest = [pscustomobject]@{
+        schemaVersion = 1
+        tool = 'install.ps1 -Rollback backup'
+        name = "$To-$RollbackStamp"
+        package = $PackageName
+        version = $currentVersion
+        createdAt = (Get-Date).ToUniversalTime().ToString('o')
+        sourceDir = $SourceDir
+        files = @([pscustomobject]@{ rel = 'package.json'; bytes = (Get-Item -LiteralPath $sourceManifest).Length; sha256 = Get-Sha256 $sourceManifest }) + @($backupEntries)
+    }
+    Write-TextFile (Join-Path $RollbackBackupDir 'manifest.json') (($backupManifest | ConvertTo-Json -Depth 6) + "`n")
+    $backupCheck = Test-VersionSnapshot $RollbackBackupDir
+    if (-not $backupCheck.ok) {
+        Write-Warn "REFUSED  the backup did not verify ($(($backupCheck.problems | Select-Object -First 5) -join '; ')); nothing was written to the source tree"
+        exit 1
+    }
+    Write-Ok "backup verified ($($backupCheck.checked)/$($backupCheck.total) files) at $RollbackBackupDir"
+
+    Write-Head 'Restoring'
+    Copy-Item -LiteralPath (Join-Path $SnapshotPayload 'package.json') -Destination $sourceManifest -Force
+    foreach ($rel in $libRels) {
+        $relWin = $rel.Substring(4).Replace('/', '\')
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent (Join-Path $sourceLib $relWin)) | Out-Null
+        Copy-Item -LiteralPath (Join-Path $SnapshotPayload $rel.Replace('/', '\')) -Destination (Join-Path $sourceLib $relWin) -Force
+    }
+    Write-Ok "restored package.json and $($libRels.Count) file(s) under lib/"
+
+    # re-verify: every restored file against the snapshot's own manifest, which is the only claim that
+    # matters -- "the copy ran" is not "the tree is now the version".
+    Write-Head 'Re-verify'
+    $restoreProblems = New-Object System.Collections.ArrayList
+    $restoredCount = 0
+    foreach ($rel in @('package.json') + $libRels) {
+        $record = @($snapshotFiles | Where-Object { ([string](Get-JsonProperty $_ 'rel' '')).Replace('\', '/') -eq $rel }) | Select-Object -First 1
+        $expected = [string](Get-JsonProperty $record 'sha256' '')
+        $target = if ($rel -eq 'package.json') { $sourceManifest } else { Join-Path $sourceLib $rel.Substring(4).Replace('/', '\') }
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { [void]$restoreProblems.Add("missing: $rel"); continue }
+        if ((Get-Sha256 $target) -ne $expected) { [void]$restoreProblems.Add("changed: $rel"); continue }
+        $restoredCount += 1
+    }
+    if ($restoreProblems.Count -gt 0) {
+        Write-Warn "the restored tree does not match the snapshot: $(($restoreProblems | Select-Object -First 5) -join '; ')"
+        Write-Warn 'putting the tree back from the backup taken moments ago'
+        Copy-Item -LiteralPath (Join-Path $RollbackBackupPayload 'package.json') -Destination $sourceManifest -Force
+        foreach ($rel in $backupEntries) {
+            $relInLib = ([string]$rel.rel).Substring(4)
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent (Join-Path $sourceLib $relInLib.Replace('/', '\'))) | Out-Null
+            Copy-Item -LiteralPath (Join-Path $RollbackBackupPayload $relInLib.Replace('/', '\')) -Destination (Join-Path $sourceLib $relInLib.Replace('/', '\')) -Force
+        }
+        Write-Warn 'stopped: nothing further was written. Both copies are still on disk:'
+        Write-Host "            backup   : $RollbackBackupDir"
+        Write-Host "            snapshot : $SnapshotDir"
+        exit 1
+    }
+    Write-Ok "re-verify OK ($restoredCount file(s) match the snapshot)"
+
+    # Keep the newest three backups, and only ones this tool wrote.
+    $backupRoot = Join-Path $VersionsDir '.rollback-backup'
+    $backupDirs = @(Get-ChildItem -LiteralPath $backupRoot -Directory -Force -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+    $backupPruned = @($backupDirs | Select-Object -Skip ([Math]::Max($Keep, 1)))
+    foreach ($old in $backupPruned) {
+        $OldSnapshotDir = $old.FullName
+        Remove-Item -LiteralPath $OldSnapshotDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Note "pruned backup: $($old.Name)"
+    }
+
+    # `lastRollback`, beside `lastVerified`, written the same way: a new field, read back, then moved over.
+    $recordRollback = $null
+    if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
+        try { $recordRollback = Read-JsonFile $StatePath } catch { $recordRollback = $null }
+    }
+    if ($recordRollback -ne $null) {
+        $lastRollback = [pscustomobject]@{
+            at = (Get-Date).ToUniversalTime().ToString('o')
+            by = 'install.ps1 -Rollback'
+            from = [pscustomobject]@{ version = $currentVersion; libTreeSha256 = $currentTree.sha256 }
+            to = [pscustomobject]@{ name = $To; version = $SnapshotVersion; libTreeSha256 = $SnapshotTreeSha }
+            backupPath = $RollbackBackupDir
+            forced = [bool]$Force
+        }
+        $recordAfterRollback = [ordered]@{}
+        foreach ($property in $recordRollback.PSObject.Properties) { $recordAfterRollback[$property.Name] = $property.Value }
+        $recordAfterRollback['lastRollback'] = $lastRollback
+        Write-TextFile $StateNew (($recordAfterRollback | ConvertTo-Json -Depth 8) + "`n")
+        $rollbackReadBack = $null
+        try { $rollbackReadBack = Read-JsonFile $StateNew } catch { $rollbackReadBack = $null }
+        if ([string](Get-JsonProperty (Get-JsonProperty $rollbackReadBack 'lastRollback' $null) 'at' '') -eq '') {
+            Write-Warn "the record did not read back as written; the partial file is at $StateNew and the tree is already rolled back"
+        }
+        else {
+            Move-Item -LiteralPath $StateNew -Destination $StatePath -Force
+            Write-Ok "lastRollback written to $StateFileName"
+        }
+    }
+
+    Write-Head 'Done'
+    Write-Host "   Rolled back to $To. package.json and lib/** now match that snapshot."
+    Write-Host "   The backup of what was here before is at $RollbackBackupDir"
+    Write-Host '   Start dsh web again to load the restored version.'
+    exit 0
+}
+
+if ($Rollback -and $List) {
+    # READ-ONLY, and the guard asserts it: this half opens manifests and verifies them, and writes nothing.
+    Write-Head "Restorable snapshots (newest first; keeping $([Math]::Max($Keep, 1)))"
+    $restorable = @(Get-VersionSnapshots $PackageVersionsDir)
+    if ($restorable.Count -eq 0) {
+        Write-Skip "no snapshots yet under $PackageVersionsDir"
+        exit 0
+    }
+    $notRestorable = 0
+    foreach ($entry in $restorable) {
+        $check = Test-VersionSnapshot $entry.dir
+        $verdict = if ($check.ok) { 'restorable    ' } else { 'NOT restorable' }
+        if (-not $check.ok) { $notRestorable += 1 }
+        Write-Note ("{0}   v{1}   {2}   {3}" -f $entry.name, $entry.version, $verdict, $(if ($check.ok) { "$($check.checked)/$($check.total) files match" } else { "does not verify: $(($check.problems | Select-Object -First 3) -join ', ')" }))
+    }
+    Write-Head 'Summary'
+    Write-Note "$($restorable.Count - $notRestorable) of $($restorable.Count) snapshot(s) can be restored"
+    Write-Note 'restore one with: install.ps1 -Rollback -To <name>   (add -DryRun to see what it would do)'
+    exit $(if ($notRestorable -eq 0) { 0 } else { 1 })
 }
 
 # =================================================================== INSTALL ===

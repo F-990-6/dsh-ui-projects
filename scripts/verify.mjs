@@ -4644,18 +4644,35 @@ await test('the update mode is a read-only plan, and refuses to pretend otherwis
   const branch = source.slice(start, end)
   truthy(branch.length > 2000, `the slice is the update branch rather than a fragment (${branch.length} chars)`)
 
-  // Nothing that could write, at any point in the branch.
-  const writers = ['Invoke-Dsh', 'Remove-Item', 'Copy-Item', 'New-Item', 'Set-Content', 'Add-Content', 'Write-TextFile']
-  const found = writers.filter((writer) => branch.includes(writer))
-  equal(JSON.stringify(found), '[]', `the update branch contains no write of any kind (found: ${JSON.stringify(found)})`)
-
-  // The refusal: without -DryRun this mode must not pretend to have run.
-  equal(branch.split('if (-not $DryRun)').length - 1, 1, 'exactly one refusal gate in the branch')
-  truthy(branch.includes('exit 2'), 'and the refused mode exits 2 rather than reporting success')
-  truthy(
-    branch.includes('not implemented yet (7c implements it)'),
-    'with a diagnosis that names the round which implements it',
+  /*
+   * 7c gave this mode permission to write exactly one file, and this is where that permission is
+   * granted: the allowlist below is the whole contract. `$StateNew` is the `.new` file the record is
+   * written to and read back from; `$StatePath` is the record it then replaces. A write anywhere else in
+   * this branch is a write nobody approved.
+   */
+  const writeVerbs = ['Invoke-Dsh', 'Remove-Item', 'Copy-Item', 'New-Item', 'Set-Content', 'Add-Content', 'Write-TextFile', 'Move-Item']
+  const allowedTargets = ['$StateNew', '$StatePath']
+  const offenders = []
+  for (const line of branch.split('\n')) {
+    const verb = writeVerbs.find((candidate) => line.includes(candidate))
+    if (verb === undefined) continue
+    if (!allowedTargets.some((target) => line.includes(target))) offenders.push(`${verb} -> ${line.trim()}`)
+  }
+  equal(
+    JSON.stringify(offenders),
+    '[]',
+    `the update branch writes only the install record (offenders: ${JSON.stringify(offenders)})`,
   )
+  truthy(branch.includes('$StateNew = "$StatePath.new"'), 'the .new file is the record path, not somewhere else')
+  truthy(branch.includes("Write-Head 'Preconditions'"), 'and the preconditions are a section of their own')
+  equal(branch.split('if ($DryRun)').length - 1, 1, 'exactly one dry-run gate in the branch')
+  const preconditionsAt = branch.indexOf("Write-Head 'Preconditions'")
+  const recordWriteAt = branch.indexOf('Write-TextFile $StateNew')
+  truthy(
+    preconditionsAt > 0 && recordWriteAt > preconditionsAt,
+    `they are reported before anything is written (${preconditionsAt} < ${recordWriteAt})`,
+  )
+  truthy(branch.includes('lastVerified'), 'and the field it writes is the one that was approved')
 
   // What it does promise, and the four things it promises not to touch.
   const required = [
@@ -4727,15 +4744,31 @@ await test('the update mode is a read-only plan, and refuses to pretend otherwis
 await test('the snapshot mode writes only inside the version store, and verifies what it wrote', async () => {
   const source = await readFile(join(packageRoot, 'install.ps1'), 'utf8')
   const start = source.indexOf('# =================================================================== SNAPSHOT ===')
-  const end = source.indexOf('# =================================================================== INSTALL ===')
+  // The end anchor follows the file's own section order: SNAPSHOT stops where ROLLBACK begins.
+  const end = source.indexOf('# =================================================================== ROLLBACK ===')
   truthy(start > 0 && end > start, `the snapshot section is where this guard looks for it (start=${start}, end=${end})`)
   const section = source.slice(start, end)
   truthy(section.length > 2000, `the slice is the whole section rather than a fragment (${section.length} chars)`)
 
-  // The pair that shares one directory is refused with both names in the check, and it is not dead code:
-  // the mode matrix above deliberately leaves this pair to it.
-  truthy(section.includes('if ($Snapshot -and $ListVersions)'), 'the pair sharing one directory is refused with both names in the check')
-  truthy(section.includes('pass one of them'), 'and the refusal says what to do instead')
+  /*
+   * The pair refusal moved to the mode matrix in 7c, on purpose: a preflight failure (no `dsh`, no
+   * profile) must not be reported instead of two modes being named. So the matrix is checked here rather
+   * than the section -- and the section must NOT still carry a second, unreachable copy of the same check.
+   */
+  const matrixStart = source.indexOf('$modeSwitches = @()')
+  const matrixEnd = source.indexOf('$mode = if ($Uninstall)')
+  truthy(matrixStart > 0 && matrixEnd > matrixStart, 'the mode matrix is where this guard looks for it')
+  const matrix = source.slice(matrixStart, matrixEnd)
+  for (const mode of ['-Uninstall', '-Update', '-Snapshot', '-ListVersions', '-Rollback']) {
+    truthy(matrix.includes(`'${mode}'`), `the matrix lists ${mode}`)
+  }
+  truthy(matrix.includes("$modeSwitches -join ' and '"), 'and refuses any two of them together, naming both')
+  equal(
+    section.includes('if ($Snapshot -and $ListVersions)'),
+    false,
+    'the snapshot section no longer carries a second, unreachable copy of that refusal',
+  )
+
   truthy(section.includes("'^[A-Za-z0-9._-]+$'"), 'a snapshot name is validated as a directory name')
 
   const splitAt = section.indexOf('Write-Head "Versions (newest')
@@ -4744,7 +4777,8 @@ await test('the snapshot mode writes only inside the version store, and verifies
   const listing = section.slice(splitAt)
 
   const verbs = ['Copy-Item', 'New-Item', 'Remove-Item', 'Write-TextFile', 'Set-Content', 'Add-Content', 'Invoke-Dsh']
-  const allowed = ['$SnapshotDir', '$SnapshotPayload', '$OldSnapshotDir', '$VersionsDir', '$PackageVersionsDir', '$PruneTarget']
+  // Tightened in 7c: the parent directory is NOT an allowed destination, only the snapshot's own paths.
+  const allowed = ['$SnapshotDir', '$SnapshotPayload', '$OldSnapshotDir']
   const offenders = []
   for (const line of writing.split('\n')) {
     const verb = verbs.find((candidate) => line.includes(candidate))
@@ -4791,6 +4825,104 @@ await test('the snapshot mode writes only inside the version store, and verifies
     '[]',
     `the listing half contains no write verb at all (found: ${JSON.stringify(listingWrites)})`,
   )
+})
+
+/*
+ * THE ONE MODE THAT WRITES THE SOURCE TREE, GUARDED ACCORDINGLY.
+ *
+ * `-Rollback -To` restores `package.json` and `lib/**`, and nothing else, in a fixed order: verify the
+ * snapshot, copy the current tree out of the way, read that copy back, then write, then re-verify. All of
+ * it is asserted here because a rollback is the most dangerous thing in this file — the project has lost
+ * its source tree twice, and one earlier rollback deleted a file instead of writing the backup back.
+ */
+await test('the rollback mode writes only the two source files it promises to, in the order it promises', async () => {
+  const source = await readFile(join(packageRoot, 'install.ps1'), 'utf8')
+  const start = source.indexOf('# =================================================================== ROLLBACK ===')
+  const end = source.indexOf('# =================================================================== INSTALL ===')
+  truthy(start > 0 && end > start, `the rollback section is where this guard looks for it (start=${start}, end=${end})`)
+  const section = source.slice(start, end)
+  truthy(section.length > 2000, `the slice is the whole section rather than a fragment (${section.length} chars)`)
+
+  const splitAt = section.indexOf('Write-Head "Restorable snapshots')
+  truthy(splitAt > 0, 'the read-only listing half is the second half of this section')
+  const writing = section.slice(0, splitAt)
+
+  // -To becomes a directory name, so it is validated exactly as -Snapshot -Name is.
+  truthy(writing.includes("'^[A-Za-z0-9._-]+$'"), 'the snapshot name is validated against the same strict pattern')
+  truthy(writing.includes('REFUSED  -To must match'), 'and the refusal names the flag and the pattern')
+
+  const verbs = ['Copy-Item', 'New-Item', 'Remove-Item', 'Write-TextFile', 'Move-Item', 'Set-Content', 'Add-Content', 'Invoke-Dsh']
+  const allowed = ['$SnapshotPayload', '$SnapshotDir', '$RollbackBackupPayload', '$RollbackBackupDir', '$OldSnapshotDir', '$sourceManifest', '$sourceLib', '$StateNew', '$StatePath']
+  const offenders = []
+  for (const line of writing.split('\n')) {
+    const verb = verbs.find((candidate) => line.includes(candidate))
+    if (verb === undefined) continue
+    if (!allowed.some((target) => line.includes(target))) offenders.push(`${verb} -> ${line.trim()}`)
+  }
+  equal(JSON.stringify(offenders), '[]', `every write names an approved destination (offenders: ${JSON.stringify(offenders)})`)
+
+  // Non-vacuous: the two writes into the tree are really there, and nothing touches .git.
+  truthy(
+    writing.split('\n').some((line) => line.includes('Copy-Item') && line.includes('$sourceManifest')),
+    'the write to package.json is there',
+  )
+  truthy(
+    writing.split('\n').some((line) => line.includes('Copy-Item') && line.includes('$sourceLib')),
+    'and so is the write under lib/',
+  )
+  equal(
+    writing.split('\n').filter((line) => verbs.some((verb) => line.includes(verb)) && line.includes('.git')).length,
+    0,
+    'and nothing in this mode writes inside .git',
+  )
+
+  // The backup is a SIBLING of the package directories, never inside them: -ListVersions walks those, and
+  // a backup parked there would be listed as a version somebody could roll back to.
+  const backupDef = writing.split('\n').find((line) => line.includes('$RollbackBackupDir = Join-Path'))
+  truthy(backupDef !== undefined, 'the backup directory is defined in this mode')
+  truthy(backupDef.includes('$VersionsDir'), 'under the versions directory')
+  equal(
+    backupDef.includes('$PackageVersionsDir'),
+    false,
+    'and NOT inside the package directory that the version listing walks',
+  )
+
+  for (const [what, needle] of [
+    ['says the backup comes first', 'backup before writing'],
+    ['refuses a snapshot that does not verify', 'does not verify, so it will not be restored'],
+    ['reports a differing patch rather than restoring it quietly', 'patch differs'],
+    ['stops and keeps both copies when the restore does not verify', 'stopped: nothing further was written'],
+    ['records what it did', 'lastRollback'],
+  ]) {
+    truthy(writing.includes(needle), `it ${what}`)
+  }
+
+  /*
+   * The order, which IS the safety property: refuse a bad snapshot, back the tree up, read that backup
+   * back, only then write, and re-verify afterwards. Pruning and the record come after the re-verification.
+   */
+  const verifyAt = writing.indexOf('does not verify, so it will not be restored')
+  const backupAt = writing.indexOf("Write-Head 'Backup'")
+  const backupReadBackAt = writing.indexOf('the backup did not verify')
+  const restoreAt = writing.indexOf("Write-Head 'Restoring'")
+  const reVerifyAt = writing.indexOf("Write-Head 'Re-verify'")
+  truthy(
+    verifyAt > 0 && backupAt > verifyAt && backupReadBackAt > backupAt && restoreAt > backupReadBackAt && reVerifyAt > restoreAt,
+    `the order is refuse, back up, read the backup back, write the tree, re-verify (${verifyAt} < ${backupAt} < ${backupReadBackAt} < ${restoreAt} < ${reVerifyAt})`,
+  )
+})
+
+await test('the rollback listing half is read-only', async () => {
+  const source = await readFile(join(packageRoot, 'install.ps1'), 'utf8')
+  const start = source.indexOf('Write-Head "Restorable snapshots')
+  const end = source.indexOf('# =================================================================== INSTALL ===')
+  truthy(start > 0 && end > start, `the listing half is where this guard looks for it (${start}, ${end})`)
+  const listing = source.slice(start, end)
+  truthy(listing.length > 200, `and it is a real slice (${listing.length} chars)`)
+  const verbs = ['Copy-Item', 'New-Item', 'Remove-Item', 'Write-TextFile', 'Move-Item', 'Set-Content', 'Add-Content', 'Invoke-Dsh']
+  const found = verbs.filter((verb) => listing.includes(verb))
+  equal(JSON.stringify(found), '[]', `the listing half contains no write verb at all (found: ${JSON.stringify(found)})`)
+  truthy(listing.includes('can be restored'), 'and it says how many snapshots can be restored')
 })
 
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
