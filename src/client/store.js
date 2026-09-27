@@ -299,6 +299,28 @@ export function createStore(input) {
      * @param {string[]} itemIds
      */
     confirmChecks: async (id, itemIds) => {
+      /*
+       * Both guards THROW rather than write nothing, and each replaces a silent failure.
+       *
+       * A string of item ids once arrived here — the panel passed `project.id` where the ids belonged —
+       * and `for…of` over a string walks its CHARACTERS, so the loop ran, matched no declared item and
+       * wrote `{ version, items: {} }`: a record that says "confirmed" and lists nothing, which reads
+       * back as `incomplete`. That is the shape found in a real settings document and explained in
+       * `checksStateOf` above. A loop that can match nothing must not be able to record a confirmation.
+       *
+       * The second guard is the same rule seen from the other end: ids that are a valid array but name
+       * no declared item leave `items` empty too. An empty `items` is never a legitimate confirmation —
+       * the panel renders no checklist at all for a project that declares no items, so no honest path
+       * through this function produces one.
+       */
+      if (!Array.isArray(itemIds) || itemIds.length === 0) {
+        const received = Array.isArray(itemIds)
+          ? 'an empty array'
+          : typeof itemIds === 'string'
+            ? JSON.stringify(itemIds)
+            : String(itemIds)
+        throw new TypeError(`confirmChecks expects a non-empty array of item ids, received ${received}`)
+      }
       const project = registry.get(id)
       const context = typeof runtime.contextFor === 'function' ? runtime.contextFor(id) : undefined
       if (project === undefined || context === undefined) return
@@ -306,6 +328,11 @@ export function createStore(input) {
       const items = {}
       for (const itemId of itemIds) {
         if (project.testItems.some((item) => item.id === itemId)) items[itemId] = true
+      }
+      if (Object.keys(items).length === 0) {
+        throw new TypeError(
+          `confirmChecks matched none of the items ${id} declares, received ${JSON.stringify(itemIds)}`,
+        )
       }
       await context.writeSetting?.('checks', { version: project.version, items })
     },

@@ -3684,6 +3684,163 @@ await test('confirming records the version, and a new version invalidates it', a
   )
 })
 
+/*
+ * THE CONNECTION BETWEEN THE CARD AND THE STORE, which the five `confirmChecks` assertions above
+ * cannot reach.
+ *
+ * Those call `store.confirmChecks(id, ['one'])` directly: a well-formed array, handed to the layer
+ * BELOW the bug. The bug was in the wiring above it — `createCard` passed `project.id` to a callback
+ * that already closed over it — so the store received the string `'three-items'` where the item ids
+ * belonged, `for…of` walked its characters, matched no declared item and recorded `{ version, items: {} }`.
+ * All five of those assertions stayed green while the card in the browser recorded nothing at all.
+ * A connection between a component and a store needs an assertion ON the connection.
+ */
+await test('the card hands the item ids to the store, not the project id', async () => {
+  const harness = await boot()
+  harness.registry.register({
+    id: 'three-items',
+    name: 'Three items',
+    version: '1.0.0',
+    testItems: [
+      { id: 'one', label: 'One' },
+      { id: 'two', label: 'Two' },
+      { id: 'three', label: 'Three' },
+    ],
+  })
+  await harness.runtime.enable('three-items')
+
+  /*
+   * The card is reached through React rather than through the store, because React's element props are
+   * where the bug was. `panel.js` holds the same React instance this suite does — the loader's module
+   * table hands out one copy, which is what makes hooks resolve to a single dispatcher — so wrapping
+   * `createElement` for the duration of one render is enough to observe what the card hands its
+   * checklist. No DOM, no clicking, and no second React to disagree with the first.
+   */
+  const realCreateElement = react.createElement
+  /** @type {any[]} */
+  const checklists = []
+  react.createElement = (type, props, ...rest) => {
+    if (typeof type === 'function' && props !== null && typeof props === 'object' && typeof props.onConfirm === 'function') {
+      checklists.push(props)
+    }
+    return realCreateElement(type, props, ...rest)
+  }
+  try {
+    harness.render()
+  } finally {
+    react.createElement = realCreateElement
+  }
+  const checklist = checklists.find((props) => props.project.id === 'three-items')
+  truthy(
+    checklist !== undefined,
+    `the project's card renders a checklist (saw ${checklists.map((props) => props.project.id).join(', ') || 'none'})`,
+  )
+
+  // Exactly what the button computes once all three boxes are ticked — the state the browser suite
+  // puts the card in before it clicks.
+  const itemIds = checklist.project.testItems.map((item) => item.id)
+
+  /** @type {any[]} */
+  const seen = []
+  /** @type {Promise<any>[]} */
+  const writes = []
+  const realConfirmChecks = harness.store.confirmChecks
+  harness.store.confirmChecks = (id, ids) => {
+    seen.push([id, ids])
+    const write = realConfirmChecks(id, ids)
+    writes.push(write)
+    return write
+  }
+  try {
+    checklist.onConfirm(itemIds)
+    await Promise.all(writes)
+  } finally {
+    harness.store.confirmChecks = realConfirmChecks
+  }
+
+  equal(
+    JSON.stringify(seen),
+    JSON.stringify([['three-items', ['one', 'two', 'three']]]),
+    'the store is called with the ids and nothing else: the id the callback closes over must not arrive as a second argument',
+  )
+  const record = harness.runtime.settingsFor('three-items')?.checks
+  equal(record?.version, '1.0.0', 'and the write carries the registered version')
+  equal(
+    JSON.stringify(record?.items),
+    '{"one":true,"two":true,"three":true}',
+    'with every ticked item in it, rather than an empty set',
+  )
+  equal(
+    harness.store.snapshot().projects.find((project) => project.id === 'three-items')?.checksState,
+    'current',
+    'so the card reads as confirmed — the reading the browser showed as `incomplete` for a record with no items',
+  )
+})
+
+/**
+ * The store's own boundary, which the same bug also went through.
+ *
+ * `for…of` over a string is legal, iterates its characters and matches nothing, so the shape mistake
+ * above produced a WRITTEN record rather than an error. Both guards throw instead: the input must be a
+ * non-empty array, and matching it against the declared items must not leave the record empty either.
+ * An empty `items` is never a legitimate confirmation — the panel renders no checklist for a project
+ * that declares no items, so no honest path through `confirmChecks` produces one.
+ */
+await test('confirmChecks refuses anything that would record an empty confirmation', async () => {
+  const harness = await boot()
+  harness.registry.register({
+    id: 'guarded',
+    name: 'Guarded',
+    version: '1.0.0',
+    testItems: [{ id: 'one', label: 'One' }],
+  })
+  await harness.runtime.enable('guarded')
+
+  /** @param {any} value @returns {Promise<string>} */
+  const outcome = async (value) => {
+    try {
+      await harness.store.confirmChecks('guarded', value)
+      return 'accepted'
+    } catch (err) {
+      return err?.name ?? 'threw a non-Error'
+    }
+  }
+
+  const outcomes = []
+  for (const wrong of ['guarded', [], undefined, { one: true }]) outcomes.push(await outcome(wrong))
+  equal(
+    JSON.stringify(outcomes),
+    JSON.stringify(['TypeError', 'TypeError', 'TypeError', 'TypeError']),
+    'a string of ids, an empty array, undefined and an object are all refused by name',
+  )
+
+  const named = await harness.store.confirmChecks('guarded', 'guarded').then(
+    () => 'accepted',
+    (err) => String(err?.message ?? ''),
+  )
+  contains(named, '"guarded"', 'and the refusal quotes what it received, so the string-of-ids mistake is readable')
+
+  const unmatched = await harness.store.confirmChecks('guarded', ['not-declared']).then(
+    () => 'accepted',
+    (err) => String(err?.message ?? ''),
+  )
+  contains(unmatched, 'not-declared', 'ids that name no declared item are refused too, rather than recorded as empty')
+
+  equal(
+    harness.runtime.settingsFor('guarded')?.checks,
+    undefined,
+    'and no refusal wrote a record — a confirmation with nothing in it is what this replaced',
+  )
+
+  // The honest call still works, so the guards did not close the door they were put beside.
+  await harness.store.confirmChecks('guarded', ['one'])
+  equal(
+    JSON.stringify(harness.runtime.settingsFor('guarded')?.checks?.items),
+    '{"one":true}',
+    'while a real confirmation is still recorded',
+  )
+})
+
 // ── retired: the sound-reminders suite ───────────────────────────────────────
 //
 // Twelve tests used to sit here, asserting the contract of a sound-reminders

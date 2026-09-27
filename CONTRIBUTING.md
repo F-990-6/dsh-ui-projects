@@ -55,6 +55,20 @@ npm run test:conformance # the installed-package checker, over fixtures
 npm run check:installed  # read-only against a real profile
 ```
 
+### What `--no-write` protects
+
+The browser suite's `--no-write` flag has a narrow promise, and it is worth stating because it reads
+broader than it is:
+
+> `--no-write` refuses writes to the `settings` key only. It does not refuse
+> `enabled`/`initialized`/`touched`/`v`: the suite's own reload assertions require the enabled set to
+> persist, and refusing it would remove the guard the flag exists to protect. Consequence: file mtime
+> changes; the `settings` subtree does not.
+
+Counted from a full run rather than assumed: 42 write attempts, 8 refused (the ones carrying
+`settings`), 34 through. If a run must not touch a machine's `settings.yaml` at all, do not run the
+browser suite on it — that is not what this flag buys.
+
 `CHANGELOG.md` records what each round changed **and how it was verified**, including the negative
 results — a change that did not fix the problem is worth more than one that was never tried, because
 it eliminates a hypothesis. Keep that up: state the command, state the count, and say plainly when

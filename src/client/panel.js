@@ -420,7 +420,15 @@ function createCard(input) {
         t,
         project,
         pending,
-        onConfirm: (itemIds) => onConfirmChecks(project.id, itemIds),
+        /*
+         * `onConfirmChecks` ALREADY CLOSES OVER `project.id` (see the call site in `UiProjectsSection`), so
+         * the id must not be passed again here. It was, once: the array of item ids then bound to the
+         * callback's second parameter while `project.id` took its first, the store iterated the characters
+         * of `'liquid-glass'`, matched none of them, and recorded `{ version, items: {} }` — a confirmation
+         * with nothing in it, written silently. `onClear` on the next line never had the bug because it
+         * passes no arguments at all.
+         */
+        onConfirm: (itemIds) => onConfirmChecks(itemIds),
         onClear: () => onClearChecks(project.id),
       }),
     )

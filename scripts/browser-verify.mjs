@@ -81,6 +81,18 @@ const shotPath = shotIndex === -1 ? undefined : cliArgs[shotIndex + 1]
  * and the payload is in the body. Nothing here reaches into the page or mocks its code; the request
  * is simply refused in flight, which is also why the plugin's in-memory state still changes and the
  * test can assert the difference between the two.
+ *
+ * The boundary, stated in so many words, because a flag that sounds broader than it is gets trusted
+ * too far — it was, on the first run of this suite that mattered:
+ *
+ *   "`--no-write` refuses writes to the `settings` key only. It does not refuse
+ *   `enabled`/`initialized`/`touched`/`v`: the suite's own reload assertions
+ *   require the enabled set to persist, and refusing it would remove the guard
+ *   the flag exists to protect. Consequence: file mtime changes; the `settings`
+ *   subtree does not."
+ *
+ * Counted rather than assumed: a full `--no-write` run attempts 42 writes and refuses the 8 that carry
+ * `settings`; the other 34 reach the document. That is the whole difference the flag makes.
  */
 /**
  * `--verify-refusal` runs the gate and nothing else.
@@ -1957,6 +1969,26 @@ try {
       session,
       `document.querySelector('[data-uip-checks][data-uip-checks-version]') !== null`,
       'the recorded confirmation',
+    )
+    /*
+     * `current`, not merely present — and this is the assertion that would have caught the empty-items
+     * bug from the browser side.
+     *
+     * The check above only asks whether a record exists, and a confirmation written with `items: {}`
+     * satisfies it: the version is there, the element is there. What it does NOT satisfy is being a
+     * confirmation of anything, so the state it reports is `incomplete` — here, before the reload, in
+     * BOTH modes, because the plugin updates its in-memory record before it persists and `--no-write`
+     * only refuses the write. Reading it here is what makes the three ticked boxes above mean
+     * something: with the ids lost on their way to the store, this reads `incomplete` while the
+     * presence check stays green.
+     */
+    equal(
+      await evaluate(
+        session,
+        `document.querySelector('[data-uip-checks]')?.getAttribute('data-uip-checks') ?? null`,
+      ),
+      'current',
+      'the confirmation covers every declared item, rather than being a record with an empty set of ticks',
     )
 
     await navigate(pageUrl)

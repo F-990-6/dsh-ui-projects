@@ -25,6 +25,97 @@ Verification vocabulary used below:
 
 ---
 
+## Round 35 — a confirmation that recorded nothing, and the run that was not `--no-write`
+
+**Status: done. `suite` 695 assertions / 0 failing (676 → 695), `host` green, `load` 58 / 0,
+`conformance` 49 / 0, `skeleton` 13 / 0, `derive-boot-css --check` unchanged, gate
+(`--verify-refusal`) 11 / 0, `browser` 168 assertions / 0 failing under `--no-write`.**
+
+### The bug: a record with a version and no items
+
+What a person saw: tick all three items, press the button, reload — and the card reports the checklist
+as INCOMPLETE, against the correct version. The record existed and contained nothing.
+
+It was found by payload rather than by reading. The refusal gate prints what it refuses, and the
+confirmation write a real click produced was
+
+```
+ops=[set:settings(58B)] … {"liquid-glass":{"checks":{"version":"3.0.0","items":{}}}}
+```
+
+58 bytes is exactly that object, so the loss was upstream of persistence: the page sent an empty set.
+`store.confirmChecks` is where `items` is built —
+
+```js
+const items = {}
+for (const itemId of itemIds) {
+  if (project.testItems.some((item) => item.id === itemId)) items[itemId] = true
+}
+```
+
+— and it was handed the string `'liquid-glass'`. The card passed `project.id` to a callback that
+already closed over it (`onConfirm: (itemIds) => onConfirmChecks(project.id, itemIds)` calling into
+`onConfirmChecks: (itemIds) => run(project.id, store.confirmChecks(project.id, itemIds))`), so the
+array of ids bound to the second parameter and the id took the first. `for…of` over a string walks its
+CHARACTERS, matched no declared item, and wrote nothing — silently, because iterating a string is
+legal and the loop simply never matched. `onClear` on the next line never had the bug: it passes no
+arguments at all.
+
+### The fixes
+
+- `panel.js` passes `onConfirm: (itemIds) => onConfirmChecks(itemIds)`. The id is closed over, not
+  re-passed, and the two neighbouring callbacks now read the same way.
+- `store.confirmChecks` throws a `TypeError` when its input is not a non-empty array, and when the
+  record it computed would be empty. A loop that can match nothing must not be able to record a
+  confirmation: both shapes used to write `{ version, items: {} }` and report success.
+- The browser suite asserts the confirmation reads `current` at the point where the three boxes have
+  just been ticked and the button pressed. It only checked that a record was PRESENT before, and an
+  empty record satisfies presence — which is how two runs of this suite watched the bug happen.
+
+### Why the suite did not catch it, and the test that does
+
+Five assertions called `harness.store.confirmChecks('confirmable', ['one'])`: a well-formed array,
+handed to the layer BELOW the bug. All five stayed green while the card recorded nothing. The new test
+renders the card through React and invokes the props the card hands its checklist, so the assertion is
+on the CONNECTION between the component and the store, which is where the defect lived.
+
+**Negative control.** The one line was put back and the suite was run against it: `FAIL the card hands
+the item ids to the store, not the project id`, with the plugin's own action handler printing
+`TypeError: confirmChecks expects a non-empty array of item ids, received "three-items"` — while the
+store-boundary test beside it stayed green, which is precisely the gap this round closed. A regression
+test that has never been seen to fail is not evidence; this one has been seen to.
+
+### `waitFor` is not a boolean, and the diagnostic that could never run
+
+Two browser-suite defects of one family — an assertion that could never pass, and a diagnostic that
+could never be collected:
+
+- `waitFor` THROWS on timeout and returns nothing on success. The group read
+  `truthy(rendered === true, …)`, which is false either way, so two runs reported
+  `expected truthy, got false` while the column was mounted the whole time. It now catches the
+  timeout into a flag and asserts after the samples.
+- The sampling diagnostic — six samples 500 ms apart, a refresh, four more, and two timed endpoint
+  probes — was written AFTER that assertion, so the run that needed it never collected it. Assertions
+  now come last and carry the sequence in their message.
+
+Result: `["loading","ready","ready",…]`, endpoint 200 in 12–17 ms, and the group passes.
+
+### Process: the run that was not `--no-write`
+
+One full run was started without the flag; its log says `settings: writes allowed`, and its reset test
+really did delete the profile's checklist record (`ui-projects.settings` → `{}`). Two corrections, and
+one deliberate non-action:
+
+- Restoring from `settings.yaml.bak3` was **not** done. The only record those backups hold is the same
+  empty-items record this round fixed, so restoring it would restore the defect's output. The honest
+  path is the one the fix enables: re-confirm in the UI.
+- The flag's boundary is now written down, in `CONTRIBUTING.md` and in the suite header: `--no-write`
+  refuses writes to the `settings` key only. Measured: 42 write attempts, 8 refused, 34 through — so a
+  run moves the document's mtime while leaving the protected subtree alone. If a machine's
+  `settings.yaml` must not be touched at all, do not run this suite on it.
+
+---
+
 ## Round 34 — Settings › UI plugins: what is installed, read-only
 
 **Status: done. `suite` 676 assertions / 0 failing (649 → 676), `host` green, `load` 58 / 0
