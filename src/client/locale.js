@@ -85,7 +85,16 @@ export const STRINGS = {
       orphaned: (names) => `${names} declares a bundle but is missing from dsh.profile.bundles: installed, not composed, so nothing it injects ever runs.`,
       commandsHint: 'To remove it, run this in PowerShell:',
       restartHint: 'The command alone does not take effect: the running dsh still holds the old composition. After it finishes, stop dsh web (Ctrl+C) and start it again.',
-      restartBlock: '# 1. in PowerShell\ndsh plugin --profile web remove dsh-ui-projects\n\n# 2. stop dsh web (Ctrl+C), then start it again',
+      /*
+       * THE BLOCK READS THE COMMAND, it does not restate it.
+       *
+       * It used to be a literal with `dsh-ui-projects` typed into it — correct by luck while the page had
+       * one removable row, and wrong on every other row the moment a profile held two packages: the row
+       * printed `remove @scope/name` on one line and `remove dsh-ui-projects` four lines later. Two
+       * sources for one command is the whole bug, so there is now one source: `CommandBlock` builds the
+       * command once and passes it here.
+       */
+      restartBlock: (command) => `# 1. in PowerShell\n${command}\n\n# 2. stop dsh web (Ctrl+C), then start it again`,
       /*
        * The three answers a person needs before pasting a removal command: what goes on its own, what
        * the command does, and what is deliberately left alone. The third list is the one nothing else
@@ -219,7 +228,7 @@ export const STRINGS = {
       orphaned: (names) => `${names} 声明了 bundle 却不在 dsh.profile.bundles 里：装了但没合成，它注入的东西永远不会运行。`,
       commandsHint: '要卸载它，在 PowerShell 里执行：',
       restartHint: '只跑命令不会生效：运行中的 dsh 仍持有旧组合。命令跑完后，停掉 dsh web（Ctrl+C），再启动一次。',
-      restartBlock: '# 1. 在 PowerShell 里\ndsh plugin --profile web remove dsh-ui-projects\n\n# 2. 停掉 dsh web（Ctrl+C），再启动一次',
+      restartBlock: (command) => `# 1. 在 PowerShell 里\n${command}\n\n# 2. 停掉 dsh web（Ctrl+C），再启动一次`,
       /*
        * 粘贴卸载命令之前需要知道的三件事：什么会自己消失、什么由命令完成、什么是有意不碰的。
        * 第三组是界面里别处都得不出答案的那一组 —— 两条关于用户数据的决定就写在这里（开关保留、

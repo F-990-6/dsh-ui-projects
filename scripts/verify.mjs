@@ -3146,7 +3146,7 @@ await test('a per-package problem is rendered against its own row, and a failed 
     orphaned: (names) => `orphaned: ${names}`,
     commandsHint: 'run this:',
     restartHint: 'restart dsh',
-    restartBlock: '# 1. stop dsh web',
+    restartBlock: (command) => '# 1. stop dsh web\n' + command,
     uninstall: {
       title: 'what changes',
       automaticTitle: 'automatic',
@@ -3233,7 +3233,7 @@ await test('the plugins column renders each state, and never pretends to be empt
     orphaned: (names) => `orphaned: ${names}`,
     commandsHint: 'run this:',
     restartHint: 'restart dsh',
-    restartBlock: '# 1. stop dsh web',
+    restartBlock: (command) => '# 1. stop dsh web\n' + command,
     uninstall: {
       title: 'what changes',
       automaticTitle: 'automatic',
@@ -3330,6 +3330,59 @@ await test('the column reads the dictionary it is actually given', async () => {
   const withoutKinds = { plugins: { ...strings('en').plugins, kinds: undefined } }
   const fallback = renderSection({ store: { state: () => ({ status: 'ready', scan: readyScan }), refresh: async () => {} }, t: withoutKinds, React: react })
   contains(fallback, 'bundle', 'a missing kinds table falls back to the raw kind instead of throwing')
+})
+
+/*
+ * THE BLOCK A PERSON COPIES REPEATS THAT ROW'S OWN COMMAND — the 8d hotfix.
+ *
+ * The bug, found by the user reading the page and not by any suite: the command on its own line was
+ * built from the row's name, and the block four lines below it came from a dictionary LITERAL with
+ * `dsh-ui-projects` typed into it. Every row therefore offered two different removal commands, and the
+ * second one was always the framework's. It was invisible while a profile held one removable package —
+ * the framework's row is the one row that renders no removal command at all — and it became visible the
+ * first time three packages shared the template.
+ *
+ * IT USES THE REAL DICTIONARIES, and that is why it is its own test rather than an assertion added to the
+ * one above. The flat fixture in this file supplies its own `restartBlock`, so the literal never entered
+ * the markup it rendered: the fixture replaced exactly the string under test, and the assertion that
+ * would have caught the literal ("carries no command that would remove the thing rendering the list")
+ * was passing on a stand-in. That is the same lesson `the column reads the dictionary it is actually
+ * given` records one test earlier — it exists because this file was once tested against a dictionary that
+ * does not exist — and this is its second incident.
+ *
+ * Both languages, because the literal was written twice: once for English and once for Chinese.
+ */
+await test('the restart block repeats each row’s own command, in both languages', async () => {
+  const scan = {
+    profileName: 'web',
+    dependencies: [
+      { name: 'dsh-ui-projects', version: '0.1.0', kind: 'bundle', bundled: true, problems: [] },
+      { name: '@scope/example-skin', version: '1.0.0', kind: 'ui-project', bundled: true, projectId: 'example', problems: [] },
+      { name: 'dsh-cost-meter', version: '0.2.0', kind: 'ui-project', bundled: true, projectId: 'cost-meter', problems: [] },
+    ],
+    orphanedBindings: [],
+  }
+  const state = { status: 'ready', scan }
+  for (const locale of ['en', 'zh']) {
+    const dictionary = strings(locale)
+    const markup = renderSection({ store: { state: () => state, refresh: async () => {} }, t: dictionary, state, React: react })
+    /* The standalone command is the one `<pre>` with no attributes of its own; the other two carry hooks. */
+    const printed = [...markup.matchAll(/<pre>([^<]*)<\/pre>/g)].map((match) => match[1])
+    const blocks = [...markup.matchAll(/<pre data-uip-restart="block">([\s\S]*?)<\/pre>/g)].map((match) => match[1])
+    equal(printed.length, 2, `${locale}: one command line per removable row, and none for the framework's row`)
+    equal(blocks.length, printed.length, `${locale}: and one block to copy per command, not one per page`)
+    for (const command of printed) {
+      truthy(
+        blocks.some((block) => block.includes(command)),
+        `${locale}: the copied block repeats "${command}" instead of a second, hard-coded one`,
+      )
+    }
+    equal(
+      blocks.some((block) => block.includes('remove dsh-ui-projects')),
+      false,
+      `${locale}: and no block names the framework, whose row carries no removal command at all`,
+    )
+  }
 })
 
 await test('the uninstall block answers all three questions, in both languages', async () => {

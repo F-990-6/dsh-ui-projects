@@ -2798,6 +2798,57 @@ try {
   })
 
   /*
+   * THE BLOCK A PERSON COPIES CARRIES THAT ROW'S OWN NAME (8d review).
+   *
+   * The bug the user found by READING THE PAGE, which is why it is asserted here and not only in the
+   * suite: every row printed its own name in the command on its own line and `dsh-ui-projects` in the
+   * block four lines below it, because the block came from a dictionary literal while the command was
+   * built from the row. Two sources, one command, and the disagreement only appears once a profile has
+   * more than one removable package — a framework-only profile renders no removal command at all.
+   *
+   * It is its own test rather than one more assertion above, for the reason this file states twice: an
+   * assertion inside an existing test prints nothing of its own, and a reader deserves "the copied block
+   * does not match its row" instead of having to guess which of a dozen claims failed.
+   *
+   * The unit suite's half of this pair renders the real dictionaries and compares the two blocks against
+   * each other; this one reads the live DOM, where the profile's real package names come from the host
+   * rather than from a fixture.
+   */
+  await test('the block each row offers to copy repeats that row’s own removal command', async () => {
+    const rows = await evaluate(
+      session,
+      `Array.from(document.querySelectorAll('[data-uip-command]')).map((block) => ({
+        name: block.getAttribute('data-uip-command'),
+        printed: Array.from(block.querySelectorAll('pre')).map((pre) => pre.textContent.trim()),
+      }))`,
+    )
+    truthy(
+      Array.isArray(rows) && rows.length >= 1,
+      `at least one row offers a removal command (${JSON.stringify(rows ?? null)})`,
+    )
+    /*
+     * Compared WITHIN each row and without assuming a profile name: the block's text must contain the
+     * exact standalone command printed beside it. That is the "one source" property itself, and it is
+     * what a hard-coded literal breaks.
+     */
+    const mismatched = (rows ?? []).filter((row) => {
+      const standalone = row.printed.find((text) => text.startsWith('dsh plugin --profile ') && text.includes(' remove '))
+      const block = row.printed.find((text) => text.startsWith('# 1.'))
+      return standalone === undefined || block === undefined || block.includes(standalone) === false
+    })
+    equal(
+      mismatched.length,
+      0,
+      `every row's copied block repeats that row's own command (${JSON.stringify(mismatched)} of ${JSON.stringify(rows ?? null)})`,
+    )
+    equal(
+      (rows ?? []).filter((row) => row.printed.some((text) => text.startsWith('# 1.') && text.includes(' remove dsh-ui-projects'))).length,
+      0,
+      'and no block names the framework, whose row carries no removal command at all',
+    )
+  })
+
+  /*
    * THE CARD'S MAINTENANCE DISCLOSURE (7d-2b), as its OWN test rather than one more assertion inside the
    * row test above.
    *

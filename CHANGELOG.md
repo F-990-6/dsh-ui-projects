@@ -25,6 +25,100 @@ Verification vocabulary used below:
 
 ---
 
+## Round 48 — Step 8d review: the copied block repeats the row's own command
+
+**Status: done. `suite` 735 assertions / 0 failing (725 → 735, the new test's ten), `host` 26 ok / 0
+failing, `load` 85 / 0, `conformance` 67 / 0, `skeleton` 13 / 0, `browser --self-check` green.
+`lib/client.js` is `sha256:e792766ad7eb` (297388 bytes). The new browser-side test is written and has NOT
+been executed — it needs a page running the rebuilt bundle, which is 8e's run. `install.ps1` was not
+executed, and nothing under `$DSH_HOME` was written.**
+
+### The bug, and the layer it was in
+
+The user read two different removal commands off one row of the UI plugins page:
+
+```
+要卸载它，在 PowerShell 里执行：
+dsh plugin --profile web remove @xjl-resources/dsh-plugin-liquid-glass      ← the row's own name
+
+# 1. 在 PowerShell 里
+dsh plugin --profile web remove dsh-ui-projects                             ← hard-coded
+```
+
+**It was ours, not dsh's.** The whole column is `src/client/panel-plugins.js`; the second block was
+`copy.restartBlock`, and `src/client/locale.js` held it as a LITERAL with the framework's name typed into
+it, once for English (`:88`) and once for Chinese (`:222`), while the first command four lines above was
+built from `profileName` and the row's `name`. Two sources for one command, so they were free to disagree —
+and they did, on every row that is not the framework.
+
+It stayed invisible because the framework's row is the ONE row that renders no removal command at all (it is
+the thing rendering the list), so a profile holding only the framework had no block to be wrong. Three
+packages sharing the template is what exposed it.
+
+### Why five suites were green over it
+
+The literal was never compared against anything:
+
+- No assertion anywhere read the block's TEXT. `browser-verify.mjs` asserted the hook exists
+  (`[data-uip-restart="block"]`) and that *some* `[data-uip-command] pre` starts with `dsh plugin ` — the
+  first such line it finds, which is the correct standalone command.
+- The one assertion that would have caught it — *"carries no command that would remove the thing rendering
+  the list"* — ran against a **flat fixture that supplies its own `restartBlock`**. The fixture replaced
+  exactly the string under test, so the literal never entered the markup it inspected. `verify.mjs` already
+  records this lesson in its own words, one test earlier: *"These render the REAL dictionaries. A fixture is
+  a dictionary that does not exist, and this file was tested against one while production threw."* This is
+  the second incident of that rule, and the same shape as Round 46's `source`-whitelist defect: a value that
+  was correct by accident for the only row anyone had.
+
+### The fix: one command, one source
+
+`CommandBlock` builds the command once (`'dsh plugin --profile ' + profileName + ' remove ' + name`) and
+passes it to the dictionary, which is now a function of it in both languages:
+
+```js
+restartBlock: (command) => `# 1. in PowerShell\n${command}\n\n# 2. stop dsh web (Ctrl+C), then start it again`,
+```
+
+The line under the hint and the line inside the block are the same string, so they cannot disagree again.
+Function-valued entries are already the shape of this dictionary (`failed`, `project`, `orphaned`,
+`maintenanceTitle`, `snapshotNames`), and the key-list guard in `verify.mjs` pins the key, not its type — so
+the change showed up exactly where it should: in the two fixtures that had to become functions.
+
+### The regression test, and its sensitivity
+
+`the restart block repeats each row's own command, in both languages` renders the **REAL** dictionaries —
+which is the whole point, since a fixture is what hid the bug — over a scan with the framework plus two
+removable packages, and asserts per locale: one command line per removable row and none for the framework,
+one block per command, every block containing that row's own command, and no block naming the framework.
+
+**It was shown to fail against the old shape rather than only to pass against the new one.** The literal was
+written back into both dictionaries, the bundle rebuilt, and the filtered run reported:
+
+```
+4 assertions, 1 failing
+  FAIL the restart block repeats each row's own command, in both languages
+         en: the copied block repeats "dsh plugin --profile web remove @scope/example-skin" instead of a second, hard-coded one
+```
+
+`locale.js` was then restored byte-identically (sha `e6d44ef3a64d` before and after) and the bundle rebuilt.
+The demonstration also shows the abort: four assertions ran, so the rows after the failure were skipped —
+which is why a partial count is never the final count.
+
+A matching test was added to `browser-verify.mjs` (`the block each row offers to copy repeats that row's own
+removal command`), because the page is the layer where the bug was seen. It compares the block against the
+standalone command **within each row**, taking neither the profile name nor the package names from a
+fixture. Its first execution is 8e's browser run.
+
+### What this round did NOT verify
+
+- **No browser run.** `--self-check` is green and the script loads, which proves the new test parses and its
+  helpers resolve; it does not prove the DOM query. The page the user is looking at still runs the bundle
+  built before this round.
+- **The fix is not on that page yet.** `lib/client.js` changed, so the profile must be given the new bundle
+  (the usual reinstall + `dsh web` restart) before the two blocks agree on screen.
+
+---
+
 ## Round 47 — Step 8c: the framework ships no project
 
 **Status: done. `suite` 725 assertions / 0 failing (737 → 725, and every one of the twelve is accounted

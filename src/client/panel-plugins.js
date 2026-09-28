@@ -223,6 +223,16 @@ function CommandBlock({ copy, React, name, profileName }) {
    * loudly here rather than render three empty lists — the shape of mistake that Round 35 was about.
    */
   const uninstall = copy.uninstall
+  /*
+   * ONE COMMAND, PRINTED TWICE — and one source for it.
+   *
+   * The line under the hint and the line inside the block a person copies are the same string, which is
+   * the only arrangement in which they cannot disagree. They did: the block came from a dictionary
+   * literal with `dsh-ui-projects` typed into it, so every row offered its own name in the first command
+   * and the framework's name in the second. Invisible while a profile held one removable package; the
+   * user read it off the page the first time three packages shared this template.
+   */
+  const command = 'dsh plugin --profile ' + profileName + ' remove ' + name
   const groups = [
     { key: 'automatic', heading: uninstall.automaticTitle, items: uninstall.automatic },
     { key: 'command', heading: uninstall.commandTitle, items: uninstall.command },
@@ -232,9 +242,9 @@ function CommandBlock({ copy, React, name, profileName }) {
     'div',
     { className: 'uip-command', 'data-uip-command': name },
     React.createElement('p', { className: 'uip-hint' }, copy.commandsHint),
-    React.createElement('pre', null, 'dsh plugin --profile ' + profileName + ' remove ' + name),
+    React.createElement('pre', null, command),
     React.createElement('p', { className: 'uip-hint', 'data-uip-restart': 'hint' }, copy.restartHint),
-    React.createElement('pre', { 'data-uip-restart': 'block' }, copy.restartBlock),
+    React.createElement('pre', { 'data-uip-restart': 'block' }, copy.restartBlock(command)),
     React.createElement('p', { className: 'uip-hint' }, uninstall.title),
     React.createElement(
       'div',
