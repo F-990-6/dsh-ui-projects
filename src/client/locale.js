@@ -91,6 +91,29 @@ export const STRINGS = {
       framework: 'framework',
       project: (id) => `project id: ${id}`,
       orphaned: (names) => `${names} declares a bundle but is missing from dsh.profile.bundles: installed, not composed, so nothing it injects ever runs.`,
+      /*
+       * THE UI CONTRACT BADGE (step 9b). Four states, four sentences, and the difference between them is
+       * the point: a green badge means "the scanner read the bundle and found nothing", never "this plugin
+       * is fine" — which is why the panel under it always prints the instrument's own limits, including
+       * the rule it cannot decide at all (rule 3, the runtime overlay).
+       *
+       * `contractNotScannedWhy` covers two rows with one key: the host's REASON when it declined to scan
+       * (not installed, no client half, no bundle, over the cap), and — when a host predates the scan
+       * entirely and sent no contract at all — the sentence about the host. Both render in the same place
+       * on the same row, and both must avoid the one thing that would be a lie: claiming a scan happened.
+       */
+      contractOk: 'follows the UI Contract (static scan clean)',
+      contractWarn: (count) => `UI Contract: ${count} finding${count === 1 ? '' : 's'}`,
+      contractNotScanned: 'UI Contract: not scanned',
+      contractNotApplicable: 'n/a',
+      contractCoverage: (judged, total) =>
+        `${judged} of the contract’s ${total} rules are judged by reading the built bundle; the rest are listed below`,
+      contractFindingsTitle: 'What the scan found',
+      contractLimitsTitle: 'What this scan cannot see',
+      contractNotScannedWhy: (reason) =>
+        typeof reason === 'string' && reason.length > 0
+          ? `Not scanned: ${reason}`
+          : 'The host did not report a contract scan for this row; dsh web may need a restart.',
       commandsHint: 'To remove it, run this in PowerShell:',
       restartHint: 'The command alone does not take effect: the running dsh still holds the old composition. After it finishes, stop dsh web (Ctrl+C) and start it again.',
       /*
@@ -238,6 +261,26 @@ export const STRINGS = {
       framework: '框架',
       project: (id) => `项目 id：${id}`,
       orphaned: (names) => `${names} 声明了 bundle 却不在 dsh.profile.bundles 里：装了但没合成，它注入的东西永远不会运行。`,
+      /*
+       * UI Contract 徽章（第 9b 步）。四个状态四句话，区别正是重点：绿色只表示“扫描器读了构建产物、没发现
+       * 问题”，绝不表示“这个插件没问题” —— 所以下方面板始终打印工具自己的局限，包括它根本判不了的那条
+       * （规则 3，运行时浮层）。
+       *
+       * contractNotScannedWhy 一个键覆盖两种行：宿主拒绝扫描时给出它的**原因**（未安装、没有客户端半边、
+       * 没有构建产物、超过上限），以及宿主比这次扫描更早、压根没送 contract 时那句关于宿主的话。两者都
+       * 渲染在同一行的同一位置，且都必须避开唯一会造成谎言的说法：声称扫描发生过。
+       */
+      contractOk: '遵守 UI Contract（静态扫描通过）',
+      contractWarn: (count) => `UI Contract：${count} 处发现`,
+      contractNotScanned: 'UI Contract：未扫描',
+      contractNotApplicable: '不适用',
+      contractCoverage: (judged, total) => `契约的 ${total} 条规则中有 ${judged} 条通过读构建产物判定；其余见下方`,
+      contractFindingsTitle: '扫描发现',
+      contractLimitsTitle: '这次扫描看不到的东西',
+      contractNotScannedWhy: (reason) =>
+        typeof reason === 'string' && reason.length > 0
+          ? `未扫描：${reason}`
+          : '宿主没有报告这一行的契约扫描结果；可能需要重启 dsh web。',
       commandsHint: '要卸载它，在 PowerShell 里执行：',
       restartHint: '只跑命令不会生效：运行中的 dsh 仍持有旧组合。命令跑完后，停掉 dsh web（Ctrl+C），再启动一次。',
       restartBlock: (command) => `# 1. 在 PowerShell 里\n${command}\n\n# 2. 停掉 dsh web（Ctrl+C），再启动一次`,

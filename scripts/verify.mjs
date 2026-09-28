@@ -3117,6 +3117,66 @@ await test('confirmChecks refuses anything that would record an empty confirmati
 /** A React stand-in that builds plain data, so the section can be inspected without a renderer. */
 const renderSection = (props) => server.renderToStaticMarkup(react.createElement(UiPluginsSection, props))
 
+/**
+ * The markup of ONE row, so "this row's badge says n/a" cannot pass on a badge rendered for another row.
+ * Rows are sibling `<li>`s, each carrying its own `data-uip-plugin`, and the slice runs to the next one.
+ * @param {string} markup @param {string} name
+ */
+const rowOf = (markup, name) => {
+  const at = markup.indexOf('data-uip-plugin="' + name + '"')
+  if (at < 0) return ''
+  const next = markup.indexOf('data-uip-plugin="', at + 1)
+  return markup.slice(at, next < 0 ? markup.length : next)
+}
+
+/**
+ * The column's copy, for the tests that need a dictionary they control.
+ *
+ * BUILT FROM THE REAL ONE, and that is a FIX rather than tidiness: two hand-built fixtures here copied out
+ * the keys the page happened to read, so the day the page read a new one — step 9b's contract panel — they
+ * threw during render (`copy.contractNotScannedWhy is not a function`) while the shipped dictionaries were
+ * fine. A fixture is a dictionary that does not exist; this one is the real dictionary with short
+ * stand-ins on top, so a key added to the page cannot leave it behind.
+ */
+const columnCopy = (over = {}) => ({
+  ...strings('en').plugins,
+  title: 'UI plugins',
+  intro: 'intro',
+  loading: 'Reading…',
+  failed: (reason) => `Cannot read: ${reason}`,
+  failedHint: 'hint',
+  refresh: 'Read again',
+  empty: 'Nothing installed',
+  composed: 'composed',
+  notComposed: 'not composed',
+  framework: 'framework',
+  project: (id) => `project id: ${id}`,
+  orphaned: (names) => `orphaned: ${names}`,
+  commandsHint: 'run this:',
+  restartHint: 'restart dsh',
+  restartBlock: (command) => '# 1. stop dsh web\n' + command,
+  uninstall: {
+    title: 'what changes',
+    automaticTitle: 'automatic',
+    automatic: ['gone: the registry entry', 'gone: its stylesheet'],
+    commandTitle: 'by the command',
+    command: ['gone: the package directory'],
+    keptTitle: 'kept',
+    kept: ['kept: your switch', 'kept: this package settings'],
+  },
+  maintenanceTitle: (name) => `maintaining ${name}`,
+  maintenanceHint: 'acts on the package',
+  cmdSnapshotWhy: 'snapshot why',
+  cmdUpdateWhy: 'update why',
+  cmdRollbackWhy: 'rollback why',
+  cmdRollbackList: 'list them',
+  noSnapshots: 'no snapshots',
+  snapshotNames: (count) => `${count} versions`,
+  restartReminder: 'restart dsh',
+  kinds: { bundle: 'bundle', 'ui-project': 'UI project' },
+  ...over,
+})
+
 await test('the installed store persists nothing, by construction and by assertion', async () => {
   /*
    * A stored listing is a claim about a profile at a moment that has passed, with no invalidation
@@ -3131,44 +3191,6 @@ await test('the installed store persists nothing, by construction and by asserti
 })
 
 await test('a per-package problem is rendered against its own row, and a failed column leaves the projects page alone', async () => {
-  const flatCopy = {
-    title: 'UI plugins',
-    intro: 'intro',
-    loading: 'Reading…',
-    failed: (reason) => `Cannot read: ${reason}`,
-    failedHint: 'hint',
-    refresh: 'Read again',
-    empty: 'Nothing installed',
-    composed: 'composed',
-    notComposed: 'not composed',
-    framework: 'framework',
-    project: (id) => `project id: ${id}`,
-    orphaned: (names) => `orphaned: ${names}`,
-    commandsHint: 'run this:',
-    restartHint: 'restart dsh',
-    restartBlock: (command) => '# 1. stop dsh web\n' + command,
-    uninstall: {
-      title: 'what changes',
-      automaticTitle: 'automatic',
-      automatic: ['gone: the registry entry', 'gone: its stylesheet'],
-      commandTitle: 'by the command',
-      command: ['gone: the package directory'],
-      keptTitle: 'kept',
-      kept: ['kept: your switch', 'kept: this package settings'],
-    },
-    maintenanceTitle: (name) => `maintaining ${name}`,
-    maintenanceHint: 'acts on the package',
-    cmdSnapshotWhy: 'snapshot why',
-    cmdUpdateWhy: 'update why',
-    cmdRollbackWhy: 'rollback why',
-    cmdRollbackList: 'list them',
-    noSnapshots: 'no snapshots',
-    snapshotNames: (count) => `${count} versions`,
-    restartReminder: 'restart dsh',
-    kinds: { bundle: 'bundle' },
-  }
-  const render = (state) => renderSection({ store: { state: () => state, refresh: async () => {} }, t: { plugins: flatCopy }, state, React: react })
-
   /*
    * The two columns share no state: a listing that cannot be read must not take the page down with
    * it. Asserted on the projects page's own render, which is the half that would break.
@@ -3218,42 +3240,7 @@ await test('a failed read is a state with a reason, not a silent empty list', as
 })
 
 await test('the plugins column renders each state, and never pretends to be empty', () => {
-  const flatCopy = {
-    title: 'UI plugins',
-    intro: 'intro',
-    loading: 'Reading…',
-    failed: (reason) => `Cannot read: ${reason}`,
-    failedHint: 'hint',
-    refresh: 'Read again',
-    empty: 'Nothing installed',
-    composed: 'composed',
-    notComposed: 'not composed',
-    framework: 'framework',
-    project: (id) => `project id: ${id}`,
-    orphaned: (names) => `orphaned: ${names}`,
-    commandsHint: 'run this:',
-    restartHint: 'restart dsh',
-    restartBlock: (command) => '# 1. stop dsh web\n' + command,
-    uninstall: {
-      title: 'what changes',
-      automaticTitle: 'automatic',
-      automatic: ['gone: the registry entry', 'gone: its stylesheet'],
-      commandTitle: 'by the command',
-      command: ['gone: the package directory'],
-      keptTitle: 'kept',
-      kept: ['kept: your switch', 'kept: this package settings'],
-    },
-    maintenanceTitle: (name) => `maintaining ${name}`,
-    maintenanceHint: 'acts on the package',
-    cmdSnapshotWhy: 'snapshot why',
-    cmdUpdateWhy: 'update why',
-    cmdRollbackWhy: 'rollback why',
-    cmdRollbackList: 'list them',
-    noSnapshots: 'no snapshots',
-    snapshotNames: (count) => `${count} versions`,
-    restartReminder: 'restart dsh',
-    kinds: { bundle: 'bundle', 'ui-project': 'UI project' },
-  }
+  const flatCopy = columnCopy()
   const render = (state) => renderSection({ store: { state: () => state, refresh: async () => {} }, t: { plugins: flatCopy }, state, React: react })
 
   contains(render({ status: 'idle' }), 'Reading…', 'an unread column says it is reading')
@@ -3303,7 +3290,10 @@ await test('the column reads the dictionary it is actually given', async () => {
   const READ_KEYS = ['title', 'intro', 'loading', 'failed', 'failedHint', 'refresh', 'empty', 'composed',
     'notComposed', 'framework', 'project', 'orphaned', 'commandsHint', 'restartHint', 'restartBlock', 'kinds', 'uninstall',
     'maintenanceTitle', 'maintenanceHint', 'cmdSnapshotWhy', 'cmdUpdateWhy', 'cmdRollbackWhy', 'cmdRollbackList',
-    'noSnapshots', 'snapshotNames', 'restartReminder']
+    'noSnapshots', 'snapshotNames', 'restartReminder',
+    // Step 9b: the UI Contract badge, its four states, and the panel that explains a state.
+    'contractOk', 'contractWarn', 'contractNotScanned', 'contractNotApplicable', 'contractCoverage',
+    'contractFindingsTitle', 'contractLimitsTitle', 'contractNotScannedWhy']
   const readyScan = {
     profileName: 'web',
     dependencies: [{ name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] }],
@@ -3330,6 +3320,283 @@ await test('the column reads the dictionary it is actually given', async () => {
   const withoutKinds = { plugins: { ...strings('en').plugins, kinds: undefined } }
   const fallback = renderSection({ store: { state: () => ({ status: 'ready', scan: readyScan }), refresh: async () => {} }, t: withoutKinds, React: react })
   contains(fallback, 'bundle', 'a missing kinds table falls back to the raw kind instead of throwing')
+})
+
+/* ── the UI Contract badge (step 9b, module 3) ─────────────────────────────── */
+
+/*
+ * FOUR STATES, and each one is a different answer to a different question:
+ *
+ *   ok    the scanner read the bundle and found nothing
+ *   warn  the scanner read it and found something (the row expands to say what)
+ *   none  nothing was read — not installed, no client half, missing bundle, over the cap
+ *   na    not judged on purpose: the framework's own row, which is the instrument rather than a subject
+ *
+ * `none` and `na` are separate states for the reason `reason: null` and `reason: undefined` are separate
+ * in the payload: "we looked and it was clean", "we could not look" and "this one is not ours to judge"
+ * are three different sentences, and collapsing any two of them is how a green badge becomes a lie.
+ *
+ * THE FRAMEWORK ROW SHOWS `na` EVEN THOUGH THE HOST SCANS IT. The framework's own bundle carries the two
+ * accepted colour findings recorded in `check-installed.test.mjs`'s snapshot, and the CLI report
+ * (`check-installed.mjs`) prints them like any other row's. This column answers "does the package I
+ * installed follow the contract", and the framework is not a package anyone installed here — a permanent
+ * yellow badge on the instrument itself is noise that teaches people to ignore the colour.
+ */
+await test('the contract badge has four states, and the framework’s own row is not judged by it', () => {
+  const finding = {
+    rule: 'role',
+    code: 'UI_CONTRACT_NON_STANDARD_ROLE',
+    severity: 'warning',
+    message: 'role="custom-dialog" is not a WAI-ARIA role, so no UI skin can select what it marks',
+    action: 'use a WAI-ARIA role (dialog, menu, listbox, tooltip for a floating surface)',
+    evidence: { line: 12, excerpt: '<div role="custom-dialog">' },
+  }
+  const scan = {
+    profileName: 'web',
+    dependencies: [
+      {
+        name: 'dsh-ui-projects',
+        version: '0.1.0',
+        kind: 'bundle',
+        bundled: true,
+        problems: [],
+        // The real shape: the host DOES judge the framework, and this column declines to grade it.
+        contract: { scanned: true, reason: null, bytes: 297064, findings: [finding, finding], limits: ['limit'], rules: { judged: 3, total: 4 } },
+      },
+      {
+        name: 'dsh-plugin-example',
+        version: '1.0.0',
+        kind: 'ui-project',
+        bundled: true,
+        projectId: 'example',
+        problems: [],
+        contract: { scanned: true, reason: null, bytes: 9471, findings: [], limits: ['the limits'], rules: { judged: 3, total: 4 } },
+      },
+      {
+        name: 'dsh-plugin-example-dialog',
+        version: '1.0.0',
+        kind: 'plugin-with-client',
+        bundled: true,
+        problems: [],
+        contract: { scanned: true, reason: null, bytes: 8500, findings: [finding], limits: ['the limits'], rules: { judged: 3, total: 4 } },
+      },
+      {
+        name: 'dsh-ui-project-skeleton',
+        version: '0.1.0',
+        kind: 'ui-project',
+        bundled: true,
+        projectId: 'skeleton',
+        problems: [],
+        contract: { scanned: false, reason: 'lib/client.js is missing, so there is nothing to scan', findings: [], limits: [] },
+      },
+    ],
+    orphanedBindings: [],
+  }
+  const state = { status: 'ready', scan }
+  for (const locale of ['en', 'zh']) {
+    const dictionary = strings(locale)
+    const page = dictionary.plugins
+    const markup = renderSection({ store: { state: () => state, refresh: async () => {} }, t: dictionary, state, React: react })
+    const rows = {
+      ok: rowOf(markup, 'dsh-plugin-example'),
+      warn: rowOf(markup, 'dsh-plugin-example-dialog'),
+      none: rowOf(markup, 'dsh-ui-project-skeleton'),
+      na: rowOf(markup, 'dsh-ui-projects'),
+    }
+    for (const [expected, row] of Object.entries(rows)) {
+      truthy(row.length > 0, 'the ' + expected + ' row rendered (' + locale + ')')
+      contains(row, 'data-uip-contract="' + expected + '"', 'and it carries the ' + expected + ' state (' + locale + ')')
+    }
+    contains(rows.ok, page.contractOk, 'a clean scan says so, in the dictionary’s words (' + locale + ')')
+    contains(rows.warn, page.contractWarn(1), 'a finding is counted on the row, not hidden behind the badge (' + locale + ')')
+    contains(rows.none, page.contractNotScanned, 'a row that was never read says it was not read (' + locale + ')')
+    contains(rows.na, page.contractNotApplicable, 'and the framework’s own row says the contract is not applied to it (' + locale + ')')
+    equal(
+      rows.na.includes(page.contractWarn(2)),
+      false,
+      'the framework’s two accepted findings are not rendered as this row’s badge (' + locale + ')',
+    )
+  }
+})
+
+await test('the warning row lists what the scan found, and every judged row says what it cannot see', () => {
+  const finding = {
+    rule: 'role',
+    code: 'UI_CONTRACT_NON_STANDARD_ROLE',
+    severity: 'warning',
+    message: 'role="custom-dialog" is not a WAI-ARIA role, so no UI skin can select what it marks',
+    action: 'use a WAI-ARIA role for a floating surface',
+    evidence: { line: 12, excerpt: '<div role="custom-dialog">' },
+  }
+  /*
+   * The limits are the load-bearing half of a GREEN badge: a clean text scan is not a clean plugin, and
+   * rule 3 — the one about what is actually in the page at runtime — is not scanned at all. They are the
+   * host's own sentences, rendered verbatim: translating an instrument's findings would put a second
+   * vocabulary between the reader and the measurement.
+   */
+  const limits = [
+    'rule 3 (a top-level overlay must be identifiable by WAI-ARIA role) needs a runtime probe and is not scanned here',
+    '2 role assignment(s) in this bundle have a computed value and were not judged',
+  ]
+  const scan = {
+    profileName: 'web',
+    dependencies: [
+      {
+        name: 'a-with-a-finding',
+        version: '1.0.0',
+        kind: 'plugin-with-client',
+        bundled: true,
+        problems: [],
+        contract: { scanned: true, reason: null, bytes: 8500, findings: [finding], limits, rules: { judged: 3, total: 4 } },
+      },
+      {
+        name: 'a-clean-one',
+        version: '1.0.0',
+        kind: 'bundle',
+        bundled: true,
+        problems: [],
+        contract: { scanned: true, reason: null, bytes: 9471, findings: [], limits, rules: { judged: 3, total: 4 } },
+      },
+      {
+        /*
+         * A host from between 9a and 9b: it scans, it sends its limits, and it sends no rule counts. The
+         * panel must still open — the limits are the part a reader needs — and the coverage line must be
+         * absent rather than invented from a number typed into the client.
+         */
+        name: 'a-host-between-9a-and-9b',
+        version: '1.0.0',
+        kind: 'bundle',
+        bundled: true,
+        problems: [],
+        contract: { scanned: true, reason: null, bytes: 9000, findings: [], limits: ['an older host’s own limit'] },
+      },
+    ],
+    orphanedBindings: [],
+  }
+  const state = { status: 'ready', scan }
+  for (const locale of ['en', 'zh']) {
+    const dictionary = strings(locale)
+    const page = dictionary.plugins
+    const markup = renderSection({ store: { state: () => state, refresh: async () => {} }, t: dictionary, state, React: react })
+    contains(markup, 'data-uip-contract-panel="a-with-a-finding"', 'the finding row can be expanded (' + locale + ')')
+    contains(markup, finding.code, 'the finding names its code, which is what a report is grepped by (' + locale + ')')
+    /*
+     * The host's sentences are rendered verbatim — with one caveat that is React's and not this page's:
+     * the quotes in `role="custom-dialog"` and the angle brackets of the excerpt arrive as `&quot;` and
+     * `&lt;`. The assertions below are on the parts of those strings the escaping cannot touch, in both
+     * directions: the words of the message, and the distinctive text of the excerpt it was read from.
+     */
+    contains(markup, 'is not a WAI-ARIA role, so no UI skin can select what it marks', 'and carries the host’s own sentence about it (' + locale + ')')
+    contains(markup, finding.action, 'and what to do instead (' + locale + ')')
+    contains(markup, 'line 12', 'and where it is, so the reader can open the file (' + locale + ')')
+    contains(markup, 'custom-dialog', 'with the text it was read from (' + locale + ')')
+    contains(markup, page.contractCoverage(3, 4), 'and the coverage, counted from the numbers the host sent (' + locale + ')')
+    for (const limit of limits) {
+      contains(markup, limit, 'and every limit of the instrument, verbatim (' + locale + ')')
+    }
+    contains(markup, page.contractLimitsTitle, 'under a heading that says whose limits these are (' + locale + ')')
+    contains(markup, page.contractFindingsTitle, 'and the findings under their own heading (' + locale + ')')
+    /*
+     * The stale-host row: the panel opens (the limits are inside it), and the sentence the badge carries
+     * stands in for the coverage line the host was too old to send.
+     */
+    const stale = rowOf(markup, 'a-host-between-9a-and-9b')
+    contains(stale, 'data-uip-contract-panel="a-host-between-9a-and-9b"', 'a host that sent limits but no counts still gets a panel (' + locale + ')')
+    contains(stale, 'an older host’s own limit', 'with its own limits inside it (' + locale + ')')
+    contains(stale, page.contractOk, 'and the badge’s sentence standing in for the coverage line (' + locale + ')')
+    equal(
+      stale.includes(page.contractCoverage(3, 4)),
+      false,
+      'while no coverage line is invented for it: the numbers come from the payload, not from this file (' + locale + ')',
+    )
+  }
+})
+
+await test('a row that could not be scanned says why, and a host too old to send a scan is named as such', () => {
+  const scan = {
+    profileName: 'web',
+    dependencies: [
+      {
+        name: 'not-installed',
+        version: null,
+        kind: 'unresolved',
+        bundled: false,
+        problems: [],
+        contract: {
+          scanned: false,
+          reason: 'not installed, so there is nothing on disk to scan',
+          findings: [],
+          limits: [],
+          rules: { judged: 3, total: 4 },
+        },
+      },
+      {
+        // A host that predates step 9a: the field is absent rather than null, which is the difference
+        // `JSON.stringify` preserves — and the sentence must not claim a scan happened.
+        name: 'from-an-older-host',
+        version: '1.0.0',
+        kind: 'bundle',
+        bundled: true,
+        problems: [],
+      },
+    ],
+    orphanedBindings: [],
+  }
+  const state = { status: 'ready', scan }
+  for (const locale of ['en', 'zh']) {
+    const dictionary = strings(locale)
+    const page = dictionary.plugins
+    const markup = renderSection({ store: { state: () => state, refresh: async () => {} }, t: dictionary, state, React: react })
+    contains(markup, 'data-uip-contract="none"', 'both rows are in the not-scanned state (' + locale + ')')
+    contains(
+      markup,
+      page.contractNotScannedWhy('not installed, so there is nothing on disk to scan'),
+      'the reason the host gave is rendered as the reason (' + locale + ')',
+    )
+    contains(
+      markup,
+      page.contractNotScannedWhy(undefined),
+      'and a host that sent no contract at all gets the sentence about the host, not a claim about the bundle (' + locale + ')',
+    )
+    equal(
+      markup.includes(page.contractCoverage(3, 4)),
+      false,
+      'while no coverage is invented for a row nobody judged: the numbers come from the payload, not from this file (' + locale + ')',
+    )
+  }
+})
+
+await test('the two new badge colours are tokens, and a colour literal in this file would fail the contract it reports', async () => {
+  const harness = await boot()
+  const css = harness.allCss()
+  const rule = (needle) => {
+    const at = css.indexOf(needle)
+    if (at < 0) return ''
+    const open = css.indexOf('{', at)
+    const close = css.indexOf('}', open)
+    return open < 0 || close < 0 ? '' : css.slice(open + 1, close)
+  }
+  /*
+   * THE GAP THIS CLOSES IS REAL: `.uip-badge-warn` has been rendered by this page since round 8f and had
+   * no rule anywhere in the stylesheet, so the "not composed" badge looked exactly like the badges beside
+   * it. The two classes below are asserted against the tokens the shipped shell itself uses for the same
+   * purpose (`[data-state=warning] { color: var(--dsw-alias-state-warn-primary) }` in the frontend bundle),
+   * and against the contract's own rule: a colour literal here would be a finding in the framework's own
+   * scan — the scanner reports `core.css` inside `lib/client.js` like any other text.
+   */
+  for (const [className, token] of [
+    ['.uip-badge-ok', '--dsw-alias-state-success-primary'],
+    ['.uip-badge-warn', '--dsw-alias-state-warn-primary'],
+  ]) {
+    const block = rule(className + ' {') || rule(className + '{')
+    truthy(block.length > 0, 'the stylesheet carries a rule for ' + className)
+    contains(block, 'var(' + token + ')', 'and it is coloured by the shipped token ' + token)
+    equal(
+      /#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\(/.test(block),
+      false,
+      'with no colour literal in it: this rule is inside the bundle its own scanner reads',
+    )
+  }
 })
 
 /*

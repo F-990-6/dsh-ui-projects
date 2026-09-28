@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url'
 
 import { PROBLEM_CODES, checkUiProjectDeclaration, KNOWN_PROJECT_TYPES } from '../src/host/conformance.js'
 import { discoverProfiles, previewCommand, scanProfile, versionsDirNameOf } from '../src/host/profile-scan.js'
-import { CONTRACT_CODES, CONTRACT_LIMITS, CONTRACT_RULES, WAI_ARIA_ROLES, scanClientBundle } from '../src/host/contract-scan.js'
+import { CONTRACT_CODES, CONTRACT_LIMITS, CONTRACT_RULES, CONTRACT_RULE_COUNT, CONTRACT_RULES_JUDGED, WAI_ARIA_ROLES, scanClientBundle } from '../src/host/contract-scan.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const packageRoot = resolve(here, '..')
@@ -496,6 +496,39 @@ equal(
   [],
   'and a plugin’s own data-role is not an ARIA role at all',
 )
+/*
+ * A LABEL IN THE MIDDLE OF A SENTENCE, which the “not at the string’s start” test above does NOT catch:
+ * `'foo role="x" bar'` starts with text, so the prefix before `role` does not end in a quote and the first
+ * version of the markup test called it an attribute. The refinement asks the question the label case only
+ * approximated — did a TAG start inside this string literal before the `role=`? — and these two cases are
+ * the pair that pins it: `'foo …'` has no tag, `'<span>see …'` has a tag that CLOSED again, and neither is
+ * an attribute. The case below them is the control that keeps the pair from passing for the wrong reason.
+ */
+equal(
+  codesFor("const label = 'foo role=\"custom-dialog\" bar'"),
+  [],
+  'a role named inside a label that reads like a sentence is not an assignment either',
+)
+equal(
+  codesFor("const label = '<span>see role=\"custom-dialog\"</span>'"),
+  [],
+  'and neither is one after a tag that already closed: a string containing markup is not automatically markup',
+)
+equal(
+  codesFor("const node = { title: 'x', role: 'dialog' }"),
+  [],
+  'a role written as the SECOND property of an object — after a comma rather than a brace — is still an assignment',
+)
+equal(
+  codesFor("const node = { title: 'x', role: 'custom' }"),
+  [CONTRACT_CODES.NON_STANDARD_ROLE],
+  'and that is what makes the case above mean something: the same shape with a non-standard role IS reported',
+)
+equal(
+  scanClientBundle('const node = { role: name }').limits.some((limit) => limit.includes('computed value')),
+  true,
+  'while a role whose value is a variable is COUNTED rather than judged, and the count travels in the limits',
+)
 equal(
   codesFor('const x = 1; /* role="custom-dialog" and attachShadow({ mode: "closed" }) */'),
   [],
@@ -723,6 +756,25 @@ check(byName('a-skin')?.contract.bytes > 0, 'and the size it read, so a report c
 check(
   (byName('a-skin')?.contract.limits ?? []).some((limit) => limit.includes('rule 3')),
   'and the limits travel with the row, so the page can say what was NOT judged',
+)
+/*
+ * THE COVERAGE NUMBERS ARE THE INSTRUMENT'S, NOT THE BUNDLE'S, so they are on every row — including the
+ * rows nobody read, where the column must NOT print them (see the client's own case). The judged count is
+ * asserted against the module's export rather than against `3`, so adding a rule to the scanner cannot
+ * leave a stale number on the page; the total is pinned, because it changes when the CONTRACT changes.
+ */
+equal(
+  [byName('a-skin')?.contract.rules, byName('just-a-library')?.contract.rules],
+  [
+    { judged: CONTRACT_RULES_JUDGED, total: CONTRACT_RULE_COUNT },
+    { judged: CONTRACT_RULES_JUDGED, total: CONTRACT_RULE_COUNT },
+  ],
+  'every row, judged or not, carries the rule counts the column needs to say how much was covered',
+)
+equal(
+  [CONTRACT_RULES_JUDGED, CONTRACT_RULE_COUNT],
+  [3, 4],
+  'three of the contract’s four rules are decidable by reading a bundle, and the fourth (rule 3) is the runtime one',
 )
 equal(
   byName('an-enhancement')?.kind,

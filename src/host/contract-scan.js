@@ -72,6 +72,18 @@ export const CONTRACT_RULES = {
 }
 
 /**
+ * How many rules the UI Contract has, and how many of them this scanner can decide.
+ *
+ * THE TWO NUMBERS ARE DIFFERENT ON PURPOSE, and the settings column prints both where the badge is: rule 3
+ * (a top-level overlay in `document.body` must be identifiable by a WAI-ARIA role) is a statement about the
+ * page at runtime, and no reading of a file can settle it. The judged count is DERIVED from
+ * `CONTRACT_RULES` rather than written beside it, so adding a rule here cannot leave it stale; the total
+ * changes only when the contract itself does.
+ */
+export const CONTRACT_RULE_COUNT = 4
+export const CONTRACT_RULES_JUDGED = Object.keys(CONTRACT_RULES).length
+
+/**
  * Finding codes.
  *
  * A SEPARATE NAMESPACE from `conformance.js`'s `PROBLEM_CODES`, on purpose: those describe whether a
@@ -223,9 +235,18 @@ function evidenceAt(text, lines, index) {
  *   and NOT `[role='dialog']`, which is a CSS selector and says nothing about any element's role. The
  *   probe that produced this inventory matched both selector and attribute with one pattern (20 = 20 hits
  *   in the framework, 66 = 66 in the skin), which is exactly the false positive this check removes.
- * @param {string} text @param {string} blanked @param {boolean[]} inString
+ *
+ * A ROLE QUOTED IN A LABEL IS NOT AN ASSIGNMENT, and this test took two passes:
+ *   - the first version said "a markup attribute does not start its own string literal". That is right for
+ *     `title: 'role="custom-dialog"'` — the case the two-sided example package produced — and WRONG for
+ *     `'foo role="custom-dialog" bar'`, a sentence that names a role the way a person writes a sentence;
+ *   - this version asks the question the first one approximated: did a TAG start inside the literal, and is
+ *     it still open? `<div role="x">` is markup; `'<span>see role="x"'` is not, because the tag that opened
+ *     already closed. That is why the pattern looks for a `<name` with no `>` after it rather than for a
+ *     `<` anywhere in the string.
+ * @param {string} blanked @param {boolean[]} inString
  */
-function roleAssignments(blanked) {
+function roleAssignments(blanked, inString) {
   /** @type {Array<{ index: number, value: string }>} */
   const found = []
   /*
@@ -236,13 +257,24 @@ function roleAssignments(blanked) {
   const isSelector = (at) => /\[\s*$/.test(prefix(at))
   /** An object property is a key: `{ role: 'x' }` or `, role: 'x'`. */
   const isPropertyKey = (at) => /(?:\{|,)\s*$/.test(prefix(at))
+  /** The offset of the quote that OPENED the literal containing `at` (strings are kept, not blanked). */
+  const stringStart = (at) => {
+    let index = at
+    while (index > 0 && inString[index - 1] === true) index -= 1
+    return index
+  }
+  /** A tag opened inside this literal and has not closed yet: `<div class="c" ` yes, `'<span>see ` no. */
+  const insideTag = (at) => /<[a-zA-Z][\w:-]*[^<>]*$/.test(blanked.slice(stringStart(at), at))
   /*
    * A markup attribute sits inside a string, but not at its START: `<div role="x">` is an attribute,
-   * `'role="x"'` is a label that quotes one. The distinction was found by this scanner's own first
-   * consumer — the two-sided example package labels its surfaces with the very strings that assign
-   * their roles, and the label was reported as a second violation.
+   * `'role="x"'` is a label that quotes one. In CODE a `role=` is judged as markup — nothing in this
+   * workspace writes one there, and the two ways of writing a role in code are covered elsewhere:
+   * the object property above, and `setAttribute('role', …)` below.
    */
-  const isMarkupAttribute = (at) => !/["'`]\s*$/.test(prefix(at))
+  const isMarkupAttribute = (at) => {
+    if (/["'`]\s*$/.test(prefix(at))) return false
+    return inString[at] !== true || insideTag(at)
+  }
   for (const match of blanked.matchAll(/(?<![\w-])role\s*:\s*(["'`])([^"'`]*)\1/g)) {
     const at = match.index ?? 0
     if (isSelector(at) || !isPropertyKey(at)) continue
@@ -259,12 +291,16 @@ function roleAssignments(blanked) {
   /*
    * A role whose value is not a literal (`role: roleName`, a template) cannot be judged, and is counted
    * rather than reported — the limit line says so, and a silent skip would look like compliance.
+   *
+   * WHICH OF THE TWO ASSIGNMENT FORMS THIS IS comes from the matched operator, not from `blanked[at + 4]`:
+   * that offset is right for `role:` and wrong for `role =` (it lands on the space), which sent a spaced
+   * `=` through the object-key test and could count a computed markup attribute as nothing at all.
    */
   let unjudged = 0
   for (const match of blanked.matchAll(/(?<![\w-])role\s*[:=]\s*(?!["'`])/g)) {
     const at = match.index ?? 0
     if (isSelector(at)) continue
-    const before = blanked[at + 4] === '=' ? isMarkupAttribute(at) : isPropertyKey(at)
+    const before = match[0].includes('=') ? isMarkupAttribute(at) : isPropertyKey(at)
     if (!before) continue
     unjudged += 1
   }
@@ -363,7 +399,7 @@ export function scanClientBundle(text) {
   /** @type {Array<{ rule: string, code: string, message: string, action: string, at: number, excerpt?: string }>} */
   const raw = []
 
-  const roles = roleAssignments(blanked)
+  const roles = roleAssignments(blanked, inString)
   for (const assignment of roles.found) {
     const tokens = assignment.value.trim().split(/\s+/).filter((token) => token.length > 0)
     if (tokens.length === 0) continue

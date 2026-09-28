@@ -216,6 +216,62 @@
   border-color: var(--dsw-alias-border-l2);
 }
 
+/*
+ * THE TWO STATE BADGES, and the warning one is a FIX rather than an addition: `.uip-badge-warn` has been
+ * rendered by the "not composed" badge since round 8f and had no rule in this file, so it looked exactly
+ * like the badges beside it — a warning colour nobody could see.
+ *
+ * The tokens are the ones the shipped shell uses for the same meaning (`[data-state=warning]` and
+ * `[data-state=done]` in the frontend bundle both colour themselves with these). NOTHING HERE MAY BE A
+ * COLOUR LITERAL: this stylesheet travels inside `lib/client.js`, which the framework's own UI Contract
+ * scanner reads, and a literal here would be a finding against the instrument itself.
+ */
+.uip-badge-ok {
+  color: var(--dsw-alias-state-success-primary);
+  border-color: currentColor;
+}
+
+.uip-badge-warn {
+  color: var(--dsw-alias-state-warn-primary);
+  border-color: currentColor;
+}
+
+/* ── the UI Contract panel ────────────────────────────────────────────────── */
+
+.uip-contract {
+  margin-top: 6px;
+}
+
+.uip-contract > summary {
+  cursor: pointer;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.uip-contract-findings,
+.uip-contract-limits {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.uip-contract-finding {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.uip-contract-finding > code {
+  color: var(--dsw-alias-label-primary);
+  font-size: 11px;
+}
+
+.uip-contract-finding > p {
+  margin: 2px 0 0;
+}
+
 .uip-error {
   margin: 0;
   padding: 6px 10px;

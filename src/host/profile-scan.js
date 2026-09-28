@@ -38,7 +38,7 @@ import {
   declaresBundle,
   readDeclarations,
 } from './conformance.js'
-import { scanClientBundle } from './contract-scan.js'
+import { CONTRACT_RULE_COUNT, CONTRACT_RULES_JUDGED, scanClientBundle } from './contract-scan.js'
 
 /**
  * How large a client bundle may be before the listing stops scanning it.
@@ -51,7 +51,7 @@ import { scanClientBundle } from './contract-scan.js'
 const CONTRACT_SCAN_MAX_BYTES = 4 * 1024 * 1024
 
 /**
- * The UI Contract scan for one dependency.
+ * Judge one dependency's client bundle, and say so in a shape a row can render.
  *
  * WHO IS SCANNED, and this predicate was WRONG in the first version: it keyed off `kind`, and `kind`
  * reports `bundle` for any package that declares a bundle patch — which is every real plugin here. So the
@@ -66,7 +66,7 @@ const CONTRACT_SCAN_MAX_BYTES = 4 * 1024 * 1024
  * @param {any} dsh the package's `dsh` declarations
  * @returns {Promise<{ scanned: boolean, reason: string | null, bytes?: number, findings: any[], limits: string[] }>}
  */
-async function contractFor(installed, dsh) {
+async function judgeContract(installed, dsh) {
   if (installed.resolved !== true) {
     return { scanned: false, reason: 'not installed, so there is nothing on disk to scan', findings: [], limits: [] }
   }
@@ -102,6 +102,26 @@ async function contractFor(installed, dsh) {
       findings: [],
       limits: [],
     }
+  }
+}
+
+/**
+ * The scan above, plus the two numbers the settings column needs to describe its own coverage.
+ *
+ * ONE PLACE, not six. `judgeContract` returns from six points (not installed, no client half, no bundle,
+ * over the cap, unreadable, judged) and the counts describe the INSTRUMENT rather than the bundle, so they
+ * are the same for every row — attaching them here is what keeps the six returns from drifting apart.
+ *
+ * They travel even on a row that was not scanned, and the column ignores them there: a coverage sentence
+ * ("3 of 4 rules were judged") over a bundle nobody read would be the most confident possible lie.
+ * @param {{ dir?: string, resolved?: boolean }} installed
+ * @param {any} dsh the package's `dsh` declarations
+ * @returns {Promise<{ scanned: boolean, reason: string | null, bytes?: number, findings: any[], limits: string[], rules: { judged: number, total: number } }>}
+ */
+async function contractFor(installed, dsh) {
+  return {
+    ...(await judgeContract(installed, dsh)),
+    rules: { judged: CONTRACT_RULES_JUDGED, total: CONTRACT_RULE_COUNT },
   }
 }
 

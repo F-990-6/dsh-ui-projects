@@ -117,8 +117,22 @@ export function UiPluginsSection(props) {
 
   const scan = live.scan
   /** The framework's own row is the thing rendering this list: it is not removable from itself. */
-  const rows = scan.dependencies.map((dependency) =>
-    React_.createElement(
+  const rows = scan.dependencies.map((dependency) => {
+    /*
+     * THE CONTRACT STATE IS COMPUTED ONCE PER ROW, here, and the badge and the panel both read it — two
+     * derivations of one question is how a row ends up claiming two different things.
+     */
+    const contractState = contractStateOf(dependency)
+    const contractBadge = React_.createElement(
+      'span',
+      {
+        className: 'uip-badge' + (contractState === 'ok' ? ' uip-badge-ok' : contractState === 'warn' ? ' uip-badge-warn' : ''),
+        key: 'contract',
+        'data-uip-contract': contractState,
+      },
+      contractBadgeText(copy, contractState, dependency.contract),
+    )
+    return React_.createElement(
       'li',
       { className: 'uip-plugin', key: dependency.name, 'data-uip-plugin': dependency.name },
       React_.createElement(
@@ -132,7 +146,14 @@ export function UiPluginsSection(props) {
         dependency.name === 'dsh-ui-projects'
           ? React_.createElement('span', { className: 'uip-badge' }, copy.framework)
           : null,
+        contractBadge,
       ),
+      /*
+       * NO PANEL ON THE FRAMEWORK'S ROW. `na` is a decision, not a measurement, and there is nothing under
+       * it to explain — the two accepted findings the host reports for this bundle are printed by the CLI
+       * report (`check-installed.mjs`), which is the surface that reports on the instrument itself.
+       */
+      contractState === 'na' ? null : ContractPanel({ copy, React: React_, name: dependency.name, state: contractState, contract: dependency.contract }),
       dependency.projectId === undefined
         ? null
         : React_.createElement('p', { className: 'uip-hint' }, copy.project(dependency.projectId)),
@@ -151,8 +172,8 @@ export function UiPluginsSection(props) {
       dependency.name === 'dsh-ui-projects'
         ? null
         : CommandBlock({ copy, React: React_, name: dependency.name, profileName: scan.profileName }),
-    ),
-  )
+    )
+  })
 
   return React_.createElement(
     'section',
@@ -165,6 +186,104 @@ export function UiPluginsSection(props) {
     rows.length === 0
       ? React_.createElement('p', { className: 'uip-hint', key: 'empty' }, copy.empty)
       : React_.createElement('ul', { className: 'uip-list', key: 'list' }, rows),
+  )
+}
+
+/**
+ * Which of the four contract states a row is in.
+ *
+ *   ok    the scanner read the bundle and found nothing
+ *   warn  it read the bundle and found something (the panel says what)
+ *   none  nothing was read — four different host answers: not installed, no client half, no bundle on
+ *         disk, or a bundle over the scan cap. They share a state because they share a consequence (no
+ *         judgement), and they are told apart by the REASON printed under it, which is the host's own.
+ *   na    not judged on purpose: the framework's own row is the instrument, not a package anybody
+ *
+ * A host older than step 9a sends no `contract` at all; that is `none` with no reason, and the panel's
+ * copy says so about the HOST rather than about the bundle. `scanned !== true` rather than `!scanned`
+ * because a payload from an older 9a host could omit it, and "absent" must not read as "clean".
+ */
+function contractStateOf(dependency) {
+  if (dependency.name === 'dsh-ui-projects') return 'na'
+  const contract = dependency.contract
+  if (contract === null || typeof contract !== 'object') return 'none'
+  if (contract.scanned !== true) return 'none'
+  return (contract.findings ?? []).length > 0 ? 'warn' : 'ok'
+}
+
+/** The badge's text: one sentence per state, from the dictionary — this file spells none of it. */
+function contractBadgeText(copy, state, contract) {
+  if (state === 'na') return copy.contractNotApplicable
+  if (state === 'warn') return copy.contractWarn((contract?.findings ?? []).length)
+  if (state === 'ok') return copy.contractOk
+  return copy.contractNotScanned
+}
+
+/**
+ * The row's contract panel: how much of the contract was covered, what was found, and what the instrument
+ * cannot see.
+ *
+ * RENDERED FOR A GREEN ROW TOO, and that is the design rather than thoroughness: an unexpanded panel beside
+ * a green badge reads as "this plugin is fine", and the limits are the sentence that stops it — rule 3 is
+ * not scanned at all, and a violation written inside an event handler is invisible to a scan that only
+ * reads text.
+ *
+ * THE FINDINGS ARE THE HOST'S OWN ENGLISH, rendered verbatim. They are the output of a measurement, and a
+ * localized paraphrase of a measurement is a second instrument with no calibration.
+ *
+ * `null` when there is nothing true to print. A judged row whose host sent no rule counts (a host between
+ * 9a and 9b, before the counts existed) still gets its panel, with the badge's own sentence standing in for
+ * the coverage line — repeating that sentence is the one summary that cannot disagree with the badge above
+ * it — because dropping the panel there would drop the LIMITS, which are the part that matters most.
+ */
+function ContractPanel({ copy, React, name, state, contract }) {
+  const findings = contract?.findings ?? []
+  const limits = contract?.limits ?? []
+  const rules = contract?.rules
+  const covered =
+    typeof rules?.judged === 'number' && typeof rules?.total === 'number' ? copy.contractCoverage(rules.judged, rules.total) : null
+  const summary =
+    state === 'none' ? copy.contractNotScannedWhy(contract?.reason) : covered ?? contractBadgeText(copy, state, contract)
+  if (summary === null || summary === undefined || summary === '') return null
+  return React.createElement(
+    'details',
+    { className: 'uip-contract', 'data-uip-contract-panel': name },
+    React.createElement('summary', { className: 'uip-hint' }, summary),
+    findings.length === 0
+      ? null
+      : React.createElement('p', { className: 'uip-hint' }, copy.contractFindingsTitle),
+    findings.length === 0
+      ? null
+      : React.createElement(
+          'ul',
+          { className: 'uip-contract-findings' },
+          findings.map((finding, index) =>
+            React.createElement(
+              'li',
+              {
+                className: 'uip-contract-finding',
+                key: (finding.code ?? 'finding') + '-' + index,
+                'data-uip-contract-finding': finding.code,
+              },
+              React.createElement('code', null, finding.code),
+              React.createElement('p', null, finding.message),
+              React.createElement('p', { className: 'uip-hint' }, '→ ' + finding.action),
+              React.createElement(
+                'p',
+                { className: 'uip-hint' },
+                'line ' + finding.evidence.line + ': ' + finding.evidence.excerpt,
+              ),
+            ),
+          ),
+        ),
+    limits.length === 0 ? null : React.createElement('p', { className: 'uip-hint' }, copy.contractLimitsTitle),
+    limits.length === 0
+      ? null
+      : React.createElement(
+          'ul',
+          { className: 'uip-contract-limits' },
+          limits.map((limit) => React.createElement('li', { className: 'uip-hint', key: limit }, limit)),
+        ),
   )
 }
 
