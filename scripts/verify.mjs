@@ -692,98 +692,15 @@ let activeCleanup
  * shaped like `dsh.uiProject` plus a definition carrying behaviour and nothing else, handed to
  * `ctx.uiProjects.register(manifest, definition)` from a fiber of its own.
  *
- * WHY IT EXISTS. Until step 8 the framework shipped Liquid Glass inside itself and the suite used it as
- * its subject: every runtime, registry, panel and store test turned the skin on and asserted what
- * happened. That made the suite unable to tell "the framework works" from "Liquid Glass works" — and
- * once the skin moves to its own package (8c) those tests would either have to reach across packages or
- * stop existing. `test-skin` is the framework's own subject, and its name says so: `liquid-glass` in a
- * framework test was always a borrowed noun.
- *
- * The package name is `test-skin-package` rather than the project id, deliberately: the card shows the
- * PACKAGE a project came from, and the fixture has to exercise that path to be worth anything.
+ * Its data lives in `./test-skin.mjs` rather than here, because `host-check.mjs` needs the same stylesheet
+ * to assert the first-paint contract without naming any real project — and a second copy of a fixture is a
+ * fixture that can drift.
  */
-const TEST_SKIN_MANIFEST = {
-  schemaVersion: 1,
-  pluginApiVersion: 1,
-  package: 'test-skin-package',
-  version: '1.0.0',
-  id: 'test-skin',
-  name: 'Test Skin',
-  description: 'The framework suite’s own skin. It exists to be a subject, not a look.',
-  type: 'skin',
-  scope: 'global',
-  defaultEnabled: false,
-  supports: ['light', 'dark', 'mobile'],
-  perfLevel: 'high',
-  testItems: [
-    { id: 'one', label: 'The first thing a person should look at' },
-    { id: 'two', label: 'The second thing' },
-    { id: 'three', label: 'The third thing' },
-  ],
-  preview: 'linear-gradient(160deg, #f7f9ff 0%, #e6ecff 100%)',
-  previewLabel: 'Test skin preview',
-}
-
-/**
- * The fixture's stylesheet, and every rule shape in it is there on purpose.
- *
- * A fixture that inserts one trivial rule would let thirty tests pass while testing nothing: the
- * framework's own claims are about what it does to REAL stylesheets — scoping conditionals, keeping
- * `:has()` in one piece, refusing an impossible selector, noticing a filter declaration, publishing a
- * tier. Each shape below exists because some assertion needs it:
- *
- *   1. a body-level token rule        → scoped to the marker itself; the first-paint shape
- *   2. a rule reaching a shipped surface by ARIA role → the "published interface, not a hash" rule
- *   3. `:has(… )::before` with a blur → the frost. The `::before` is NOT decoration: `backdrop-filter`
- *      creates a containing block, so a blur written directly on the column would capture every `fixed`
- *      descendant (the settings dialog). Liquid Glass learned that in 7d and the fixture keeps the shape
- *   4. an `@supports` branch           → a conditional the scoper must recurse into
- *   5. an `@media` branch              → the same, and the shape a contrast mode arrives in
- *   6. two tier variants               → `data-ui-perf` is read off the body, so the rule is authored
- *      as `body[data-ui-perf='…'] …` and the scoper must MERGE the marker into that compound rather
- *      than nest a second body inside it
- *
- * And two shapes it must NOT contain, because two rules kept in this suite as the skin author's own
- * contract assert their absence: no `backdrop-filter` on a container that holds every surface, and no
- * build-hashed class name.
- */
-const TEST_SKIN_CSS = `
-:root {
-  --ts-fill: rgb(255 255 255 / 82%);
-  --ts-accent: #4d6bfe;
-  --dsv-accent: var(--ts-accent);
-}
-[role='dialog'] {
-  background: var(--ts-fill);
-}
-:has(> [data-ui-skin-column])::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  backdrop-filter: blur(20px);
-}
-@supports (backdrop-filter: blur(1px)) {
-  [data-composer-card] {
-    backdrop-filter: blur(20px);
-  }
-}
-@supports not (backdrop-filter: blur(1px)) {
-  :root {
-    --ts-fill: rgb(255 255 255);
-  }
-}
-@media (prefers-contrast: more) {
-  :root {
-    --ts-fill: rgb(255 255 255 / 97%);
-  }
-}
-body[data-ui-perf='medium'] :has(> [data-ui-skin-column])::before {
-  backdrop-filter: blur(16px);
-}
-body[data-ui-perf='low'] :has(> [data-ui-skin-column])::before {
-  backdrop-filter: blur(12px);
-}
-`
+const {
+  TEST_SKIN_ID,
+  TEST_SKIN_MANIFEST,
+  TEST_SKIN_DEFINITION,
+} = await import('./test-skin.mjs')
 
 /**
  * Register the test skin through the service, from a fiber of its own.
@@ -798,19 +715,7 @@ body[data-ui-perf='low'] :has(> [data-ui-skin-column])::before {
 function mountTestSkin(harness, overrides = {}) {
   const manifest = { ...TEST_SKIN_MANIFEST, ...(overrides.manifest ?? {}) }
   const fiber = harness.ctx.child()
-  fiber.uiProjects.register(manifest, {
-    apply(/** @type {any} */ ctx) {
-      ctx.insertCss(TEST_SKIN_CSS)
-      /*
-       * Every skin that paints the frame needs the runtime's column seam (`data-ui-skin-column`), so the
-       * fixture asks for it too — `glass.css` selects it through `:has(> [data-ui-skin-column])`, and the
-       * retry/observer tests are about that request rather than about Liquid Glass.
-       */
-      ctx.markColumns()
-    },
-    cleanup() {},
-    ...(overrides.definition ?? {}),
-  })
+  fiber.uiProjects.register(manifest, { ...TEST_SKIN_DEFINITION, ...(overrides.definition ?? {}) })
   return { manifest, fiber, unmount: () => fiber.cleanup() }
 }
 
@@ -1680,52 +1585,78 @@ await test('materialising the entry never touches an internal module, exactly as
   equal(typeof entry.apply, 'function', 'and the plugin exports an apply')
 })
 
-await test('the frost goes on surfaces, never on a container of them', async () => {
-  const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
-  const css = harness.allCss()
-
-  // A `backdrop-filter` on a CONTAINER blurs every surface inside it at once. That is
-  // what made an earlier version of this skin unreadable: the frame's whole-viewport
-  // floating layer (`[data-shell-overlay]`, measured 1414×800) and every direct child
-  // of the frame were blurred, so the conversation was softened along with everything
-  // else. Frost belongs on the columns and on floating panels — the surfaces.
+/**
+ * The frost predicate, as a function so the rule can be tested in BOTH directions.
+ *
+ * A `backdrop-filter` on a CONTAINER blurs every surface inside it at once. That is what made an earlier
+ * version of this skin unreadable: the frame's whole-viewport floating layer (`[data-shell-overlay]`,
+ * measured 1414×800) and every direct child of the frame were blurred, so the conversation was softened
+ * along with everything else. Frost belongs on the columns and on floating panels — the surfaces.
+ * @param {string} css
+ */
+const frostViolations = (css) => {
   const blurSelectors = [...String(css).matchAll(/(^|\})\s*([^{}@]+)\{[^{}]*backdrop-filter[^{}]*\}/g)]
     .map((match) => match[2].trim())
     .filter((selector) => selector.length > 0)
-  truthy(blurSelectors.length > 0, 'the skin does apply refraction somewhere')
-
+  const violations = []
   for (const selector of blurSelectors) {
-    if (selector.includes('data-shell-overlay')) {
-      throw new Error(`frost is applied to the frame-wide floating container: ${selector}`)
-    }
-    if (selector.includes('body') && !selector.includes('data-ui-project')) {
-      throw new Error(`frost is applied to the document body, which contains everything: ${selector}`)
-    }
+    if (selector.includes('data-shell-overlay')) violations.push(`a container: ${selector}`)
+    else if (selector.includes('body') && !selector.includes('data-ui-project')) violations.push(`the document body: ${selector}`)
   }
-  // The columns ARE blurred on purpose — that is the skin — and the assertion that
-  // they are is what keeps this test honest about the direction of the rule.
+  return { blurSelectors, violations }
+}
+
+await test('the frost goes on surfaces, never on a container of them', async () => {
+  /*
+   * THE SKIN AUTHOR'S RULE, KEPT IN THE FRAMEWORK — and pointing at the fixture.
+   *
+   * It used to read Liquid Glass's own stylesheet; it stays here, in step 8b, because the rule is not about
+   * that skin: any skin that blurs a container blurs everything inside it, and the failure reads as "the
+   * interface went soft" rather than as "a selector was too broad". What changed is the subject — the
+   * framework's own `test-skin` — and what is new is the second half.
+   *
+   * TWO-SIDED ON PURPOSE. A rule checker run only against a stylesheet that obeys it proves that the
+   * checker RUNS, not that it REFUSES; the three cases below are the shapes the rule exists to catch, and
+   * each is named so a failure says which one got through.
+   */
+  const harness = await boot()
+  await harness.runtime.enable('test-skin')
+  const { blurSelectors, violations } = frostViolations(harness.allCss())
+
+  truthy(blurSelectors.length > 0, 'the fixture does apply refraction somewhere, so this rule has a subject')
+  equal(violations, [], 'and it obeys the rule')
   truthy(
     blurSelectors.some((selector) => selector.includes('data-ui-skin-column')),
-    `the columns carry the frost (found: ${JSON.stringify(blurSelectors.slice(0, 4))})`,
+    `the columns carry the frost, which is the direction the rule allows (found: ${JSON.stringify(blurSelectors.slice(0, 4))})`,
   )
-  // And the seam they are aimed by is stamped by the runtime, not guessed by a
-  // structural selector — the guess failed silently twice in this package.
-  const harnessWithFrame = await boot()
-  await harnessWithFrame.runtime.enable('liquid-glass')
-  const markedCount = () =>
-    harnessWithFrame.dom.document.body
-      .querySelectorAll('div')
-      .filter((el) => el.hasAttribute('data-ui-skin-column')).length
-  // The marking retries on a timer, because at `apply` time the shell has not mounted
-  // the application yet and there is no frame to find. So the test waits for it, exactly
-  // as the browser does — the assertion is about the outcome, not the latency.
-  let marks = markedCount()
-  for (let attempt = 0; attempt < 40 && marks < 2; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 25))
-    marks = markedCount()
+
+  const marker = 'body[data-ui-project-test-skin="on"]'
+  const broken = [
+    ['the frame-wide floating container', `${marker} [data-shell-overlay]{ backdrop-filter: blur(20px) }`],
+    ['the document body', `body{ backdrop-filter: blur(20px) }`],
+    ['a container reached through the marker', `${marker} [data-shell-overlay]::before{ backdrop-filter: blur(20px) }`],
+  ]
+  for (const [label, source] of broken) {
+    equal(frostViolations(source).violations.length, 1, `a blur on ${label} is caught`)
   }
-  truthy(marks >= 2, `the runtime marked the frame's columns (${marks})`)
+
+  /*
+   * The seam the frost is aimed by is STAMPED BY THE RUNTIME, not guessed by a structural selector — the
+   * guess failed silently twice in this package. The retry machinery has its own three tests; what this
+   * one adds is the property the frost rule depends on: the columns it selects are marked while the
+   * project is on, nothing else is, and the marks go when the project does.
+   */
+  const harnessWithFrame = await boot()
+  await harnessWithFrame.runtime.enable('test-skin')
+  const markedCount = () =>
+    harnessWithFrame.dom.document.body.querySelectorAll('div').filter((el) => el.hasAttribute('data-ui-skin-column')).length
+  // The marking retries on a timer, because at `apply` time the shell has not mounted the application yet
+  // and there is no frame to find. So the test waits for it, exactly as the browser does — the assertion
+  // is about the outcome, not the latency.
+  for (let attempt = 0; attempt < 40 && markedCount() < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  equal(markedCount(), 3, 'exactly the frame’s three columns were marked')
   // And it marked ONLY columns: not the frame-wide overlay, which is a container.
   const markedEls = harnessWithFrame.dom.document.body
     .querySelectorAll('div')
@@ -1735,28 +1666,8 @@ await test('the frost goes on surfaces, never on a container of them', async () 
     0,
     'the overlay container and the resize handle were left unmarked',
   )
-  equal(markedEls.length, 3, 'exactly the three columns were marked')
-  await harnessWithFrame.runtime.disable('liquid-glass')
-  equal(markedCount(), 0, `and unmarked them on the way out (style sheets now: ${harnessWithFrame.dom.styles().length})`)
-
-  /*
-   * The frame's own background IS see-through — that is what puts the ambient field
-   * behind the glass, so the columns have something to show. It is safe only because
-   * the frame paints nothing but a background: no text of its own, and every surface
-   * inside it carries its own fill.
-   *
-   * The property that must hold is therefore not "opaque" but "never translucent
-   * without a way back": a see-through window with no `backdrop-filter` support is
-   * just an unreadable page, so a fallback must restore it.
-   */
-  const base = /--dsw-alias-bg-base:\s*([^;]+);/.exec(css)
-  truthy(base !== null, 'the frame background token is set')
-  const fallback = /@supports not \(\(backdrop-filter:[^)]*\)[^{]*\)\s*\{([\s\S]*?)\n\}/.exec(css)
-  truthy(fallback !== null, 'a no-backdrop-filter fallback exists')
-  truthy(
-    /--dsw-alias-bg-base:\s*(#|rgb|hsl)/.test(fallback[1]),
-    'the fallback restores an opaque window when there is nothing to refract',
-  )
+  await harnessWithFrame.runtime.disable('test-skin')
+  equal(markedCount(), 0, 'and the marks go when the project does')
 })
 
 await test('every inserted stylesheet is owned and removable', async () => {
@@ -1775,57 +1686,6 @@ await test('every inserted stylesheet is owned and removable', async () => {
     1,
     'the project stylesheets are gone; only the system stylesheet remains (the plugin is still mounted)',
   )
-})
-
-await test('turning the skin off restores every shipped token it re-bound', async () => {
-  const harness = await boot()
-  const defaultTokens = declaredTokens(harness.allCss())
-
-  await harness.runtime.enable('liquid-glass')
-  const skinnedTokens = declaredTokens(harness.allCss())
-  const added = [...skinnedTokens].filter((token) => !defaultTokens.has(token)).sort()
-  truthy(added.length >= 20, `the skin's palette is applied (${added.length} tokens)`)
-
-  // Every token the skin touches is named after a shipped one, so removing the
-  // sheet restores the shipped value instead of deleting a definition the client
-  // depends on. (A token that merely starts with `--dsw-` could still be invented,
-  // which the next test checks against the installed design system.)
-  const shippedNamed = added.filter((token) => token.startsWith('--dsw-'))
-  truthy(shippedNamed.length >= 20, `${shippedNamed.length} re-bind shipped design tokens`)
-
-  await harness.runtime.disable('liquid-glass')
-  const after = declaredTokens(harness.allCss())
-  equal(
-    added.filter((token) => after.has(token)),
-    [],
-    'no token the skin introduced survives the disable',
-  )
-  equal(harness.projectMarker('liquid-glass'), null, 'the marker is gone')
-  equal(harness.dom.ambient().length, 0, 'the ambient layer is gone')
-})
-
-await test('the skin adds nothing to the document flow', async () => {
-  const harness = await boot()
-  // The shipped shell decides whether the sidebar is wide or a rail by MEASURING the frame,
-  // so an extra element in the document's own children distorts that measurement. It did:
-  // with the ambient field appended to `<body>`, enabling the skin collapsed the sidebar to
-  // the rail and squeezed the settings dialog until its navigation became a vertical strip —
-  // and only while the skin was on, which is what pointed at the skin at all.
-  //
-  // So this asserts the property that matters rather than the mechanism: the number of
-  // children `<body>` has is exactly what the shell left there.
-  const before = harness.dom.body.children.length
-  await harness.runtime.enable('liquid-glass')
-  equal(harness.dom.body.children.length, before, 'enabling the skin adds no child to the body')
-
-  // v3 mounts nothing at all, so there is no layer to place and nothing for the shell to
-  // measure around. Asserted rather than assumed: an ambient field is the one thing that
-  // previously collapsed the sidebar, and "no DOM" is the contract that prevents it.
-  equal(harness.dom.ambient().length, 0, 'this skin mounts no DOM at all')
-
-  await harness.runtime.disable('liquid-glass')
-  equal(harness.dom.body.children.length, before, 'and disabling it takes nothing with it')
-  equal(harness.dom.ambient().length, 0, 'the ambient field is gone')
 })
 
 await test('a project can declare a control, and the page renders it without knowing what it does', async () => {
@@ -1921,41 +1781,6 @@ await test('the slider mirrors the switch exactly', async () => {
     contains(thumbRule, declaration, `the thumb matches the switch knob (${declaration})`)
     contains(knobRule, declaration, `and the switch knob really declares it (${declaration})`)
   }
-})
-
-await test('the material transparency is fixed, and no user control can thin it out', async () => {
-  /*
-   * There WAS an opacity slider here, and it was removed at the user's request. The regression
-   * this test guards is specific and worth keeping: the slider's floor once sat at 0.45 of the
-   * nominal fill, which put a surface at roughly 15% alpha — technically present, invisible in
-   * practice — and a user who found the bottom of the scale reasonably concluded the skin had
-   * stopped working.
-   *
-   * So the assertion is that transparency is a FIXED design decision now: the fills carry
-   * explicit alphas, nothing writes a material factor at runtime, and a project cannot be talked
-   * into thinning them.
-   */
-  const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
-  const body = harness.dom.document.body
-
-  // No runtime-written material factor, on either element.
-  equal(body.style.getPropertyValue('--lg-material-swap'), '', 'no material factor is written on the body')
-  equal(harness.dom.root.style.getPropertyValue('--lg-material-swap'), '', 'nor on the root')
-
-  // The fills are the design's own, with no multiplier in them.
-  const css = harness.allCss()
-  excludes(css, '--lg-material-swap', 'the sheet declares no material factor either')
-  contains(css, '--dsw-specific-sidebar-fill: rgb(250 250 254 / 20%)', 'the sidebar carries a fixed alpha')
-
-  // The context no longer offers the control the slider drove.
-  const context = harness.runtime.contextFor('liquid-glass')
-  truthy(context !== undefined, 'an applied project still exposes its context')
-  equal(
-    typeof /** @type {any} */ (context).setMaterialOpacity,
-    'undefined',
-    'and offers no way to change the material transparency',
-  )
 })
 
 await test('marking the columns survives the application not being mounted yet', async () => {
@@ -2123,317 +1948,6 @@ await test('a retry that never succeeds stops at its deadline, and leaves the ob
  * re-added without this note being deleted on purpose.
  */
 
-await test('the skin never changes stacking or clipping on a layout column', async () => {
-  /*
-   * The bug this guards, in the user's own words: "the settings panel sits over the left workspace
-   * card, underneath the conversation area".
-   *
-   * The cause was one decorative declaration. `isolation: isolate` on the marked columns was added
-   * to keep one column's blur out of another's painting — redundant, since a `backdrop-filter`
-   * already creates a stacking context — and it is not free: a stacking context is also a CLIPPING
-   * and ORDERING boundary for everything painted inside it. The settings dialog renders inside the
-   * centre column, so its `position: absolute; inset: 0` mask covered only that column, the
-   * conversation beside it stayed bright, and the panel was cut off at the column's edge.
-   *
-   * A `position: fixed` child cannot escape an ancestor's clipping, so no amount of adjusting the
-   * panel's own properties could have fixed it — and four rounds were spent trying. This asserts the
-   * rule rather than the instance: a column may be PAINTED, never re-stacked or clipped.
-   */
-  const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
-  const css = harness.allCss()
-
-  /*
-   * v3 emits NO rule scoped to a column at all — a stronger guarantee than the one this test
-   * used to make.
-   *
-   * It previously required the column rule to exist and to be free of stacking and clipping
-   * declarations. The rule itself turned out to be the problem: `backdrop-filter` creates a
-   * containing block for `position: fixed` descendants, the settings dialog renders inside a
-   * column, and so the frost captured the dialog and collapsed it to a narrow strip. The frost
-   * now lives on the frame's `::before`; see `glass.css` and the containing-block probe.
-   *
-   * The assertion below is the shape of that: every mention of the column marker must sit
-   * inside a `:has(> …)` guard, which selects the FRAME by looking at its children.
-   */
-  const columnSelectors = [...css.matchAll(/([^{}]*\[data-ui-skin-column\][^{}]*)\{/g)].map((m) => m[1].trim())
-  truthy(columnSelectors.length > 0, 'the column marker is used to find the frame')
-  for (const selector of columnSelectors) {
-    truthy(
-      selector.includes(':has('),
-      `the column marker only ever appears inside :has(), to select the frame (found: ${selector})`,
-    )
-  }
-  // And the properties that caused the original bug never appear on a column.
-  for (const forbidden of ['isolation', 'z-index', 'overflow', 'contain:', 'clip-path', 'backdrop-filter']) {
-    for (const selector of columnSelectors) {
-      excludes(selector, forbidden, `a column selector never carries ${forbidden}`)
-    }
-  }
-
-  /*
-   * The dialog geometry assertions that used to follow are gone, along with the rules they
-   * described.
-   *
-   * They pinned a block in `surfaces.css` that forced the shipped settings dialog's position,
-   * size and stacking from outside, using dsh's build-hashed CSS-module classes and 39
-   * `!important` declarations. Five selectors, all `.VOzbGW_*`. It was compensating for a
-   * dsh-side layout bug, which a skin cannot own: a rebuild rehashes the class, every rule
-   * stops matching, and nothing reports it.
-   *
-   * Two things replace them, and neither is a weaker version of the same test:
-   *
-   *   - `surfaces.css` now states the rule that was crossed — appearance properties only on
-   *     shipped elements, never geometry — and the suite asserts that no hash-shaped class
-   *     appears in the emitted CSS at all (see "the skin names no CSS-module hash" below).
-   *   - The invariant this test actually exists for is above and unchanged: a layout column
-   *     may be PAINTED, never re-stacked or clipped.
-   */
-})
-
-await test('one frost on the frame, and no blur on a column', async () => {
-  /*
-   * The shape of v3, asserted as properties rather than as strings.
-   *
-   * An earlier version put the frost on each column. That is not merely a different choice —
-   * `backdrop-filter` creates a containing block for `position: fixed` descendants, so
-   * frosting a column captures the settings dialog rendered inside it and confines it to the
-   * column. The user-visible symptom was the settings panel collapsing into a narrow strip on
-   * the left. `tools/probe-backdrop-containing-block.html` measures the whole chain.
-   *
-   * These assertions exist so that shape cannot come back unnoticed.
-   */
-  const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
-  const css = String(harness.allCss())
-
-  // 1. The frost is written on the frame, found through the runtime's own column marker.
-  contains(css, ':has(> [data-ui-skin-column])', 'the frame is selected by its marked children')
-
-  // 2. It reaches a stacking context through `isolation`, the one property that does NOT
-  //    capture fixed descendants — which is exactly what the dialog depends on.
-  contains(css, 'isolation: isolate', 'the stacking context comes from isolation')
-
-  // 3. Every `backdrop-filter` lands on a pseudo-element or a floating surface, never on a
-  //    column itself. This is the specific regression that broke the dialog.
-  const blurSelectors = [...css.matchAll(/([^{}@]+)\{[^{}]*backdrop-filter[^{}]*\}/g)].map((m) => m[1].trim())
-  truthy(blurSelectors.length > 0, 'the skin does apply refraction somewhere')
-  for (const selector of blurSelectors) {
-    const onAColumn = /\[data-ui-skin-column\]/.test(selector)
-    truthy(!onAColumn || selector.includes('::before'), `no column carries backdrop-filter directly (found: ${selector})`)
-  }
-})
-
-await test('the composer stat rows are hidden, and without moving the composer', async () => {
-  /*
-   * Two rows of small text sit under the composer — dsh's own token and efficiency pills, and
-   * dsh-cost-meter's session cost line — and this skin hides them at the project owner's
-   * request. The rule is cross-package coupling, and `glass.css` documents it in full. What
-   * this test guards are the two properties that took a round each to get right.
-   *
-   * WHY `visibility` AND NOT `display`
-   *
-   * `display: none` was tried first, and it moved the input box. It removes the rows from the
-   * box tree, the composer container is anchored to the bottom of the viewport, so the
-   * container shortened and its top edge — carrying the input — moved down by about the height
-   * of the two rows. Measured in use, not predicted.
-   *
-   * The requirement is that the input box does not move, and only a declaration that keeps the
-   * boxes can satisfy it. So these assertions are not merely "the rows are hidden": they are
-   * "they are hidden by a property with no layout effect". That distinction is the whole point.
-   * A future rewrite reaching for `display: none` again would look correct in review and break
-   * the composer, which is exactly the failure this test exists to catch. `height` is excluded
-   * for the same reason: setting it to 0 removes the rows' height and reintroduces the shift
-   * just as surely as `display` did.
-   *
-   * The cost is a blank band where the rows were. That trade was made deliberately.
-   *
-   * WHY THE TWO HOOKS ARE THE RIGHT ONES
-   *
-   * They come from different packages, so they are two different seams:
-   * `[data-composer-stats]` is dsh's own hand-written data attribute (its class name is a
-   * CSS-module reference, and naming that would be the hash-class mistake this skin was
-   * rebuilt to remove); `.cm-root` is dsh-cost-meter's public class, from a namespace of 177
-   * entirely plain `cm-*` names. Neither is a build artefact.
-   */
-  const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
-  const css = String(harness.allCss())
-
-  // Both rows, both scoped to the project marker — so switching the skin off brings them back.
-  contains(css, 'body[data-ui-project-liquid-glass="on"] [data-composer-stats]')
-  contains(css, 'body[data-ui-project-liquid-glass="on"] .cm-root')
-
-  const statRule = /body\[data-ui-project-liquid-glass="on"\] \[data-composer-stats\][^{]*\{([^}]*)\}/.exec(css)
-  truthy(statRule !== null)
-
-  const declarations = statRule[1]
-  contains(declarations, 'visibility: hidden')
-  // The regression this test exists for: a property that removes the boxes moves the composer.
-  excludes(declarations, 'display')
-  excludes(declarations, 'height')
-  excludes(declarations, 'overflow')
-})
-
-await test('the composer is given the frame material, with the frost kept off the card', async () => {
-  /*
-   * The composer's material, and the two structural properties that make it safe.
-   *
-   * `[data-composer-card]` is the shipped input bar and `[data-composer-seat]` the sticky wrapper
-   * around it; both are hand-written `data-` attributes in `ui-conversation`, which is what makes
-   * them usable at all — the card's own class is a build-hashed CSS-module name.
-   *
-   * The load-bearing distinction is WHERE the blur lives. On the card it would create a containing
-   * block for fixed descendants, which is the failure this project has paid for twice; on a
-   * pseudo-element it does not. So the assertion below is not decoration: it fails if somebody
-   * "simplifies" the rule by moving `backdrop-filter` onto the card, which would look tidier and
-   * reintroduce the whole class of bug the moment a popover is rendered inside the composer.
-   */
-  const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
-  const css = String(harness.allCss())
-  const flat = css.replace(/\s+/g, ' ')
-
-  /** The declarations of the first rule whose selector is exactly `selector`. */
-  const bodyOf = (selector) => {
-    const at = flat.indexOf(`${selector}{`)
-    if (at === -1) return ''
-    const end = flat.indexOf('}', at)
-    return end === -1 ? '' : flat.slice(at + selector.length + 1, end)
-  }
-  const CARD = 'body[data-ui-project-liquid-glass="on"] [data-composer-card]'
-  const card = bodyOf(CARD)
-  const frost = bodyOf(`${CARD}::before`)
-  truthy(card !== '', 'the composer card has a rule')
-  truthy(frost !== '', 'and a frost layer of its own')
-
-  // The material, spelled the way the rest of the skin spells it.
-  contains(card, 'background: var(--lg-glass-bg)', 'the glass fill')
-  contains(card, 'border-radius: var(--lg-glass-radius)', 'the glass radius')
-  contains(card, 'isolation: isolate', 'and the stacking context the frost needs to land in')
-  // The blur is on the pseudo-element and NOT on the card. Two assertions, because the second is
-  // the one that keeps the containing-block class of bug out.
-  contains(frost, 'backdrop-filter: blur(var(--lg-glass-blur))', 'the frost blurs what is behind it')
-  contains(frost, '-webkit-backdrop-filter', 'with the prefixed twin')
-  contains(frost, 'z-index: -1', 'behind the card’s own fill')
-  contains(frost, 'pointer-events: none', 'without intercepting clicks')
-  excludes(card, 'backdrop-filter', 'the card itself never carries the filter')
-
-  /*
-   * The ring is the SHIPPED one, composed with the glass shadow rather than replacing it — and the
-   * glow it replaces is stated here too, so a later edit cannot turn "replaced" into "stacked".
-   */
-  contains(card, 'var(--dsw-elevation-stroke)', 'the shipped elevation ring is kept')
-  contains(card, 'var(--lg-glass-shadow)', 'beside the glass shadow')
-  contains(card, 'var(--lg-glass-inner-highlight)', 'and the inner highlight')
-  excludes(card, '--dsw-elevation-soft', 'while the shipped glow is replaced, not stacked with ours')
-
-  /*
-   * The seat, which this skin deliberately says NOTHING about.
-   *
-   * The obvious completion of this feature is to restate the seat's own fade in glass terms — the
-   * shipped rule ramps to `var(--dsw-alias-bg-base)`, and this skin makes that token transparent, so
-   * the ramp is inert. It was written, and a screenshot of the running application showed why it
-   * cannot be: the shipped rule ramps over 36px and then holds that colour for the whole seat, which
-   * is invisible only while it matches the page. A translucent hold is a visible rectangle spanning
-   * the column with a hard edge where the seat ends — and in the hero phase the seat does not even
-   * reach the bottom of the viewport, so the edge is in the middle of the page.
-   *
-   * So the assertion is an absence, with the reason attached: any future rule on the seat has to
-   * answer to it.
-   */
-  excludes(css, '[data-composer-seat]', 'the skin declares nothing about the composer seat')
-
-  /*
-   * The shared input token, which must NOT be rebound.
-   *
-   * `--dsw-specific-input-major` paints approval cards, the question card, four attachment surfaces
-   * and a chat element as well as the composer. Rebinding it is the obvious way to make the composer
-   * translucent and the wrong one: it would restyle five surfaces the specification never mentioned.
-   * This assertion is the guard, and it is why the material above is applied to the card instead.
-   */
-  excludes(css, '--dsw-specific-input-major:', 'the shared input fill is never rebound by this skin')
-
-  /*
-   * Every degradation block that reduces or removes the blur names the composer too.
-   *
-   * Both halves matter and both were found the same way — by reading the emitted sheet instead of
-   * remembering which blocks existed: the tier blocks and the mobile block would otherwise leave the
-   * composer at 20px while every other layer dropped, and the four suppression blocks would leave it
-   * as the one translucent, blurred surface on a page whose reader had asked for neither.
-   */
-  const blocksFor = (prelude) => {
-    const blocks = []
-    let from = 0
-    for (;;) {
-      const start = flat.indexOf(prelude, from)
-      if (start === -1) return blocks
-      let depth = 0
-      let end = flat.length
-      for (let index = start; index < flat.length; index += 1) {
-        if (flat[index] === '{') depth += 1
-        else if (flat[index] === '}') {
-          depth -= 1
-          if (depth === 0) {
-            end = index + 1
-            break
-          }
-        }
-      }
-      blocks.push(flat.slice(start, end))
-      from = end
-    }
-  }
-  for (const [prelude, label] of [
-    ["body[data-ui-project-liquid-glass=\"on\"][data-ui-perf='medium']", 'medium'],
-    ["body[data-ui-project-liquid-glass=\"on\"][data-ui-perf='low']", 'low'],
-    ['@media (max-width: 768px)', 'mobile'],
-  ]) {
-    const blocks = blocksFor(prelude)
-    truthy(blocks.length > 0, `the ${label} degradation block exists`)
-    truthy(
-      blocks.some((block) => block.includes('[data-composer-card]::before')),
-      `the ${label} block degrades the composer's frost too`,
-    )
-  }  for (const branch of [
-    '@supports not ((backdrop-filter: blur(1px))',
-    '@media (prefers-reduced-transparency: reduce)',
-    '@media (forced-colors: active)',
-    '@media (prefers-contrast: more)',
-  ]) {
-    const blocks = blocksFor(branch)
-    truthy(blocks.length > 0, `the ${branch} branch exists`)
-    /*
-     * `some`, not `blocks[0]`: three of these four conditions appear TWICE in the emitted sheet —
-     * once in `tokens.css` for the fills and once in `glass.css` for the blur — and the first one is
-     * always the token block. Asking the first match whether it suppresses a frosted layer asks the
-     * wrong block the right question, which is how the equivalent assertion in the first-paint test
-     * failed the first time it ran too.
-     */
-    truthy(
-      blocks.some((block) => block.includes('[data-composer-card]::before')),
-      `${branch} drops the composer's frost`,
-    )
-  }
-
-  /*
-   * And the composer's fill is no longer patched per branch.
-   *
-   * It used to be a rule on the card in all four blocks — a component rule standing in for a token
-   * the token layer had not taken care of. The material fill now goes opaque at the token, so every
-   * consumer follows (`.lg-glass`, the composer, and whatever comes next) and the per-consumer copies
-   * are gone. The branch coverage itself is asserted once, for all surfaces, by
-   * `every translucent surface is taken opaque by the modes that remove translucency` — this states
-   * only that the patch is not creeping back.
-   */
-  excludes(css, '[data-composer-card]{ background: var(--dsw-alias-bg-base)', 'no per-branch composer patch')
-  contains(css, '--lg-glass-bg: #fff', 'the material fill is taken opaque at the token instead')
-  // The dark half, named: `#1c1c1e` is `--lg-glass-bg-dark` with its alpha removed, chosen over the
-  // page's own bottom layer (`#14161c`) because a surface made of material becomes the material's
-  // solid colour, not the page's.
-  contains(css, '--lg-glass-bg: #1c1c1e', 'and so is its dark half')
-})
-
 await test('the composer hooks and the ring token still exist in the installed client', async () => {
   /*
    * Two anti-rot checks, because both halves of this feature are borrowed from the shipped client
@@ -2512,39 +2026,47 @@ await test('the scoper refuses to emit a doubled project marker', async () => {
   equal(doubled, null, 'the shipped sheet contains no doubled marker')
 })
 
+/**
+ * The hash-shape predicate, as a function so the rule can be tested in BOTH directions.
+ *
+ * A CSS-module hash reads like `.Ab3xY_panel`: alphanumerics, an underscore, more alphanumerics. This
+ * project's own vocabulary (`.lg-glass`) and the runtime's markers (`[data-ui-skin-column]`) contain no
+ * underscore, which is what makes the pattern precise rather than a hopeful grep.
+ */
+const hashShapedClasses = (css) => [...String(css).matchAll(/\.[A-Za-z0-9]{3,}_[A-Za-z0-9]+/g)].map((match) => match[0])
+
 await test('the skin names no CSS-module hash, and reaches shipped surfaces by role', async () => {
   /*
-   * This test used to assert the OPPOSITE: that `.VOzbGW_panel` still existed in the installed
-   * client, and that the skin's stylesheet named it. That guard made binding to a build-hashed
-   * class survivable — it turned "the hash changed" from a silent regression into a failing test.
+   * This test used to assert the OPPOSITE: that `.VOzbGW_panel` still existed in the installed client, and
+   * that the skin's stylesheet named it. That guard made binding to a build-hashed class survivable — it
+   * turned "the hash changed" from a silent regression into a failing test. The binding is gone, so the old
+   * guard has no subject; what remains worth guarding is the reverse risk, because a frontend rebuild
+   * renames a hashed class, every rule referencing it stops matching, and nothing reports a problem.
    *
-   * The binding is gone, so the old guard has no subject. What remains worth guarding is the
-   * reverse risk: that a hash-shaped class creeps back in, because that is the failure mode that
-   * costs the most — a frontend rebuild renames it, every rule referencing it stops matching, and
-   * nothing reports a problem. The dialog quietly loses its material and nobody knows why.
-   *
-   * The check runs against the CSS the runtime actually emits for the active project, so it covers
-   * every stylesheet the skin ships.
+   * IT STAYS IN THE FRAMEWORK, and points at the fixture, because it is a rule for SKIN AUTHORS rather than
+   * a fact about one skin — the same reason the frost rule above stays. And it is two-sided for the same
+   * reason there: a checker that has only ever seen a stylesheet that obeys it has not been shown to
+   * refuse anything.
    */
   const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
   const css = String(harness.allCss())
 
-  // A CSS-module hash reads like `.Ab3xY_panel`: alphanumerics, an underscore, more
-  // alphanumerics. This plugin's own vocabulary (`.lg-glass`, `.ds-ambient`) and the runtime's
-  // markers (`[data-ui-skin-column]`) contain no underscore, which is what makes the pattern
-  // precise rather than a hopeful grep.
-  const hashShaped = [...css.matchAll(/\.[A-Za-z0-9]{3,}_[A-Za-z0-9]+/g)].map((match) => match[0])
   equal(
-    hashShaped.length,
-    0,
-    `no build-hashed class appears in the emitted CSS (found: ${JSON.stringify([...new Set(hashShaped)].slice(0, 6))})`,
+    hashShapedClasses(css),
+    [],
+    `no build-hashed class appears in the emitted CSS (found: ${JSON.stringify([...new Set(hashShapedClasses(css))].slice(0, 6))})`,
   )
+  contains(css, 'role=', 'and shipped floating surfaces are reached by ARIA role')
+  equal(/\bdialog\b/.test(css), true, 'dialog included')
 
-  // And the skin does still reach shipped floating surfaces — by ARIA role, which is a published
-  // interface rather than somebody's build output.
-  contains(css, 'role=')
-  equal(/\bdialog\b/.test(css), true, 'shipped floating surfaces are matched by ARIA role, dialog included')
+  // The rule refuses a hash — on its own, and mixed into a stylesheet that is otherwise clean.
+  equal(hashShapedClasses('.Ab3xY_panel{ color: red }'), ['.Ab3xY_panel'], 'a hash-shaped class is caught')
+  equal(
+    hashShapedClasses(`${css}\n.VOzbGW_dialog{ color: red }`).length,
+    1,
+    'and it is still caught when the rest of the sheet is healthy',
+  )
 })
 
 await test('a settings record left over from the removed opacity slider is harmless', async () => {
@@ -2676,558 +2198,6 @@ await test('the boot page is dismissed once it is genuinely in the way', async (
   equal(harness.runtime.dismissBootPage(), false, 'a second attempt is a no-op')
 })
 
-await test('every value the skin reads is one the skin or the design system declares', async () => {
-  const shipped = await shippedDesignTokens()
-  const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
-  const css = harness.allCss()
-
-  // A `var(--…)` with no declaration anywhere is invisible in a stylesheet, in
-  // review, and in a screenshot — the rule just computes to nothing. This is
-  // exactly the silent failure a hand-written skin is prone to, so it is checked
-  // against the installed design system, not just against this package.
-  const declaredHere = declaredTokens(css)
-  const referenced = new Set(
-    [...String(css).matchAll(/var\(\s*(--[a-z0-9][a-z0-9-]*)/gi)].map((match) => match[1]),
-  )
-  // The design system declares its tokens inside component stylesheets that this
-  // test never loads (the theme plugin injects them at runtime), so a shipped
-  // token counts as declared when the installed client declares it anywhere.
-  const known = (token) => declaredHere.has(token) || shipped.has(token)
-  // A fallback in `var(--x, …)` is fine for a token the client only declares inside
-  // a theme layer; an unknown private token never is.
-  const missing = [...referenced].filter((token) => !known(token)).sort()
-  equal(missing, [], 'no dangling custom-property reference')
-
-  // The skin's private vocabulary must not colonise a shipped namespace.
-  const privateTokens = [...declaredHere].filter((token) => token.startsWith('--lg-'))
-  truthy(privateTokens.length >= 15, `the skin declares its own vocabulary (${privateTokens.length} tokens)`)
-  const foreign = [...declaredHere].filter(
-    (token) => !token.startsWith('--lg-') && !token.startsWith('--dsw-') && !token.startsWith('--dsh-'),
-  )
-  equal(foreign, [], 'every declared token is namespaced `--lg-` or belongs to the client')
-})
-
-await test('the palette only re-binds tokens the shipped client actually declares', async () => {
-  const declared = await shippedDesignTokens()
-  const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
-
-  const palette = harness.dom.styles().find((style) => style.textContent.includes('--dsw-alias-bg-base:'))
-  truthy(
-    palette !== undefined,
-    `the palette sheet is present (sheets: ${harness.dom.styles().map((s) => `${s.id || '?'}:${s.textContent.length}`).join(' ')})`,
-  )
-  const bound = declaredTokens(palette.textContent)
-  truthy(
-    bound.size >= 20,
-    `the palette re-binds a meaningful set (${bound.size}); head=${JSON.stringify(palette.textContent.slice(0, 200))}`,
-  )
-
-  const unknown = [...bound].filter((token) => !declared.has(token)).sort()
-  equal(unknown, [], 'no token is invented: every re-bound token exists in the shipped design system')
-
-  // The two tokens this skin must never touch, because they carry text colour and
-  // the AA pairs the design system validated.
-  excludes(palette.textContent, '--dsw-alias-label-primary')
-  excludes(palette.textContent, '--dsw-alias-label-secondary')
-})
-
-await test('prefers-contrast: more raises the fills and the hairlines, and keeps the palette', async () => {
-  const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
-  const css = harness.allCss()
-
-  /*
-   * Both sheets must answer the query, and that count is the assertion rather than a bare
-   * `contains`: `background-image: none` and `backdrop-filter: none` already appear in the
-   * reduced-transparency and forced-colors branches, so asserting on them would pass whether or not
-   * this branch exists at all.
-   */
-  equal(
-    (css.match(/@media \(prefers-contrast: more\)/g) ?? []).length,
-    2,
-    'the palette sheet and the material sheet both answer it',
-  )
-  // Values unique to this branch: opaque fills are the lever, because the label tokens are fixed.
-  contains(css, '--dsw-alias-bg-layer-3: #fff')
-  contains(css, '--dsw-alias-bg-layer-3: #23262f')
-  // Opacity alone would leave two same-coloured opaque surfaces with no edge between them, which is
-  // the opposite of what was asked for.
-  contains(css, '--dsw-alias-border-l1: rgb(15 23 42 / 34%)')
-  contains(css, '--dsw-alias-border-l1: rgb(255 255 255 / 38%)')
-
-  const palette = harness.dom.styles().find((style) => style.textContent.includes('--dsw-alias-bg-base:'))
-  truthy(palette !== undefined, 'the palette sheet is present')
-  excludes(palette.textContent, '--dsw-alias-label-primary')
-  excludes(palette.textContent, '--dsw-alias-label-secondary')
-})
-
-await test('every translucent surface is taken opaque by the modes that remove translucency', async () => {
-  /*
-   * THE STRUCTURAL GUARD, and the reason it exists is the bug it was written after.
-   *
-   * Two branches — no `backdrop-filter` support, and an OS request for less transparency — raised
-   * four fills to opaque and stopped there: `--dsw-alias-bg-layer-3` (the fill ten packages use for
-   * menus and dialogs via `--dsw-specific-menu`), `--dsw-alias-bg-overlay`, and both
-   * `--dsw-alias-bg-module-platform` (a panel twelve packages put text on) and `--dsw-alias-tooltip-bg`
-   * were left translucent, so the reader who had asked for less transparency kept seeing it. A third
-   * branch, `prefers-contrast: more`, had the floating tier but not the module platform.
-   *
-   * The omission was not detectable before this test: `@supports not` asserted only that `bg-base`
-   * became opaque, `prefers-reduced-transparency` had no assertion at all, and the browser suite
-   * emulated neither query. A hand-written list of tokens in a test would have had the same hole as
-   * the stylesheet did. So the expected set is COMPUTED from the skin's own palette — every token the
-   * skin declares with an alpha — and the only hand-written parts are the two lists below, each entry
-   * carrying its reason.
-   *
-   * The first run of this test is expected to fail, and it is kept in the changelog as the evidence
-   * that it bites.
-   */
-  const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
-  const css = harness.allCss()
-
-  const LIGHT = 'body[data-ui-project-liquid-glass="on"]{'
-  const DARK = 'body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]{'
-  /** Every rule body in `text` whose selector is exactly `selector`, in source order. */
-  const rulesWith = (text, selector) => {
-    const bodies = []
-    let from = 0
-    for (;;) {
-      const at = text.indexOf(selector, from)
-      if (at === -1) return bodies
-      const end = text.indexOf('}', at)
-      if (end === -1) return bodies
-      bodies.push(text.slice(at + selector.length, end))
-      from = end
-    }
-  }
-  /** @param {string} body */
-  const parseDeclarations = (body) => {
-    /** @type {Record<string, string>} */
-    const found = {}
-    for (const match of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+)/gi)) found[match[1]] = match[2].trim()
-    return found
-  }
-  /**
-   * The declarations of the FIRST rule with this selector.
-   *
-   * For the base palette, and only for it: the base block is the first one in each sheet, while the
-   * branch blocks that follow declare the overrides this test is about. Reading all of them here
-   * would let an override mask the translucency it is supposed to fix.
-   */
-  const firstDeclarations = (text, selector) => parseDeclarations(rulesWith(text, selector)[0] ?? '')
-  /**
-   * The declarations of EVERY rule with this selector.
-   *
-   * For a branch block, and the distinction is not academic: a block carries the gradient
-   * suppression for `body, body[data-ds-dark-theme]` and then a token rule for the same selector, so
-   * reading only the first one asked the wrong rule the right question — the guard reported two
-   * holes that were already filled.
-   */
-  const allDeclarations = (text, selector) => {
-    /** @type {Record<string, string>} */
-    const merged = {}
-    for (const body of rulesWith(text, selector)) Object.assign(merged, parseDeclarations(body))
-    return merged
-  }
-
-  /**
-   * The alpha a declaration carries, or null when the value is not a colour this test can read.
-   *
-   * `null` is deliberately not `1`: an unreadable value in a branch is a failure, not a pass, and an
-   * unreadable value in the base palette is caught by the surface-family check below.
-   */
-  const alphaOf = (value) => {
-    if (value === undefined) return null
-    const text = String(value).trim()
-    const hex8 = /^#([0-9a-f]{8})$/i.exec(text)
-    if (hex8 !== null) return parseInt(hex8[1].slice(6), 16) / 255
-    if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(text)) return 1
-    const percent = /^rgba?\([^)]*\/\s*([\d.]+)%\s*\)$/i.exec(text)
-    if (percent !== null) return Number(percent[1]) / 100
-    const fraction = /^rgba?\([^)]*\/\s*([\d.]+)\s*\)$/i.exec(text)
-    if (fraction !== null) return Number(fraction[1])
-    if (/^rgba?\(/i.test(text)) return 1
-    return null
-  }
-
-  /*
-   * THE TWO LISTS. A SURFACE is something the reader sees content *through*; its alpha is a property
-   * of the material and removing it is what "less transparency" means. A TINT's alpha IS its colour —
-   * `rgb(15 23 42 / 6%)` over a white panel is a light grey — so taking it opaque would mean inventing
-   * a colour, which is the one thing this project does not do with the shipped palette.
-   */
-  const SURFACES = [
-    '--dsw-alias-bg-base', // the window itself
-    '--dsw-alias-bg-layer-1',
-    '--dsw-alias-bg-layer-2',
-    '--dsw-alias-bg-layer-3', // menus and dialogs, via --dsw-specific-menu (10 packages)
-    '--dsw-alias-bg-overlay',
-    '--dsw-alias-bg-module-platform', // panels 12 packages put text on
-    '--dsw-specific-sidebar-fill',
-    '--dsw-alias-tooltip-bg',
-    '--lg-glass-bg', // the skin's own material fill, read by .lg-glass and by the composer
-  ]
-  const TINTS = [
-    ['--dsw-alias-bg-skeleton', 'a placeholder shimmer: the alpha is the colour'],
-    ['--dsw-alias-markdown-code-block', 'a code tint painted on a surface'],
-    ['--dsw-alias-markdown-code-block-banner', 'a code tint painted on a surface'],
-    ['--dsw-alias-markdown-inline-code', 'a code tint painted on a surface'],
-    ['--dsw-alias-interactive-bg-hover', 'a hover tint: the alpha is the state'],
-    ['--dsw-alias-interactive-bg-active', 'an active tint: the alpha is the state'],
-    ['--dsw-alias-button-ghost-active-fill', 'an active tint: the alpha is the state'],
-    [
-      '--dsw-alias-button-tool-bar-fill',
-      'a control fill whose alpha encodes the state — 50% at rest, 60% on hover, same grey',
-    ],
-    ['--dsw-alias-button-tool-bar-hover', 'the hover half of that pair; opaque would erase the difference'],
-  ]
-  // A hairline is a line, not a surface. `prefers-contrast: more` answers it by making it heavier,
-  // which is the right treatment for a line and impossible for a fill.
-  const LINES = [
-    '--dsw-alias-border-l1',
-    '--dsw-alias-border-l2',
-    '--dsw-alias-border-l3',
-    '--lg-glass-border',
-    '--lg-glass-border-light',
-    '--lg-glass-border-dark',
-  ]
-  /*
-   * The theme pairs behind an alias, exempt because the alias is what the branches override.
-   *
-   * `--lg-glass-bg` is `var(--lg-glass-bg-light)` or `var(--lg-glass-bg-dark)` depending on the
-   * theme, and `.lg-glass` and the composer rule read the ALIAS. Taking the alias opaque in a branch
-   * is therefore sufficient, and re-declaring the pair as well would be a second place to keep in
-   * step — which is the shape of mistake this whole guard exists for.
-   */
-  const ALIASES = [
-    ['--lg-glass-bg-light', 'the light half of the pair behind --lg-glass-bg, which the branches override'],
-    ['--lg-glass-bg-dark', 'the dark half of the same pair'],
-  ]
-
-  // The base palette, from every sheet: the first light and dark blocks are the base ones, and the
-  // branch blocks that follow them are the overrides this test is about.
-  /** @type {Record<string, Record<string, string>>} */
-  const base = { light: {}, dark: {} }
-  for (const style of harness.dom.styles()) {
-    Object.assign(base.light, firstDeclarations(style.textContent, LIGHT))
-    Object.assign(base.dark, firstDeclarations(style.textContent, DARK))
-  }
-  truthy(Object.keys(base.light).length > 10, `the base palette was read (${Object.keys(base.light).length} tokens)`)
-
-  const translucent = Object.keys({ ...base.light, ...base.dark }).filter(
-    (token) => (alphaOf(base.light[token]) ?? 1) < 1 || (alphaOf(base.dark[token]) ?? 1) < 1,
-  )
-  truthy(translucent.length >= 10, `the palette declares translucent fills (${translucent.length})`)
-
-  const unclassified = translucent.filter(
-    (token) =>
-      !SURFACES.includes(token) &&
-      !LINES.includes(token) &&
-      !TINTS.some(([name]) => name === token) &&
-      !ALIASES.some(([name]) => name === token),
-  )
-  equal(
-    unclassified,
-    [],
-    'every translucent declaration is either a surface or an exempt entry with a reason — a new one forces a decision',
-  )
-
-  /*
-   * An unreadable value inside a surface family must not escape both lists by parsing as "not a
-   * colour" — `color-mix()` or a bare keyword would do exactly that. An ALIAS is the one legitimate
-   * unreadable value: `--lg-glass-bg: var(--lg-glass-bg-dark)` carries no alpha of its own, and the
-   * token it points at is declared and therefore classified on its own account. The dangling-reference
-   * test elsewhere in this suite is what catches an alias pointing at nothing.
-   */
-  const surfaceFamily = /^--dsw-alias-bg-|^--dsw-specific-|^--lg-glass-bg$/
-  for (const [theme, values] of Object.entries(base)) {
-    for (const [token, value] of Object.entries(values)) {
-      if (!surfaceFamily.test(token)) continue
-      if (TINTS.some(([name]) => name === token)) continue
-      if (/^var\(/i.test(value.trim())) continue
-      truthy(alphaOf(value) !== null, `${theme}: ${token} carries a readable alpha (${value})`)
-    }
-  }
-
-  /** Every brace-balanced block under a conditional prelude, across all sheets. */
-  const blocksFor = (prelude) => {
-    const blocks = []
-    let from = 0
-    for (;;) {
-      const start = css.indexOf(prelude, from)
-      if (start === -1) return blocks
-      let depth = 0
-      let end = css.length
-      for (let index = start; index < css.length; index += 1) {
-        if (css[index] === '{') depth += 1
-        else if (css[index] === '}') {
-          depth -= 1
-          if (depth === 0) {
-            end = index + 1
-            break
-          }
-        }
-      }
-      blocks.push(css.slice(start, end))
-      from = end
-    }
-  }
-
-  const BRANCHES = [
-    '@supports not ((backdrop-filter: blur(1px))',
-    '@media (prefers-reduced-transparency: reduce)',
-    '@media (forced-colors: active)',
-    '@media (prefers-contrast: more)',
-  ]
-  /** @type {Record<string, {light: Record<string, string>, dark: Record<string, string>}>} */
-  const covered = {}
-  for (const branch of BRANCHES) {
-    const blocks = blocksFor(branch)
-    truthy(blocks.length > 0, `the ${branch} branch exists`)
-    covered[branch] = { light: {}, dark: {} }
-    for (const block of blocks) {
-      Object.assign(covered[branch].light, allDeclarations(block, LIGHT))
-      Object.assign(covered[branch].dark, allDeclarations(block, DARK))
-    }
-  }
-
-  /*
-   * The check itself, COLLECTED rather than asserted one token at a time.
-   *
-   * `equal` throws, so a per-token assertion would report the first hole and stop — and the first
-   * run of this guard is kept as evidence precisely because it names every hole at once. The list
-   * below is what that run printed.
-   */
-  /** @type {string[]} */
-  const holes = []
-  for (const branch of BRANCHES) {
-    for (const token of SURFACES) {
-      /*
-       * Both themes, because the two are declared in different rules and a branch can cover one
-       * without the other: the composer's own suppression was correct in light and silently dead in
-       * dark, which a single-theme check would have called green.
-       */
-      const light = alphaOf(covered[branch].light[token])
-      const dark = alphaOf(covered[branch].dark[token])
-      if (light === 1 && dark === 1) continue
-      const show = (alpha) => (alpha === null ? 'nothing' : alpha)
-      holes.push(
-        `${branch} → ${token} (light: ${show(light)}, dark: ${show(dark)}; ` +
-          `declared light=${covered[branch].light[token] ?? '—'} dark=${covered[branch].dark[token] ?? '—'})`,
-      )
-    }
-  }
-  equal(
-    holes.length,
-    0,
-    `${holes.length} surface(s) are still translucent under a mode that removes transparency:\n  ` +
-      holes.join('\n  '),
-  )
-
-  /*
-   * And the pair-identity check. `@supports not` and `prefers-reduced-transparency` mean the same
-   * thing to this skin and their bodies were byte-identical until this round, which is how the same
-   * four-token omission came to exist twice. Which tokens they cover must not diverge.
-   */
-  const tokenSet = (text) => Object.keys(text).sort().join(',')
-  equal(
-    tokenSet(covered['@supports not ((backdrop-filter: blur(1px))'].light),
-    tokenSet(covered['@media (prefers-reduced-transparency: reduce)'].light),
-    'the two no-transparency branches cover the same light tokens',
-  )
-  equal(
-    tokenSet(covered['@supports not ((backdrop-filter: blur(1px))'].dark),
-    tokenSet(covered['@media (prefers-reduced-transparency: reduce)'].dark),
-    'and the same dark ones',
-  )
-
-  /*
-   * Named values, so a wrong number fails with the number rather than with a list of holes. These
-   * are the two additions whose values are not simply re-used from a block that already existed:
-   * `module-platform` shares layer-2's translucency, and `tooltip-bg` is its own colour with the
-   * alpha removed. Both are derived rather than invented, and both are pinned here.
-   */
-  contains(css, '--dsw-alias-bg-module-platform: #262a35', 'the module platform takes layer-2’s dark form')
-  contains(css, '--dsw-alias-tooltip-bg: #17171a', 'the light tooltip is its own colour, alpha removed')
-  contains(css, '--dsw-alias-tooltip-bg: #0c0e14', 'and so is the dark one')
-})
-
-await test('the palette follows the shipped dark-theme signal, never a media query', async () => {
-  const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
-  const palette = harness.dom.styles().find((style) => style.textContent.includes('--dsw-alias-bg-base:'))
-  const css = palette.textContent
-
-  // Light values are declared on the marker element itself, and dark ones on the
-  // SAME element under the shipped `body[data-ds-dark-theme]` signal — the attribute
-  // is appended to the marker, not made a descendant of it, because a body cannot
-  // contain a body. How the shipped palette switches is how the skin switches, so a
-  // user's explicit "dark" is honoured even against a light OS.
-  contains(css, 'body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]')
-  const darkAt = css.indexOf('body[data-ui-project-liquid-glass="on"][data-ds-dark-theme]')
-  const darkBlock = css.slice(darkAt, css.indexOf('}', darkAt))
-  contains(darkBlock, '--dsw-alias-bg-layer-1')
-  excludes(darkBlock, '--dsw-alias-bg-layer-1: rgb(255 255 255')
-  // No descendant form may survive: that selector matches nothing at all.
-  excludes(css, 'body[data-ui-project-liquid-glass="on"] body[data-ds-dark-theme]')
-
-  // A base-layer `prefers-color-scheme` block would fight the app's own setting.
-  const beforeDark = css.slice(0, darkAt)
-  excludes(beforeDark, 'prefers-color-scheme')
-})
-
-/*
- * The first paint is served by the HOST half — before the client bundle is even fetched — so it
- * is a second copy of the skin's body-level declarations. `scripts/build.mjs` proves that copy is
- * a subset of what the skin emits, rule by rule. These assertions cover the other two ways it can
- * fail: being too thin to be worth inlining, and not being inert when the skin is off.
- *
- * The inertness is what lets the host push the stylesheet unconditionally, with no branch on the
- * enabled state: every selector carries the project marker, so with the skin off the whole sheet
- * matches nothing. A single unscoped rule here would restyle the default UI for every user.
- */
-await test('the first-paint stylesheet carries the skin, and only under its marker', async () => {
-  const { BOOT_CSS } = await import(pathToFileURL(join(packageRoot, 'lib', 'boot-css.js')).href)
-
-  // The thirteen tokens the specification names, spelled the way it spells them.
-  for (const token of [
-    '--lg-accent',
-    '--lg-accent-dark',
-    '--lg-bg-light',
-    '--lg-bg-dark',
-    '--lg-glass-bg-light',
-    '--lg-glass-bg-dark',
-    '--lg-glass-border-light',
-    '--lg-glass-border-dark',
-    '--lg-glass-blur',
-    '--lg-glass-saturate',
-    '--lg-glass-radius',
-    '--lg-glass-shadow',
-    '--lg-glass-inner-highlight',
-  ]) {
-    contains(BOOT_CSS, token)
-  }
-
-  // The frame has to be see-through on the first frame too, in both themes, or the page paints
-  // with the default opaque background and then flips.
-  contains(BOOT_CSS, '--dsw-alias-bg-base: rgb(255 255 255 / 0%)')
-  contains(BOOT_CSS, '--dsw-alias-bg-base: rgb(20 22 28 / 0%)')
-  // The ambient gradient, which is the only thing the frost has to refract.
-  contains(BOOT_CSS, 'radial-gradient')
-  contains(BOOT_CSS, 'background-attachment')
-  /*
-   * And the contrast branch travels with it. This is the assertion the build's completeness check
-   * makes true in general; stating it here says why it matters for the first frame — a reader who
-   * asked for more contrast must not get a translucent first paint that corrects itself a moment
-   * later.
-   */
-  contains(BOOT_CSS, '@media (prefers-contrast: more)')
-
-  const selectors = [...BOOT_CSS.matchAll(/([^{}]+)\{/g)]
-    .map((match) => match[1].trim())
-    .filter((selector) => selector !== '' && !selector.startsWith('@'))
-  truthy(selectors.length > 0, 'the sheet has selectors to check')
-  const unscoped = selectors.filter((selector) => !selector.startsWith('body[data-ui-project-liquid-glass="on"]'))
-  equal(unscoped.length, 0, `every first-paint selector carries the marker (unscoped: ${unscoped.join(' | ')})`)
-
-  // It is inlined into an element verbatim, so it must not be able to close that element early.
-  excludes(BOOT_CSS, '<')
-
-  /*
-   * The physical boundary, pinned so it stays a stated limit rather than becoming a surprise.
-   *
-   * The frost hangs off `data-ui-skin-column`, which the client runtime stamps once the
-   * application's DOM exists — so NO first frame can have it, and a first-paint sheet that
-   * carried the frost rule would only be dead weight pretending to be blur. What a first frame
-   * can have is here: the tokens, the re-bound alias colours, the background and its gradient.
-   */
-  excludes(BOOT_CSS, '::before')
-  excludes(BOOT_CSS, 'data-ui-skin-column')
-
-  /*
-   * THE SUPPRESSION RULES, spelled out — and this assertion exists because its absence cost a real
-   * bug. Each of these three branches removes the ambient gradient, and each has to name the themed
-   * rule too: the gradient is painted by `body[data-ds-dark-theme]`, one attribute more specific
-   * than a bare `body`, and a media query adds no specificity of its own. Written as a bare `body`
-   * the suppression won in light mode and lost in dark mode, silently.
-   *
-   * The check above — every selector carries the marker — could not see it, and neither could the
-   * build's subset check: a rule that is MISSING fails neither. Only the build's completeness
-   * direction would have, and it was blind in the same way, because its predicate skipped a
-   * comma-separated selector on sight. So this states the shape directly, for all three branches.
-   */
-  const flat = BOOT_CSS.replace(/\s+/g, ' ')
-  const bothSelectors = `${LIQUID_GLASS_SELECTOR}, ${LIQUID_GLASS_SELECTOR}[data-ds-dark-theme]{ background-image: none; }`
-  /**
-   * Every conditional block for one query, brace-balanced.
-   *
-   * ALL of them, because a query can appear more than once in the sheet: `prefers-contrast: more`
-   * carries the token rebinds in one block and the gradient suppression in another. Taking the first
-   * match asks the wrong block the right question, which is how this assertion failed against a
-   * correct sheet the first time it ran.
-   */
-  const branchBlocks = (/** @type {string} */ branch) => {
-    const blocks = []
-    let from = 0
-    for (;;) {
-      const start = flat.indexOf(`@media (${branch}){`, from)
-      if (start === -1) return blocks
-      let depth = 0
-      let end = flat.length
-      for (let index = start; index < flat.length; index += 1) {
-        if (flat[index] === '{') depth += 1
-        else if (flat[index] === '}') {
-          depth -= 1
-          if (depth === 0) {
-            end = index + 1
-            break
-          }
-        }
-      }
-      blocks.push(flat.slice(start, end))
-      from = end
-    }
-  }
-  for (const branch of ['prefers-contrast: more', 'forced-colors: active', 'prefers-reduced-transparency: reduce']) {
-    /*
-     * Searched WITHIN the branch, not across the sheet. A sheet-wide `contains` is satisfied by any
-     * one of the three, so sabotaging a single branch left the other two answering for it and the
-     * check passed — found by breaking one branch on purpose and watching nothing happen.
-     */
-    const blocks = branchBlocks(branch)
-    truthy(blocks.length > 0, `the ${branch} branch reached the first-paint sheet`)
-    truthy(
-      blocks.some((block) => block.includes(bothSelectors)),
-      `and its gradient suppression outranks the themed rule (${branch}) — in ${
-        blocks.length
-      } block(s): ${blocks.map((block) => block.slice(0, 120)).join(' | ')}`,
-    )
-  }
-  equal(
-    [...BOOT_CSS.matchAll(/background-image: none/g)].length,
-    3,
-    'exactly the three suppression branches remove the gradient',
-  )
-})
-
-/*
- * The predicate that decides what the first-paint sheet contains, held to CSS's own reading of a
- * selector rather than to a convenient approximation.
- *
- * Every case below is a bug that was actually present, not a hypothetical:
- *
- *   - `body, body[data-ds-dark-theme]` — a comma list, skipped on sight by both copies of the
- *     predicate, which is how three suppression rules left the sheet with nothing failing.
- *   - `body[marker] [role='dialog']` — a descendant, accepted as a body-level rule because the
- *     remainder was trimmed before its first character was inspected, so the space that IS the
- *     combinator had been removed.
- *   - `:where(body[marker] [role='dialog'], …)` — one selector containing commas, which a naive
- *     split tears into fragments that classify as body-level and are not.
- *   - `body[marker], .lg-glass` — genuinely mixed, and reported as such instead of being guessed at.
- */
 await test('the first-paint predicate reads selectors the way CSS does', async () => {
   const { classifyPrelude } = await import(
     pathToFileURL(join(packageRoot, 'scripts', 'boot-css-rules.mjs')).href
@@ -5299,6 +4269,23 @@ await test('the snapshot mode writes only inside the version store, and verifies
   ]) {
     truthy(writing.includes(needle), `and ${what}`)
   }
+
+  /*
+   * THE READ-ONLY HALF NAMES THE SNAPSHOTS NOBODY CAN ATTRIBUTE.
+   *
+   * The version store keys its directories by a package name spelled for a filesystem, and the page reads
+   * each snapshot's own `manifest.package` rather than decoding that spelling back. A directory whose
+   * snapshots record no package therefore belongs to no card — so the listing warns about it and the
+   * summary counts it, which is the CLI half of the outlet `check-installed.mjs` provides for a scan.
+   */
+  truthy(
+    listing.includes('records no package, so Settings > UI plugins cannot show it against a card'),
+    'the listing warns about a snapshot whose manifest records no package',
+  )
+  truthy(
+    listing.includes('$unattributed -gt 0'),
+    'and counts those in the summary, rather than leaving a warning among the rows to be missed',
+  )
 
   /*
    * The order, which is the safety property: the dry run exits first, the copy is read back second, and

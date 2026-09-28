@@ -1636,6 +1636,10 @@ if ($ListVersions) {
         Write-Skip "no version snapshots yet under $PackageVersionsDir"
         exit 0
     }
+    # Snapshots whose manifest records no package. Counted here because the PAGE cannot attribute such a
+    # directory to a card -- it reads `manifest.package` rather than decoding the directory's `@scope+name`
+    # spelling -- so the fact has to surface somewhere a person looks, and this is the place they look.
+    $unattributed = 0
     foreach ($entry in $entries) {
         if ($entry.manifest -eq $null) {
             Write-Warn "$($entry.name): no readable manifest.json, so only its name is shown"
@@ -1645,6 +1649,10 @@ if ($ListVersions) {
             # Reported, never fatal: a manifest from a future format should still be listed with whatever
             # fields this script can read, and the reader decides what to do about it.
             Write-Warn "$($entry.name): schemaVersion $($entry.schemaVersion) is not one this script knows; showing the fields it can read"
+        }
+        if ([string]::IsNullOrWhiteSpace([string](Get-JsonProperty $entry.manifest 'package' ''))) {
+            $unattributed += 1
+            Write-Warn "$($entry.name): its manifest records no package, so Settings > UI plugins cannot show it against a card"
         }
         $payload = Get-JsonProperty $entry.manifest 'payload' $null
         Write-Note ("{0}   v{1}   {2}   {3} files   {4} bytes   sha {5}" -f $entry.name, $entry.version, $entry.createdAt, (Get-JsonProperty $payload 'files' 0), (Get-JsonProperty $payload 'bytes' 0), (Get-ShortSha ([string](Get-JsonProperty $payload 'sha256' ''))))
@@ -1666,6 +1674,9 @@ if ($ListVersions) {
 
     Write-Head 'Summary'
     Write-Note "$($entries.Count - $bad) of $($entries.Count) snapshot(s) verify"
+    if ($unattributed -gt 0) {
+        Write-Note "$unattributed snapshot(s) record no package (named above): -Rollback -To <name> can still reach them"
+    }
     Write-Note '-Rollback refuses a snapshot that does not (7c)'
     exit $(if ($bad -eq 0) { 0 } else { 1 })
 }

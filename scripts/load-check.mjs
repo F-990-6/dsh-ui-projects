@@ -33,7 +33,9 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import vm from 'node:vm'
 
+import { checkUiProjectDeclaration } from '../src/host/conformance.js'
 import { transform } from './bundle-client.mjs'
 import { createFakeDom, setSandbox } from './fake-dom.mjs'
 
@@ -90,6 +92,35 @@ function loadClientModule(path) {
   const record = { exports: {} }
   evaluate(record, record.exports)
   return record.exports
+}
+
+/**
+ * Materialize a BUILT client bundle the way the shell does: register its factory, then build the entry
+ * module with a module table that throws on a miss.
+ *
+ * The difference from `loadClientModule` above is the whole point of the section that uses it: this loads
+ * `lib/client.js` — the artefact a profile actually serves — rather than a source file put through the
+ * same transform by hand. A miss here would mean the package had grown a dependency on the shell's module
+ * table, which a UI project package must not have: it reaches the framework through a service.
+ * @param {string} bundlePath
+ * @returns {{ plugin: any, id: string, misses: string[] }}
+ */
+function materializeBundle(bundlePath) {
+  /** @type {any} */
+  let registered
+  const globals = {
+    window: { __ModuleLoader__: { load: (/** @type {any} */ r) => (registered = r) } },
+    console,
+  }
+  globals.globalThis = globals
+  vm.runInContext(readFileSync(bundlePath, 'utf8'), vm.createContext(globals), { filename: bundlePath })
+  if (registered === undefined) throw new Error(`${bundlePath} did not register a ModuleLoader factory`)
+  const misses = []
+  const require = (/** @type {string} */ id) => {
+    misses.push(id)
+    throw new Error(`module-table miss: this package must not need "${id}"`)
+  }
+  return { plugin: registered.factory(require), id: registered.id, misses }
 }
 
 /** Let Cordis drive a plugin to its settled state — activation is asynchronous by design. */
@@ -357,6 +388,106 @@ equal(
   'ok',
   'a registered, enabled project whose host announced it reads as ok',
 )
+
+/*
+ * ── THE SKIN PACKAGE, LOADED FOR REAL ─────────────────────────────────────────
+ *
+ * Everything above this line mounts a package the way the SKELETON does it: a hand-written client half with
+ * a generated manifest. That proves the contract, and it says nothing about the package that actually
+ * ships a skin — so this section mounts `dsh-plugin-liquid-glass`'s REAL built bundle through the same real
+ * Cordis, and asserts what a registration has to get right: who owns the project, what version it carries,
+ * and that unloading the package takes it away again.
+ *
+ * It is the closest thing to production that runs without a browser: the same Cordis the deployment loads,
+ * the same service implementation, the same bundle format.
+ */
+{
+  const skinRoot = resolve(frameworkRoot, '..', 'dsh-plugin-liquid-glass')
+  const skinManifest = loadClientModule(join(skinRoot, 'src', 'client', 'manifest.generated.js'))
+  equal(skinManifest.package, '@xjl-resources/dsh-plugin-liquid-glass', 'the skin package’s generated manifest carries its scoped name')
+  equal(skinManifest.id, 'liquid-glass', 'and the project id its package declares — unchanged from the framework era')
+  equal(skinManifest.version, '1.0.0', 'and the version of the PACKAGE, which is what a checklist stamp records')
+
+  const skinBundle = materializeBundle(join(skinRoot, 'lib', 'client.js'))
+  equal(skinBundle.id, '@xjl-resources/dsh-plugin-liquid-glass', 'the built bundle registers under the scoped package name')
+  equal(skinBundle.misses.length, 0, 'and resolves entirely inside itself: a client half needs no module from the framework')
+
+  const before = service.list().length
+  const skinPackageFiber = clientRoot.plugin(skinBundle.plugin)
+  await skinPackageFiber.await()
+
+  const registered = service.list().find((project) => project.id === 'liquid-glass')
+  equal(service.list().length, before + 1, 'mounting the package adds exactly one project')
+  if (registered !== undefined) ok('the real service lists the skin’s project')
+  else fail('the skin package registered nothing through the service')
+  equal(registered?.source?.package, '@xjl-resources/dsh-plugin-liquid-glass', 'stamped with the scoped package that owns it')
+  equal(registered?.version, skinManifest.version, 'and carrying the PACKAGE version, so a stamp can never disagree with the install')
+  if (registry.get('liquid-glass') !== undefined) ok('the real registry holds the project the service reported')
+  else fail('the service reported a registration the real registry never received')
+
+  /*
+   * A CROSS-PACKAGE ID CLASH IS REFUSED. Two packages cannot own one project id: the second registration
+   * throws rather than taking over the first, and the message names both packages — because the alternative
+   * is a project whose owner depends on load order, which no card could explain.
+   *
+   * ON AN ISOLATED ROOT, and that is not tidiness: a refusal is RECORDED by the service it happened on, and
+   * the section further down asserts the exact number of refusals the shared service holds. Provoking one
+   * here would have changed that count and turned a passing check into a puzzling failure — which is
+   * exactly what the first version of this section did.
+   */
+  const clashRoot = new Context()
+  const clashService = createUiProjectsService({
+    registry: new UiProjectRegistry(),
+    enabledIds: () => [],
+    hostRowsAtBoot: Object.freeze([]),
+    bootFragmentPresent: () => false,
+    bodyMarkerPresent: () => false,
+    notify: () => {},
+  })
+  clashRoot.provide('uiProjects', clashService)
+  const first = clashRoot.plugin({
+    name: 'ui-project-first',
+    inject: ['uiProjects'],
+    apply(ctx) {
+      ctx.uiProjects.register(skinManifest, { apply() {}, cleanup() {} })
+    },
+  })
+  await first.await()
+  let clash
+  try {
+    const intruder = clashRoot.plugin({
+      name: 'ui-project-intruder',
+      inject: ['uiProjects'],
+      apply(ctx) {
+        ctx.uiProjects.register({ ...skinManifest, package: 'some-other-package' }, { apply() {}, cleanup() {} })
+      },
+    })
+    await intruder.await()
+  } catch (error) {
+    clash = error
+  }
+  if (clash !== undefined && String(clash.message ?? clash).includes('some-other-package')) {
+    ok('a second package claiming the same project id is refused, by name')
+  } else {
+    fail(`a cross-package id clash was not refused: ${String(clash?.message ?? 'no error')}`)
+  }
+  equal(clashService.list().length, 1, 'and the first package keeps the project it registered')
+
+  // Unloading the package withdraws its project, and touches nothing else.
+  await skinPackageFiber.dispose()
+  for (let attempt = 0; attempt < 20 && service.list().some((project) => project.id === 'liquid-glass'); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  equal(service.list().some((project) => project.id === 'liquid-glass'), false, 'unloading the package withdraws its project')
+  equal(service.list().length, before, 'and leaves the service exactly as it found it')
+
+  // And the package's declaration passes the conformance checker the CLI uses, over the real package.json.
+  const declaration = checkUiProjectDeclaration({
+    ...JSON.parse(readFileSync(join(skinRoot, 'package.json'), 'utf8')),
+    patchFileExists: existsSync(join(skinRoot, 'cordis.patch.yml')),
+  })
+  equal(declaration.length, 0, 'the skin package’s own declaration passes the conformance checker')
+}
 
 /*
  * WHAT A PACKAGE OWNS, AND WHAT THE USER OWNS — asserted together, because the interesting failure is

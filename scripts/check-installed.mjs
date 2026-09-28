@@ -203,6 +203,34 @@ for (const scan of scans) {
     process.stdout.write(`  ${pad(entry.name, 34)}${pad(entry.version, 10)}project id: ${entry.projectId ?? '(invalid)'}\n`)
   }
 
+  /*
+   * VERSION DIRECTORIES NOBODY CAN ATTRIBUTE.
+   *
+   * The version store keys its directories by a package name spelled for a filesystem (`@scope+name`), and
+   * the page reads a snapshot's own `manifest.package` rather than decoding that spelling back. When a
+   * directory holds snapshots that record no package, the page cannot show them against any card — so the
+   * fact is REPORTED here instead of being silently dropped, because a store that is damaged or was made by
+   * hand is exactly what a person needs to hear about. `-ListVersions` names the same directories from the
+   * other side; this is the scan's view, and it is the one that says how many snapshots are inside.
+   *
+   * Printed only when there is something to say: a section that is empty on every healthy profile is a
+   * section nobody reads.
+   */
+  const unattributed = Array.isArray(scan.versions?.unattributed) ? scan.versions.unattributed : []
+  if (unattributed.length > 0) {
+    process.stdout.write(
+      `\nUNATTRIBUTED VERSION DIRECTORIES (${unattributed.length}) — snapshots exist, but none records which package it belongs to\n`,
+    )
+    for (const entry of unattributed) {
+      process.stdout.write(`  ${pad(entry.directory, 34)}${entry.snapshots} snapshot(s)\n`)
+    }
+    process.stdout.write(
+      '  The directory name is a spelling this project chose for a scoped package, so it is not decoded\n' +
+        '  back into a package name — that would be a claim the file on disk never made. `-ListVersions`\n' +
+        '  names them too; `-Rollback -To <name>` can still restore one by name.\n',
+    )
+  }
+
   if (scan.orphanedBindings.length > 0) {
     process.stdout.write(
       `\nORPHANED BINDINGS (${scan.orphanedBindings.length}) — declare a bundle, missing from dsh.profile.bundles\n` +

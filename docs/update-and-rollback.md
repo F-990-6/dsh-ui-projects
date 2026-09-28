@@ -99,6 +99,12 @@ could live outside the framework exactly where it is.
 reported as unattributed rather than guessed at — a name reconstructed from a directory name would be a
 claim the file on disk never made.
 
+**And "unattributed" has an outlet in both tools**, because a fact the page cannot render is a fact nobody
+sees: `node scripts/check-installed.mjs` prints an `UNATTRIBUTED VERSION DIRECTORIES` section — with how
+many snapshots each directory holds — and `install.ps1 -ListVersions` warns per snapshot and counts them in
+its summary. Both say why the directory name is not decoded back, and that `-Rollback -To <name>` can still
+reach such a snapshot by name. Neither prints anything when there is nothing to say.
+
 **One record per package**, and the framework keeps the name it has always had: its record is the baseline
 every other mode compares against, and renaming it would throw that away for the sake of symmetry nobody
 reads. A package whose record is missing is treated exactly as it always was — the modes that need a

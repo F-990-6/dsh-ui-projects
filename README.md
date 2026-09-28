@@ -1,8 +1,14 @@
 # dsh-ui-projects
 
-An extensible **UI project system** for the dsh Web GUI, plus the **Settings › UI**
-section that manages it. The first UI project it ships is **Liquid Glass**, a
-translucent skin in the iOS material tradition with the DeepSeek blue-violet accent.
+An extensible **UI project system** for the dsh Web GUI, plus the **Settings › UI** section that manages
+it. It is the framework: the registry, the runtime, the settings page, the persistence, the first-paint
+contract and the maintenance tooling. Projects — skins and enhancements — are separate packages, and
+`dsh-ui-project-skeleton` is the smallest complete example of one.
+
+> **Step 8 is in progress.** This package still contains Liquid Glass (`src/client/projects/liquid-glass/`)
+> and still registers it from its own client half, so that the split can be done in verifiable steps. The
+> target state is written down in `## UI project packages` below, and step 8c removes the built-in copy
+> once `@xjl-resources/dsh-plugin-liquid-glass` is installed and verified.
 
 Two properties define the design:
 
@@ -514,47 +520,101 @@ in a composition without the settings service.
 
 ---
 
-## Adding a UI project
+## UI project packages
 
-Three steps, none of which touches the settings page.
+A UI project **is a package**. This repository ships the framework only — the registry, the runtime, the
+settings page, the persistence, the first-paint contract, and the maintenance tooling. A look or an
+enhancement is a separate package that declares itself and registers with the framework at load time, and
+`dsh-ui-project-skeleton` is the smallest complete example of one.
 
-**1. Write the project.** Either a new module under `src/client/projects/<id>/`:
+Five declarations, and each is load-bearing:
+
+| In `package.json` | Why |
+| --- | --- |
+| `dsh.bundle.patch: ./cordis.patch.yml` | Without it the loader never admits the package: it reconciles `dsh.profile.bundles` against installed packages, and only a package declaring `dsh.bundle` joins the layer stack |
+| `dsh.client.platform: web` | This is what makes the client-modules node half serve the browser bundle at `/plugins/<package>/client.js` |
+| `dsh.compatibility.dsh` | The dsh version the package was written against |
+| `dsh.uiProject` | The manifest — see below. It is also what makes the package a *UI project* package rather than an ordinary plugin |
+| `cordis.patch.yml` | One host row, whose `name` is the package's own name, so two packages never collide |
+
+### The `dsh.uiProject` contract
+
+The manifest is the single source for everything about a project except its behaviour. `schemaVersion` and
+`pluginApiVersion` are the contract versions (this build reads schema `1`, plugin API `1`); `id` follows
+`^[a-z][a-z0-9-]{1,47}$`; `type` is `skin` or `enhancement`; `scope` is `global` or `component`;
+`supports` is any of `light`, `dark`, `mobile` in this build; `perfLevel` is `low`, `medium` or `high`;
+`testItems` is the manual checklist; `preview` and `previewLabel` are the card's thumbnail. The full table
+lives in `src/host/manifest-schema.js`, and it is enforced three times: `derive-manifest.mjs` refuses an
+unknown field at BUILD time, `conformance.js` refuses it when checking somebody else's package, and the
+client service validates at REGISTRATION time.
+
+**An unknown field is fatal, not ignored.** A package that declares a version we do not implement, or a
+field this build does not know, is a package whose author knows something we do not — and carrying on
+drops the field silently while the project registers with less than it declared.
+
+`scripts/derive-manifest.mjs --package <dir>` turns `package.json` into
+`src/client/manifest.generated.js`, and `--check` fails when that file is stale. The generated file carries
+the PACKAGE's name and version alongside the declared fields, which is what makes a registration traceable
+to the thing that owns it.
+
+### The two halves of a package
 
 ```js
-// src/client/projects/my-project/skin.js
-const { TYPE_ENHANCEMENT, FEATURE_LIGHT, FEATURE_DARK } = require('../../project-constants.js')
-const myCss = require('./my.css')
+// src/host/index.js — three statements, before any browser code
+const PROJECT_ID = 'my-project'
+export const inject = ['uiProjectsHost']
+export function apply(ctx) {
+  ctx.on('webserver/index-inject', (table) => {
+    table.push(...ctx.uiProjectsHost.bootRows(PROJECT_ID, BOOT_CSS))
+  })
+}
+```
+
+```js
+// src/client/index.js — an ordinary Cordis client plugin
+const manifest = require('./manifest.generated.js')
+const { createMyProject } = require('./projects/my-project/skin.js')
 
 module.exports = {
-  id: 'my-project',
-  name: 'My Project',
-  description: 'What it does, in one sentence.',
-  version: '1.0.0',
-  type: TYPE_ENHANCEMENT,
-  defaultEnabled: false,
-  scope: 'component',
-  supports: [FEATURE_LIGHT, FEATURE_DARK],
+  name: `ui-project-${manifest.id}`,
+  inject: ['uiProjects'],
   apply(ctx) {
-    ctx.insertCss(myCss)   // scoped to the project's marker automatically
+    ctx.uiProjects.register(manifest, createMyProject())
   },
 }
 ```
 
-**2. Register it** in `installBuiltInProjects` (`src/client/index.js`):
+`inject` is what makes load order irrelevant: Cordis parks the package until the framework's service
+exists, so neither composition order needs a retry. The registration's lifetime is bound to the calling
+plugin's fiber, so unloading the package withdraws its project.
 
-```js
-function installBuiltInProjects(target) {
-  target.register(require('./projects/liquid-glass/skin.js'))
-  target.register(require('./projects/my-project/skin.js'))
-}
+The definition carries BEHAVIOUR ONLY — `apply(ctx)` and `cleanup(ctx)`. `ctx.insertCss(css)` hands the
+runtime a stylesheet it will scope and remove; `ctx.markColumns()` asks for the frame's column seam;
+`ctx.fail(error)` reports a failure on the card. Everything else comes from the manifest.
+
+`scripts/unregister-profile.mjs --package <name>` removes a package from a profile reversibly, and
+`install.ps1 -Package <name>` maintains one (`-Snapshot`, `-Update`, `-Rollback -To <name>`, `-Uninstall`).
+A package may ship a thin `install.ps1` of its own that points the framework's script at its own directory,
+which is what makes the commands printed on a card work when run from that card's package.
+
+### Installing one
+
+```powershell
+dsh plugin --profile web add <path-to-package>   # declares the dependency and appends the bundle row
+# then restart dsh web
 ```
 
-**3. Add both files to `MODULE_ORDER`** in `scripts/build.mjs`, then `npm run build` and
-`npm test`. The build fails loudly if a module is present but not declared, so the list
-cannot silently drift.
+`dsh plugin` is the supported mechanism; nothing in this project edits the profile's YAML by hand.
 
-The project now appears in Settings › UI with its name, description, version, badges,
-preview, switch and reset button. Nothing else changes.
+### The first paint
+
+A package's host half pushes its own stylesheet into the served `<head>`, so the first frame is already
+skinned. That sheet is derived from the package's own CSS —
+`node tools/derive-boot-css.mjs --package <dir>` — and consists of the body-level rules only, authored
+already-scoped (`body[data-ui-project-<id>="on"]…`) because the host has no scoper to run. The tool and the
+package's build share one predicate (`scripts/boot-css-rules.mjs`), which is what keeps "boot.css says
+exactly what the skin says" true in both directions.
+
 
 ### Writing a project's CSS
 

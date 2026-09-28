@@ -358,6 +358,23 @@ equal(
 )
 equal(store.versions['never-installed'], undefined, 'a package with no directory is absent — which is not the same as having none recorded')
 
+/*
+ * THE OUTLET FOR A DIRECTORY NOBODY CAN ATTRIBUTE.
+ *
+ * The scan reports such a directory (asserted just above); this is the CLI's half of the promise that a
+ * person can SEE it. Asserted by reading the script, because the alternative is running it — a child
+ * process whose output would have to be captured — and because what could silently go wrong here is the
+ * WIRING (a section that is never printed), not the formatting.
+ */
+const cliSource = await readFile(join(packageRoot, 'scripts', 'check-installed.mjs'), 'utf8')
+check(cliSource.includes('scan.versions?.unattributed'), 'the listing reads the unattributed directories the scan reports')
+check(cliSource.includes('UNATTRIBUTED VERSION DIRECTORIES'), 'and prints a section of its own for them')
+check(/unattributed\.length > 0/.test(cliSource), 'only when there are any, so a healthy profile gains no section nobody reads')
+check(
+  cliSource.includes('not decoded') && cliSource.includes('never made'),
+  'and says why the directory name is not turned back into a package name',
+)
+
 process.stdout.write('\n== profile discovery ==\n')
 
 const fakeHome = await mkdtemp(join(root, 'dsh-home-'))

@@ -25,6 +25,126 @@ Verification vocabulary used below:
 
 ---
 
+## Round 46 — Step 8b: the framework gets a skin of its own, and the material moves out
+
+**Status: done, with the framework still shipping its own copy of Liquid Glass (8c removes it). `suite` 732
+assertions / 0 failing (939 → 732: thirteen material tests moved to the skin package, and two of them
+returned as framework-side rule checks), `load` 85 / 0 (70 → 85), `host` green, `conformance` 67 / 0 (63 →
+67), `skeleton` 13 / 0, `derive-boot-css --check` unchanged for the framework and green for the skin
+(13 blocks / 10484 bytes each — the two sheets are byte-identical), `browser --self-check` green. NO
+browser run: this round installs nothing, so the running page is unchanged. `install.ps1` was NOT executed
+in any mode, and nothing under `$DSH_HOME` was written.**
+
+### The fixture: a subject the framework owns
+
+The suite used Liquid Glass as its subject for thirty-one tests — the runtime, the registry, the service,
+the store, the panel, persistence, scoping, tiers. That made it unable to tell "the framework works" from
+"Liquid Glass works", and after 8c those tests would have had to reach across packages. They now use
+`test-skin`, a fixture the framework mounts through the same call an external package makes:
+`ctx.uiProjects.register(manifest, definition)`.
+
+The fixture's name says what it is, and one detail is deliberate: its PACKAGE is `test-skin-package`, not
+`dsh-ui-projects`. That is what **found a defect that had been shipping since 7d** — see below.
+
+**The harness had to learn Cordis's traceable-service contract to mount it.** `service.js` declares
+`[Symbol.for('cordis.tracker')] = { property: 'ctx', noShadow: true }`, and Cordis hands a service back to
+each caller wrapped so that `this.ctx` is the caller's context. The fake context did not do that, so a
+fixture calling `ctx.uiProjects.register(...)` — the call every real package makes — was refused with
+"must be called as ctx.uiProjects.register(...)". It now wraps services the same way (per accessing
+context, cached per context so identity holds), and `ctx.child()` gives a package a fiber of its own, which
+is what makes "unloading the package withdraws its project" testable inside this suite.
+
+**The fixture's stylesheet carries seven rule shapes on purpose** (a body-level token rule, an ARIA-role
+rule, `:has(… )::before`, `@supports` and `@supports not`, `@media`, two `[data-ui-perf]` variants), because
+the framework's claims are about what it does to REAL stylesheets. And its `::before` is not decoration:
+`backdrop-filter` creates a containing block, so a blur written directly on a column captures every `fixed`
+descendant — the settings dialog. Liquid Glass learned that in 7d; the fixture keeps the shape.
+
+### A defect the fixture found, and how long it had been there
+
+`registry.normalize()` is a strict whitelist — a deliberate design, so a project cannot smuggle arbitrary
+state into the registry — and it did not list `source`. The service stamps `source` on every registration
+(`{ package, version, registeredBy }`), `store.js` reads `project.source?.package ?? 'dsh-ui-projects'` for
+the package name on the card, and the whitelist dropped the field in between. **So every card named
+`dsh-ui-projects`**, which was correct by accident for the framework's own skin and a lie for any other
+package. It had been that way since the maintenance block was introduced in 7d; no test could see it,
+because the only project in the suite was the framework's own — the fallback and the truth were the same
+string. A fixture whose package is distinguishable is what surfaced it.
+
+The fix is one line in the whitelist (`source`, frozen), and the fixture's contract test asserts it.
+
+### The material moves to `@xjl-resources/dsh-plugin-liquid-glass`
+
+A new package in this workspace, with its own `package.json` (`dsh.uiProject`, `dsh.bundle.patch`,
+`dsh.client.platform: web`, `peerDependencies: { dsh-ui-projects: ^0.1.0 }`), its own patch row, its own
+build, its own first-paint derivation, its own self-check, its own suite, and a thin `install.ps1` that
+finds this framework's script and points it at itself. What moved: `tokens.css`, `glass.css`, the
+definition — now behaviour only, because identity, copy, tier, checklist and preview come from the manifest
+— and thirteen tests.
+
+Its suite has three legs and an honest boundary: the MATERIAL (the stylesheets through this framework's real
+scoper), the FIRST PAINT (the payload's shape), and the REGISTRATION CONTRACT (its own `lib/client.js` in a
+sandbox with a fake service). It does NOT drive this framework's runtime; that is asserted here, and by
+`load-check.mjs` mounting the skin's real bundle through the real Cordis.
+
+**One user-visible consequence, recorded because it is the kind a person notices:** the framework registers
+a project's version as the PACKAGE's version, so the skin package's first release stamps `1.0.0` where the
+framework-era skin stamped `3.0.0`. A confirmed checklist therefore reads `stale` once. Publishing the
+package as `3.0.0` to avoid that was rejected — a version that exists to make a stamp match is a version
+that lies about what changed. It is written down in the skin's CHANGELOG.
+
+### The two rules that stayed, now two-sided
+
+`the frost goes on surfaces, never on a container of them` and `the skin names no CSS-module hash` are
+rules for SKIN AUTHORS rather than facts about one skin, so they stayed here — pointing at the fixture —
+with a change of shape: the predicate is a local function, the fixture must pass it, and **the shapes the
+rule forbids must fail it**. A rule checker run only against a stylesheet that obeys it proves that the
+checker RUNS, not that it REFUSES. Three synthetic violations (a blur on `[data-shell-overlay]`, on the bare
+body, and on a container reached through the marker) and two hash shapes are asserted alongside the
+fixture's clean sheet.
+
+### `host-check.mjs` stops naming a project, and `load-check.mjs` loads the real one
+
+`host-check`'s seven assertions about the framework's own first-paint push now hand the fixture's
+PRE-SCOPED stylesheet (`TEST_SKIN_BOOT_CSS`, a different thing from the runtime sheet, and the difference is
+the whole first-paint contract) to `uiProjectsHost.bootRows` and assert the contract: presence, then the
+stylesheet, then the marker, with the marker only when the record says the project is on. The framework's
+own push is one client of that service and disappears in 8c; the contract is what remains.
+
+`load-check` gained the five assertions that matter for a package other than the skeleton: the skin's
+generated manifest (scoped name, project id, PACKAGE version), its REAL built bundle mounted through the
+real Cordis (registered, owned by the right package, listed by the service), a cross-package id clash
+refused by name on an isolated root, unloading the package withdrawing its project, and its declaration
+passing the conformance checker.
+
+### `unattributed` gets its outlet
+
+8a made the scan report version-store directories whose snapshots record no package — and a fact the page
+cannot render is a fact nobody sees. `check-installed.mjs` now prints an `UNATTRIBUTED VERSION DIRECTORIES`
+section (with each directory's snapshot count and why the name is not decoded back), and
+`install.ps1 -ListVersions` warns per snapshot and counts them in its summary. Both are asserted: the CLI by
+reading its wiring (a section that is never printed is what could silently rot), the script by its guard.
+
+### Negative results and things that failed on the way
+
+- **The skin's own guard failed on its own documentation.** Its first run asserted that `skin.js` never
+  reaches for `MutationObserver` — and `skin.js`'s header explains the ambient-gradient layer that was
+  removed, using that word. Comments are stripped before scanning now. That is CONTRIBUTING rule 5's second
+  incident, one round after the rule was written (the first was this repository's `-Update` ordering guard).
+- **The `8b` rename script reported thirty changes it had not made.** Its `swap()` helper read the ORIGINAL
+  string every time instead of the accumulator, so only the last swap survived; the report counted matches
+  in the original and the file kept the old ids. Fixed, and the script now re-reads what it wrote and
+  refuses to claim success otherwise. The token half HAD landed, which is how the suite failed on `--ts-fill`
+  in a file that still said `liquid-glass`.
+- **The move script's first refusal was right and its second was not needed**: deleting thirteen test blocks
+  is a mechanical operation, and asserting the count before and after is what made it safe to run at all.
+- **`load-check`'s `equal` compares with `===`**, so two array comparisons failed with the confusing
+  message `got [], expected []`. They compare lengths now.
+- **A refusal is recorded on the service it happened on.** The first version of the clash test ran on the
+  shared service, which made a LATER test fail with `got 2, expected 1`. It runs on an isolated root now.
+
+---
+
 ## Round 45 — Step 8a: the installer learns which package it is maintaining
 
 **Status: done. `suite` 934 assertions / 0 failing (909 → 934), `load` 70 / 0, `host` green,
