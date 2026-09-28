@@ -55,11 +55,18 @@ export const STRINGS = {
     perfDemoted: (names, tier) => `${names} is running at "${tier}" because this device reported less capacity.`,
     persistError: (message) => `Your last change could not be saved: ${message}`,
     /*
-     * The maintenance block on a project's card. It names the PACKAGE for the same reason the column
-     * does: the command maintains the package that owns the project, and today the framework and the
-     * built-in skin are one package.
+     * The maintenance block on a project's card. It names the PACKAGE because the commands maintain the
+     * package that owns the project, not the project — and it has a second heading for a project that
+     * never said which package that is (`maintenanceTitleUnknown` below).
      */
     maintenanceTitle: (name) => `Maintaining the ${name} package (printed, not run)`,
+    /*
+     * The heading for a project with no package identity — a definition registered through the
+     * one-argument `registry.register`, which carries no manifest and therefore no identity. It is a
+     * sentence about the PROJECT rather than a name, because there is no name to print, and the commands
+     * below it address a package the page cannot identify.
+     */
+    maintenanceTitleUnknown: 'Maintenance commands (this project did not name the package it belongs to)',
     maintenanceHint: 'These act on the package that owns this project, not on the project itself.',
     maintenanceBadge: 'maintenance commands (printed) · a recorded version differs',
     maintenanceSnapshot: 'install.ps1 -Snapshot',
@@ -199,10 +206,12 @@ export const STRINGS = {
     perfDemoted: (names, tier) => `${names} 正以“${tier}”运行——此设备报告的能力较低。`,
     persistError: (message) => `最后一次修改没能保存：${message}`,
     /*
-     * 项目卡片上的维护块。与列表一样把**包**写出来：命令维护的是拥有这个项目的包，
-     * 而今天框架包与内建皮肤包是同一个包。
+     * 项目卡片上的维护块。写出**包**名，是因为命令维护的是拥有这个项目的包，而不是项目本身；
+     * 对于从未说明自己属于哪个包的项目，另有 maintenanceTitleUnknown 这一句。
      */
     maintenanceTitle: (name) => `维护 ${name} 包（只打印，不执行）`,
+    /* 没有包身份的项目（经单参数 registry.register 注册的 definition）：没有名字可写，所以说事实。 */
+    maintenanceTitleUnknown: '维护命令（这个项目没有说明它属于哪个包）',
     maintenanceHint: '这些命令作用于拥有本项目的包，而不是项目本身。',
     maintenanceBadge: '维护命令（只打印）· 有未记录的快照',
     maintenanceSnapshot: 'install.ps1 -Snapshot',

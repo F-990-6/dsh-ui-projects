@@ -4866,7 +4866,17 @@ await test('the card says which state the version information is in, and never m
    * "no entries" and the state below came out `different` — a fixture that had been agreeing with the
    * product by accident. `scanFor` states both halves of the pair explicitly.
    */
-  const packageName = harness.store.snapshot().projects[0]?.package ?? 'dsh-ui-projects'
+  const packageName = harness.store.snapshot().projects[0]?.package
+  /*
+   * THE PRECONDITION, STATED. It used to be `?? 'dsh-ui-projects'` — a silent fallback that made the
+   * fixture agree with the product no matter which of them was wrong, and that is the exact shape of
+   * fallback step 8e-2 removed from the product. A fixture that cannot name a package has nothing to
+   * test here, so it says so instead of inventing a name.
+   */
+  truthy(
+    typeof packageName === 'string' && packageName.length > 0,
+    'the fixture names a package, which every case below is about',
+  )
   const scanFor = (versions, version = '0.1.0') => ({
     ...scanWith(versions, version),
     dependencies: [{ name: packageName, version, kind: 'ui-project', bundled: true, problems: [] }],
@@ -4909,6 +4919,59 @@ await test('the card says which state the version information is in, and never m
   contains(different, 'data-uip-version-state="different"', 'a snapshot that differs is its own state')
   contains(different, 'data-uip-maintenance-badge="different"', 'and the folded summary carries the badge, so the state is visible unexpanded')
   contains(different, strings('en').snapshotDifferent('01-v0.0.9', '0.0.9', '0.1.0'), 'with a sentence naming both versions, and no guess about which is newer')
+})
+
+/*
+ * A PROJECT WITH NO PACKAGE MUST NOT BORROW THE FRAMEWORK'S NAME (8e-2).
+ *
+ * `registry.register(definition)` is a public seam — `__internals.Registry`, one argument, no manifest —
+ * and it is the shape every built-in project used to take before step 8c deleted the last one. The
+ * registry does not require `source`, so a definition registered that way has NO package identity, and
+ * three places answered the absence by naming `dsh-ui-projects`: the store's snapshot field, the card's
+ * version lookup, and the maintenance heading. So a future built-in project would have been shown as the
+ * framework's own — its card would print the framework's maintenance commands, look up the framework's
+ * snapshot list, and compare the framework's installed version against it. That is not a cosmetic
+ * fallback: it is a confident false statement about which package a card is about, which is the same
+ * defect this round's other half fixes in the host log.
+ *
+ * `null` rather than a placeholder string, because these values flow into a heading and, per the comment
+ * in `store.js`, into the `-SourceDir` argument of a command: something that LOOKS like a package name
+ * would eventually be used as one.
+ *
+ * The scan below is built so the bug is loud if it returns: `versions` holds ONE key, the framework's, so
+ * a card that looked up the wrong name would render the framework's snapshot sentence — and 'dsh-ui-projects'
+ * would appear on the page. It appears nowhere else legitimately: this is the projects page, whose copy
+ * names no package, and the only string in the dictionary that does is in the plugins column's uninstall
+ * text, which this component never renders.
+ */
+await test('a project registered without a source does not borrow the framework’s name', async () => {
+  const harness = await boot()
+  // The raw API: a definition, no manifest, so nothing stamped a package on it.
+  harness.registry.register({ id: 'anonymous', name: 'Anon' })
+  const entry = harness.store.snapshot().projects.find((project) => project.id === 'anonymous')
+  truthy(entry !== undefined, 'the registry accepts a definition with no package identity')
+  equal(entry.package, null, 'and the snapshot reports NO package instead of the framework’s name')
+
+  const markup = renderProjectsWith(
+    harness,
+    installedStoreLike({
+      status: 'ready',
+      scan: scanWith({
+        'dsh-ui-projects': [{ name: '01-v0.1.0', version: '0.1.0', createdAt: '2026-09-27T08:15:00Z' }],
+      }),
+    }),
+  )
+  excludes(markup, 'dsh-ui-projects', 'so nothing on the page claims the framework owns that project')
+  contains(
+    markup,
+    strings('en').maintenanceTitleUnknown,
+    'and its card says the project did not name the package it belongs to',
+  )
+  contains(
+    markup,
+    strings('en').maintenanceTitle('test-skin-package'),
+    'while a project that DID name one keeps its own heading — the negative control',
+  )
 })
 
 /*

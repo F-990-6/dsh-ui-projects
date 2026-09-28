@@ -120,11 +120,25 @@ function UiProjectsSection(props) {
    *                                          which of the two is newer.
    */
   const maintenanceFor = (project) => {
-    const packageName = project.package ?? 'dsh-ui-projects'
+    /*
+     * NO FALLBACK. The name comes from the store, which derives it once (`packageNameOf`); this used to
+     * answer a project with no package identity with `'dsh-ui-projects'` — a second copy of the same
+     * fallback as the store's, free to disagree with it, and a confident claim that the framework owns a
+     * project that never said so. `null` is the honest value, and the two branches below say what a card
+     * can and cannot claim without a name.
+     */
+    const packageName = project.package ?? null
     /** @type {{ kind: string, name?: string, version?: string, when?: string, current?: string }} */
     let version = { kind: 'unavailable' }
     const scan = installedState !== null && installedState.status === 'ready' ? installedState.scan : undefined
-    if (scan !== undefined && scan !== null) {
+    /*
+     * WITHOUT A NAME, NOTHING ABOUT VERSIONS IS ASKED. `scan.versions[null]` is a miss and
+     * `dependencies.find(name === null)` is nothing, so the old code would have reported "this profile
+     * recorded no snapshot of it" — a claim about a package it cannot even name, and one that tells the
+     * reader to run `-Snapshot` for it. The card says nothing instead, which is the same answer the
+     * first two states give for a fact the page cannot support.
+     */
+    if (packageName !== null && scan !== undefined && scan !== null) {
       if (scan.versions === undefined) {
         version = { kind: 'host-stale' }
       }
@@ -538,7 +552,15 @@ function createCard(input) {
       R.createElement(
         'summary',
         { className: 'uip-testsSummary' },
-        t.maintenanceTitle(maintenance?.packageName ?? 'dsh-ui-projects'),
+        /*
+         * THE HEADING IS WHERE AN UNKNOWN PACKAGE HAS TO BE VISIBLE, because the block below it prints
+         * commands that address a package. `maintenanceTitle` is not taught to format `null` on purpose:
+         * a template that renders "the null package" renders the bug, and the call site choosing another
+         * sentence is the honest shape.
+         */
+        maintenance?.packageName === null || maintenance?.packageName === undefined
+          ? t.maintenanceTitleUnknown
+          : t.maintenanceTitle(maintenance.packageName),
         versionKind === 'different'
           ? R.createElement('span', { 'data-uip-maintenance-badge': 'different' }, ' · ' + t.maintenanceBadge)
           : null,

@@ -131,28 +131,71 @@ export function apply(ctx) {
    * connection service — Electron serves the client over `file://`, a headless profile has no browser
    * at all — the namespace it can provider perfectly well. Phase 1 keeps running; only phase 2 waits.
    */
+  /*
+   * HOW LONG THIS ROW WAITS, AND WHAT IT SAYS WHILE IT WAITS.
+   *
+   * The notice is a SAMPLE, not a verdict, and it used to read like one: "the connection service has
+   * not appeared … the endpoint is not mounted". Both halves of that are false a moment later in the
+   * composition this normally runs in — the connection row's own `apply` is async and lives in an
+   * earlier layer, so the service arrives AFTER this row's `apply` returns, and a real dsh web that
+   * printed this line went on to list three packages, which needs a successful authenticated request
+   * through that very service. The line is a state now — still waiting, N seconds in — which stays true
+   * whether the service is late or absent, plus a sentence naming the symptom the user will see.
+   *
+   * AND IT GETS AN ENDING. When the service arrives after the notice fired, one more line says so. A log
+   * cannot unsay the first line, so the honest form of "retract" is to finish the pair: either nothing at
+   * all (a fast arrival), or waiting → arrived. That is also why both lines use the same channel —
+   * `console.error`, for the reason below — rather than one of them going to `ctx.logger`, which a
+   * composition without a logger exporter swallows.
+   */
+  const CONNECTION_WAIT_NOTICE_MS = 5000
+  const startedAt = Date.now()
   let endpointMounted = false
+  let noticeFired = false
   ctx.effect(() => {
     /*
-     * If the service never arrives, say so once. Not through `ctx.logger`: a composition without a
-     * logger exporter leaves it undefined and the optional chaining would swallow the line, which is
-     * how this round's silence started. `console.error` reaches stderr in the host process, and a
-     * wait that never ends must not be invisible.
+     * If the service never arrives, say so once — as a wait. Not through `ctx.logger`: a composition
+     * without a logger exporter leaves it undefined and the optional chaining would swallow the line,
+     * which is how this round's silence started. `console.error` reaches stderr in the host process, and
+     * a wait that never ends must not be invisible.
      */
     const notice = setTimeout(() => {
       if (endpointMounted) return
+      noticeFired = true
       console.error(
-        '[dsh-ui-projects] the connection service has not appeared, so the installed-package endpoint is not mounted; Settings › UI plugins will report that it cannot read the listing',
+        `[dsh-ui-projects] still waiting for the connection service after ${Math.round(CONNECTION_WAIT_NOTICE_MS / 1000)}s: the installed-package endpoint mounts when it arrives, and Settings › UI plugins says it cannot read the listing until then`,
       )
-    }, 5000)
+    }, CONNECTION_WAIT_NOTICE_MS)
     return () => clearTimeout(notice)
   }, 'ui-projects: connection wait notice')
 
   ctx.inject(['connection'], (connectionCtx) => {
-    endpointMounted = true
     // The registration is scoped to the CALLER's fiber, so it is withdrawn when this row unloads; the
     // returned disposer is handed back as well, because belt and braces costs nothing here.
-    return registerInstalledEndpoint(connectionCtx, { scan })
+    let dispose
+    try {
+      dispose = registerInstalledEndpoint(connectionCtx, { scan })
+    } catch (error) {
+      /*
+       * ARRIVED, BUT COULD NOT MOUNT — and this used to be the one outcome the row said nothing about:
+       * the flag was set before the call, so a throw suppressed the notice AND left it claiming a mount
+       * that never happened. The failure is named here and rethrown, so Cordis still handles it exactly
+       * as before; what changes is that this row's own pair of facts gets its ending either way.
+       */
+      console.error(
+        `[dsh-ui-projects] the connection service arrived but the installed-package endpoint could not be mounted (${String(error)}); Settings › UI plugins will say it cannot read the listing`,
+      )
+      throw error
+    }
+    // AFTER the call, not before: a `register` that throws must not leave a flag claiming a mount.
+    // If this ever becomes async, this assignment must move after the `await` for the same reason.
+    endpointMounted = true
+    if (noticeFired) {
+      console.error(
+        `[dsh-ui-projects] the connection service arrived after ${((Date.now() - startedAt) / 1000).toFixed(1)}s; the installed-package endpoint is mounted`,
+      )
+    }
+    return dispose
   })
 
   // `settings` is an OPTIONAL dependency, reached through `ctx.inject` rather

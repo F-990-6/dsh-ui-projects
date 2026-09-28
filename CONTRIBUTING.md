@@ -98,7 +98,7 @@ something was not verified.
 
 ## Verification discipline
 
-Five rules, each one learned by getting it wrong. They live here because every reader of this file touches
+Seven rules, each one learned by getting it wrong. They live here because every reader of this file touches
 one of them; the incidents that produced them, with their numbers, are in `CHANGELOG.md`.
 
 1. **Changing `src/**` means rebuilding before verifying.** The suite and the browser both load `lib/`, so a
@@ -131,12 +131,22 @@ one of them; the incidents that produced them, with their numbers, are in `CHANG
    only copy of `snapshot.mjs` and `derive-boot-css.mjs` — a tree the snapshot protected while nothing
    protected the snapshot, until step 8e put it under git. — Round 46 (the skeleton had been uncovered
    since it was created, and `dsh-plugin-liquid-glass` joined the workspace uncovered).
+7. **A typed parameter creates a lifelong type constraint on its variable.** `param([string]$Framework)`
+   means every later assignment to `$Framework` is silently coerced to a string — so
+   `$framework = Get-ParameterSurface $Framework` leaves the variable a String, and the failure surfaces
+   on the NEXT line pointing at the wrong place: `The property 'surface' cannot be found on this object`,
+   about a property that is demonstrably there. Use a different name for the derived value
+   (`$frameworkInfo = Get-ParameterSurface $Framework`), never the parameter's own name. — Round 49, 8e-1
+   (`tools`-side `plugins/dsh-ui-projects/scripts/param-surface.ps1`; it cost that tool its first two runs,
+   and the error named the wrong line both times).
 
 Rule 4 is the same discipline as `## Tool discipline` below, applied to bytes rather than to anchors:
 mutate with the file tools, or in memory, and never leave the tree in a state only a test could have
 caught. Rule 5 is the same discipline applied to what a guard is allowed to look at. Rule 6 is the same
 discipline applied to the tree itself: what is not under a version control system is not recoverable, and
-"it is in the repository" is a claim about exactly one directory.
+"it is in the repository" is a claim about exactly one directory. Rule 7 is the same discipline applied to
+a PowerShell parameter: the type you declared is a constraint you keep, and its consequences appear one
+statement later than the mistake.
 
 ## Test the path, not the function
 

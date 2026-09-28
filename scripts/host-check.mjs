@@ -68,16 +68,43 @@ const module = await import(pathToFileURL(join(packageRoot, 'lib', 'index.js')).
  * @param section - what the settings document holds for this namespace, or undefined for
  *   "no settings service composed".
  */
-function makeContext(register, section) {
+function makeContext(register, section, options = {}) {
   const calls = []
   /** @type {Map<string, (arg: any) => void>} */
   const handlers = new Map()
   /** Services the row provided, by name — `uiProjectsHost` among them. */
   const provided = new Map()
+  /** Effect disposers, so a test can unload the row and see what that clears. */
+  const disposers = []
+  /** `ctx.inject(['connection'], …)` callbacks that were NOT run, for the scenarios that need a wait. */
+  const withheld = []
+  /*
+   * WHEN THE CONNECTION SERVICE ARRIVES, which is the whole subject of section 7 below.
+   *
+   *   'now'    (the default, and what every other section wants) — the callback runs inside `apply`,
+   *            the way it does in a composition whose connection row has already activated.
+   *   'never'  — the callback is withheld for the life of the run: a composition without a connection
+   *            service at all (Electron over `file://`, a headless profile, every test composition).
+   *   'manual' — withheld until `releaseConnection()`, which is a LATE arrival: the service exists but
+   *            activates after this row's `apply` returned, which is what a real `dsh web` does.
+   */
+  const arrival = options.connection ?? 'now'
+  const withholds = arrival === 'never' || arrival === 'manual'
   return {
     calls,
     handlers,
     provided,
+    /** Run every withheld connection callback, and report how many there were. */
+    releaseConnection: () => {
+      const pending = withheld.splice(0)
+      for (const run of pending) run()
+      return pending.length
+    },
+    /** Unload the row: run every disposer the effects returned. */
+    disposeEffects: () => {
+      for (const dispose of disposers) dispose()
+      return disposers.length
+    },
     ctx: {
       logger: { info: (line) => calls.push(`info:${line}`), warn: (line) => calls.push(`warn:${line}`) },
       inject: (deps, callback) => {
@@ -92,20 +119,28 @@ function makeContext(register, section) {
           fetch: {
             register: (route) => {
               calls.push(`endpoint:${route.path}:${(route.methods ?? []).join(',')}`)
+              // The one failure the row has to survive visibly: a route that cannot be registered.
+              if (options.registerThrows === true) throw new Error('route is already registered')
               return () => {}
             },
           },
         }
-        callback({
-          get: (service) => {
-            if (service === 'connection') return connection
-            if (service === 'settings' && section !== undefined) {
-              return { get: (namespace) => (namespace === EXPECTED_NAMESPACE ? section : undefined) }
-            }
-            return undefined
-          },
-          settings: { register },
-        })
+        const run = () =>
+          callback({
+            get: (service) => {
+              if (service === 'connection') return connection
+              if (service === 'settings' && section !== undefined) {
+                return { get: (namespace) => (namespace === EXPECTED_NAMESPACE ? section : undefined) }
+              }
+              return undefined
+            },
+            settings: { register },
+          })
+        if (withholds && deps.includes('connection')) {
+          withheld.push(run)
+          return
+        }
+        run()
       },
       on: (event, handler) => {
         calls.push(`on:${event}`)
@@ -121,11 +156,14 @@ function makeContext(register, section) {
       /*
        * The row mounts effects (the installed-package endpoint among them), so a context without
        * `effect` fails as a boot failure rather than as a test failure — the same lesson `provide`
-       * taught one round earlier.
+       * taught one round earlier. The disposer is KEPT now, because section 7 asks what unloading
+       * clears.
        */
       effect: (callback) => {
         const result = callback()
-        return typeof result === 'function' ? result : () => {}
+        const dispose = typeof result === 'function' ? result : () => {}
+        disposers.push(dispose)
+        return dispose
       },
       provide: (name, value) => {
         calls.push(`provide:${name}`)
@@ -333,6 +371,173 @@ if (rows === undefined) {
   } else {
     fail(`with no settings service the rows are ${JSON.stringify(bareRows.map((row) => row.kind))}`)
   }
+}
+
+// ── 7. the connection wait notice: a state, an ending, and a clean timer ─────
+
+/**
+ * Run `apply` with the notice's timer, its `clearTimeout` and `console.error` under test control.
+ *
+ * WHY THIS IS POSSIBLE AT ALL, since the question was asked: the row arms a bare GLOBAL `setTimeout`
+ * (not `ctx.setTimeout`), and this check runs the real host half in-process — so swapping the two
+ * globals around `apply` is enough to decide when the sample is taken. The swap is restored in
+ * `finally` for the reason it is dangerous: a leaked fake `setTimeout` would hang every later
+ * assertion in this file rather than fail one.
+ *
+ * The notice is the only timer armed during `apply`, which assertion 1 pins: if that stops being true,
+ * the scenario runner is firing the wrong callback and the count is what says so.
+ * @param {{ connection?: 'now'|'never'|'manual', registerThrows?: boolean }} options
+ * @param {(notice: any) => Promise<void>} body
+ */
+async function withNoticeControl(options, body) {
+  const probe = makeContext(() => {}, undefined, options)
+  const realSetTimeout = globalThis.setTimeout
+  const realClearTimeout = globalThis.clearTimeout
+  const realConsoleError = console.error
+  const timers = []
+  const cleared = []
+  const errors = []
+  globalThis.setTimeout = (callback, delay) => {
+    const handle = { callback, delay }
+    timers.push(handle)
+    return handle
+  }
+  globalThis.clearTimeout = (handle) => {
+    cleared.push(handle)
+  }
+  console.error = (...args) => {
+    errors.push(args.map((value) => String(value)).join(' '))
+  }
+  try {
+    module.apply(probe.ctx)
+    await body({
+      probe,
+      timers,
+      cleared,
+      errors,
+      /** Take the sample: run every armed timer's callback. */
+      fire: () => {
+        for (const timer of timers) timer.callback()
+      },
+      release: probe.releaseConnection,
+      dispose: probe.disposeEffects,
+    })
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+    globalThis.clearTimeout = realClearTimeout
+    console.error = realConsoleError
+  }
+}
+
+/*
+ * THE NOTICE IS A SAMPLE, NOT A VERDICT.
+ *
+ * It used to say "the connection service has not appeared … the endpoint is not mounted" five seconds
+ * in, and never speak again — a permanent claim about a state that changes a second later in the
+ * composition this is normally run in (the connection row's own `apply` is async and lives in an earlier
+ * layer). A real dsh web printed that line and then listed three packages, which needs a successful
+ * authenticated request through that very service.
+ *
+ * Five scenarios, because five different things were wrong to have to be right: a fast boot must stay
+ * silent, a wait must be described as a wait, a late arrival must finish the pair, an arrival before the
+ * sample must leave it silent, and unloading must clear the timer.
+ */
+{
+  // 1-3. The connection is already there: the sample is taken and says nothing.
+  await withNoticeControl({ connection: 'now' }, async (notice) => {
+    if (notice.timers.length === 1) ok('apply arms exactly one timer for the connection wait')
+    else fail(`apply armed ${notice.timers.length} timer(s), expected 1`)
+    const delay = notice.timers[0]?.delay
+    if (delay === 5000) ok('and it is the five-second wait this round reasons about')
+    else fail(`the wait notice fires after ${JSON.stringify(delay)}ms, expected 5000`)
+
+    notice.fire()
+    if (notice.errors.length === 0) {
+      ok('a connection that is already there is never announced: a fast boot stays silent')
+    } else {
+      fail(`a mounted endpoint still produced console.error: ${JSON.stringify(notice.errors)}`)
+    }
+  })
+
+  // 4-7. It never arrives: one line, phrased as a state, naming the symptom.
+  await withNoticeControl({ connection: 'never' }, async (notice) => {
+    notice.fire()
+    const line = notice.errors[0]
+    if (notice.errors.length === 1) ok('a connection that never arrives is reported exactly once')
+    else fail(`expected exactly one line, got ${JSON.stringify(notice.errors)}`)
+    if (typeof line === 'string' && line.includes('still waiting')) {
+      ok('as a STATE — still waiting — rather than as a verdict about the service')
+    } else {
+      fail(`the line no longer reads as a state: ${JSON.stringify(line)}`)
+    }
+    const verdicts = ['has not appeared', 'is not mounted'].filter((phrase) => typeof line === 'string' && line.includes(phrase))
+    if (verdicts.length === 0) ok('and it claims neither that the service is absent nor that the endpoint is unmounted')
+    else fail(`the line still reports a verdict the page cannot support: ${JSON.stringify(verdicts)}`)
+    if (typeof line === 'string' && line.includes('after 5s') && line.includes('cannot read the listing')) {
+      ok('while saying how long the wait has been, and the symptom a person will see')
+    } else {
+      fail(`the line lost the duration or the symptom: ${JSON.stringify(line)}`)
+    }
+  })
+
+  // 8-10. It arrives after the sample was taken: the pair gets its ending.
+  await withNoticeControl({ connection: 'manual' }, async (notice) => {
+    notice.fire()
+    const waiting = notice.errors.slice()
+    notice.release()
+    if (notice.errors.length === 2) {
+      ok('a late arrival finishes the pair: the notice, then one line saying it arrived')
+    } else {
+      fail(`expected the waiting line and the arrival line, got ${JSON.stringify(notice.errors)}`)
+    }
+    const arrival = String(notice.errors[1])
+    if (/arrived after \d+(\.\d+)?s; the installed-package endpoint is mounted/.test(arrival)) {
+      ok('and the arrival line reports the measured wait and the mount')
+    } else {
+      fail(`the arrival line is not the measured form: ${JSON.stringify(arrival)}`)
+    }
+    if (waiting.length === 1 && notice.errors.length === 2 && notice.errors[0] === waiting[0]) {
+      ok('and the first line is left exactly as it was: a log gets an ending, it cannot be rewritten')
+    } else {
+      fail(`the waiting line was replaced or not followed: ${JSON.stringify(notice.errors)}`)
+    }
+  })
+
+  // 11. It arrives before the sample: the notice must not fire into a mounted composition.
+  await withNoticeControl({ connection: 'manual' }, async (notice) => {
+    notice.release()
+    notice.fire()
+    if (notice.errors.length === 0) ok('an arrival before the sample leaves the notice silent when it fires')
+    else fail(`the notice fired over a mounted endpoint: ${JSON.stringify(notice.errors)}`)
+  })
+
+  // 12. Unloading the row clears the pending timer.
+  await withNoticeControl({ connection: 'never' }, async (notice) => {
+    notice.dispose()
+    if (notice.cleared.length === 1) ok('unloading the row clears the pending notice')
+    else fail(`unload cleared ${notice.cleared.length} timer(s), expected 1`)
+  })
+
+  // 13-15. The endpoint cannot be mounted: the failure is named, and nothing claims a mount.
+  await withNoticeControl({ connection: 'manual', registerThrows: true }, async (notice) => {
+    let escaped
+    try {
+      notice.release()
+    } catch (error) {
+      escaped = error
+    }
+    if (escaped !== undefined) ok('a registration failure still reaches Cordis instead of being swallowed here')
+    else fail('the registration failure was swallowed by the row')
+
+    const named = notice.errors.filter((line) => line.includes('could not be mounted'))
+    if (named.length === 1) ok('and the row says the service arrived but the endpoint could not be mounted')
+    else fail(`expected one "could not be mounted" line, got ${JSON.stringify(notice.errors)}`)
+    if (notice.errors.some((line) => line.includes('endpoint is mounted')) === false) {
+      ok('with no line claiming a mount that did not happen')
+    } else {
+      fail(`a line claims the endpoint is mounted: ${JSON.stringify(notice.errors)}`)
+    }
+  })
 }
 
 process.stdout.write(failures === 0 ? '\nhost half is loadable\n' : `\n${failures} host problem(s)\n`)

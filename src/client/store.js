@@ -176,6 +176,32 @@ function checksStateOf(project, runtime) {
 }
 
 /**
+ * The package a project came from, or `null` when nothing said.
+ *
+ * THE ONE PLACE THIS IS DERIVED. It used to be derived three times — here, in the card's version lookup,
+ * and in the maintenance heading — each with its own `?? 'dsh-ui-projects'` fallback, and each therefore
+ * free to disagree with the others. All three answered a project with no package identity by naming the
+ * FRAMEWORK, which is not a cosmetic default: the card would print the framework's maintenance commands,
+ * look up the framework's snapshot list and compare the framework's installed version against it, so a
+ * future built-in project (registered through the public one-argument `registry.register`) would have
+ * been presented as this package's own.
+ *
+ * `null` rather than a placeholder string, because these values flow into a heading and — per the note
+ * on the `package` field below — into the `-SourceDir` argument of a command. Something that LOOKS like a
+ * package name eventually gets used as one.
+ *
+ * `project.source` is what the service stamps at registration (`service.js`), and it is the only carrier
+ * of the identity: `projectFields` deliberately drops the manifest's own `package` field, because
+ * everything a manifest declares except identity is a project field.
+ * @param {{ source?: { package?: string } }} project
+ * @returns {string | null}
+ */
+function packageNameOf(project) {
+  const name = project.source?.package
+  return typeof name === 'string' && name.length > 0 ? name : null
+}
+
+/**
  * @typedef {object} UiProjectsStore
  * @property {() => number} getVersion
  * @property {(listener: () => void) => () => void} subscribe
@@ -228,15 +254,15 @@ export function createStore(input) {
       error: registry.error(project.id),
       removable: project.defaultEnabled === true,
       /*
-       * The PACKAGE a project came from, for the maintenance commands on its card.
+       * The PACKAGE a project came from, for the maintenance commands on its card, or NULL when the
+       * project did not say.
        *
        * Commands address packages, not projects: `install.ps1 -Update` maintains the package that owns
-       * the project, and today the framework and the built-in skin ship in ONE package — so a person
-       * looking at the Liquid Glass card would reasonably read the command as maintaining Liquid Glass.
-       * The card names the package for exactly that reason, and once step 8 splits the skin out, this is
-       * also the field that makes the `-SourceDir` argument possible.
+       * the project, so the card has to name it. Step 8c split the last built-in project out, and this is
+       * also the field that makes the `-SourceDir` argument of a command possible — which is why an
+       * unknown package is `null` here and not a stand-in name: `packageNameOf` explains the rest.
        */
-      package: project.source?.package ?? 'dsh-ui-projects',
+      package: packageNameOf(project),
       controls: resolveControls(project, runtime, ctx),
     })),
     /*
