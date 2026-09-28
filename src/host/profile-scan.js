@@ -38,6 +38,72 @@ import {
   declaresBundle,
   readDeclarations,
 } from './conformance.js'
+import { scanClientBundle } from './contract-scan.js'
+
+/**
+ * How large a client bundle may be before the listing stops scanning it.
+ *
+ * The listing is fetched every time the settings column opens, and the scan is O(the bundle): measured on
+ * this workspace's own build output, 296614 characters take 14.5 ms, so a profile with twenty client
+ * halves costs a few hundred milliseconds. A cap keeps a hostile or merely careless package from turning
+ * that into seconds, and the row says `scanned: false` with the size rather than pretending it looked.
+ */
+const CONTRACT_SCAN_MAX_BYTES = 4 * 1024 * 1024
+
+/**
+ * The UI Contract scan for one dependency.
+ *
+ * WHO IS SCANNED, and this predicate was WRONG in the first version: it keyed off `kind`, and `kind`
+ * reports `bundle` for any package that declares a bundle patch — which is every real plugin here. So the
+ * two packages that most need judging were skipped: `dsh-cost-meter` (an enhancement with a client half)
+ * and the framework itself, both of which declare `dsh.bundle.patch` AND `dsh.client`. The subject is the
+ * declaration that makes a browser bundle reachable — `dsh.client` — and nothing else. `kind` answers a
+ * different question (what a row IS in the listing) and must not be reused for this one.
+ *
+ * A FAILURE IS A PAYLOAD, never a throw — the same rule the endpoint follows one layer up. An unreadable
+ * bundle makes the row say it could not be read, not the whole listing fail.
+ * @param {{ dir?: string, resolved?: boolean }} installed
+ * @param {any} dsh the package's `dsh` declarations
+ * @returns {Promise<{ scanned: boolean, reason: string | null, bytes?: number, findings: any[], limits: string[] }>}
+ */
+async function contractFor(installed, dsh) {
+  if (installed.resolved !== true) {
+    return { scanned: false, reason: 'not installed, so there is nothing on disk to scan', findings: [], limits: [] }
+  }
+  if (dsh?.client === undefined) {
+    return { scanned: false, reason: 'declares no client half (dsh.client), so nothing of it runs in the page', findings: [], limits: [] }
+  }
+  const bundlePath = join(String(installed.dir), 'lib', 'client.js')
+  let size
+  try {
+    const stats = await stat(bundlePath)
+    if (!stats.isFile()) throw new Error('not a file')
+    size = stats.size
+  } catch {
+    return { scanned: false, reason: 'lib/client.js is missing, so there is nothing to scan', findings: [], limits: [] }
+  }
+  if (size > CONTRACT_SCAN_MAX_BYTES) {
+    return {
+      scanned: false,
+      reason: `lib/client.js is ${size} bytes, over the ${CONTRACT_SCAN_MAX_BYTES}-byte scan cap`,
+      bytes: size,
+      findings: [],
+      limits: [],
+    }
+  }
+  try {
+    const { findings, limits } = scanClientBundle(await readFile(bundlePath, 'utf8'))
+    return { scanned: true, reason: null, bytes: size, findings, limits }
+  } catch (error) {
+    return {
+      scanned: false,
+      reason: `lib/client.js could not be read: ${String(error?.message ?? error)}`,
+      bytes: size,
+      findings: [],
+      limits: [],
+    }
+  }
+}
 
 /*
  * WHY THERE IS NO LIST OF ENTRIES TO SKIP. Resolution is BY NAME, out of the profile's
@@ -256,6 +322,8 @@ export async function scanProfile({ profileDir }) {
             ? 'plugin-with-client'
             : 'library'
 
+    const contract = await contractFor(installed, dsh)
+
     scan.dependencies.push({
       name,
       spec: String(spec),
@@ -268,6 +336,7 @@ export async function scanProfile({ profileDir }) {
       bundled,
       projectId: typeof dsh.uiProject?.id === 'string' ? dsh.uiProject.id : undefined,
       problems,
+      contract,
     })
     if (!installed.resolved) scan.unresolved.push(name)
     if (kind === 'ui-project') {

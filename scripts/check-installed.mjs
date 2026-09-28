@@ -204,6 +204,52 @@ for (const scan of scans) {
   }
 
   /*
+   * UI CONTRACT FINDINGS (step 9a).
+   *
+   * What a static scan of each package's `lib/client.js` could see, printed from the same scan the column
+   * reads — so the CLI and the page can never disagree about what was found. Two statements that look
+   * alike and are not: `scanned: false` means nothing was judged (a library, a missing bundle, a bundle
+   * over the cap) and is printed as its reason; a clean scan prints as `0 findings`. Collapsing them would
+   * make "we did not look" indistinguishable from "we looked and it is clean", which is the one thing this
+   * section exists to keep apart.
+   *
+   * Printed only when a package HAS a client half or something to report: a section that says "nothing to
+   * scan" for every row on every profile is a section nobody reads.
+   */
+  const scanned = scan.dependencies.filter((dependency) => dependency.contract?.scanned === true)
+  const withFindings = scanned.filter((dependency) => (dependency.contract.findings ?? []).length > 0)
+  if (scanned.length > 0) {
+    process.stdout.write(`\nUI CONTRACT (${scanned.length} client bundle(s) scanned, ${withFindings.length} with findings)\n`)
+    for (const dependency of scanned) {
+      const findings = dependency.contract.findings ?? []
+      process.stdout.write(
+        `  ${pad(dependency.name, 34)}${findings.length === 0 ? 'no findings' : `${findings.length} finding(s)`}\n`,
+      )
+      for (const finding of findings) {
+        process.stdout.write(`      ${finding.code}  (line ${finding.evidence?.line ?? '?'})\n`)
+        process.stdout.write(`        ${finding.evidence?.excerpt ?? ''}\n`)
+      }
+    }
+    /*
+     * The limits belong in the same breath as the findings: a clean scan is not a clean plugin, and a
+     * reader who takes this section as a verdict has been misled by the section rather than by the tools.
+     * They are UNIONED across the scanned rows, because a per-scan note (how many role values were
+     * computed rather than written) is a fact about one bundle and the standing limits are about all of
+     * them.
+     */
+    for (const limit of new Set(scanned.flatMap((dependency) => dependency.contract.limits ?? []))) {
+      process.stdout.write(`  note: ${limit}\n`)
+    }
+  }
+  const unscanned = scan.dependencies.filter((dependency) => dependency.contract !== undefined && dependency.contract.scanned !== true)
+  if (unscanned.length > 0) {
+    process.stdout.write(`\nNOT SCANNED (${unscanned.length})\n`)
+    for (const dependency of unscanned) {
+      process.stdout.write(`  ${pad(dependency.name, 34)}${dependency.contract.reason ?? 'no reason given'}\n`)
+    }
+  }
+
+  /*
    * VERSION DIRECTORIES NOBODY CAN ATTRIBUTE.
    *
    * The version store keys its directories by a package name spelled for a filesystem (`@scope+name`), and

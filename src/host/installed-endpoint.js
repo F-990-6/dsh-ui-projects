@@ -39,6 +39,14 @@ function projectDependency(dependency) {
     bundled: dependency.bundled,
     projectId: dependency.projectId,
     problems: dependency.problems,
+    /*
+     * The UI Contract scan (step 9a), projected as-is.
+     *
+     * `scanned: false` travels with its `reason`, and every field is present in both states — `reason` is
+     * `null` rather than `undefined` on purpose, because `JSON.stringify` DROPS an undefined property and
+     * the column would then have to guess whether the host is old or the answer is "nothing to scan".
+     */
+    contract: dependency.contract,
   }
 }
 

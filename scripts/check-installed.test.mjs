@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url'
 
 import { PROBLEM_CODES, checkUiProjectDeclaration, KNOWN_PROJECT_TYPES } from '../src/host/conformance.js'
 import { discoverProfiles, previewCommand, scanProfile, versionsDirNameOf } from '../src/host/profile-scan.js'
+import { CONTRACT_CODES, CONTRACT_LIMITS, CONTRACT_RULES, WAI_ARIA_ROLES, scanClientBundle } from '../src/host/contract-scan.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const packageRoot = resolve(here, '..')
@@ -375,6 +376,26 @@ check(
   'and says why the directory name is not turned back into a package name',
 )
 
+/*
+ * AND THE CONTRACT SECTION, for the same reason: what can silently rot is the wiring. Two sections, because
+ * the CLI must keep "we looked and found nothing" apart from "we did not look" — a distinction that exists
+ * in the payload (`scanned: false` + `reason`) and has to survive into the printed form.
+ */
+check(cliSource.includes('UI CONTRACT ('), 'the listing prints what the contract scan found')
+check(
+  cliSource.includes('dependency.contract.findings'),
+  'and it reads the findings from the scan rather than re-deriving them',
+)
+check(cliSource.includes('NOT SCANNED ('), 'and prints the rows nothing was judged for, separately')
+check(
+  cliSource.includes('dependency.contract.reason'),
+  'naming the reason a row was not scanned, so "nothing to scan" cannot read as "clean"',
+)
+check(
+  cliSource.includes('note: ') && cliSource.includes('contract.limits'),
+  'and carries the scan’s own limits, so a clean report cannot be read as a clean plugin',
+)
+
 process.stdout.write('\n== profile discovery ==\n')
 
 const fakeHome = await mkdtemp(join(root, 'dsh-home-'))
@@ -413,6 +434,345 @@ equal(
   [...KNOWN_PROJECT_TYPES].sort(),
   [...clientTypes].sort(),
   'the types a package may declare match the vocabulary the client implements (TYPE_* in project-constants.js)',
+)
+
+/* ── the UI Contract scanner (step 9a) ──────────────────────────────────────
+ *
+ * A LAYER: synthetic bundle texts, one claim each. Every case below exists because a real bundle in this
+ * workspace does that thing — the case list was written from the syntactic-form inventory the 9a probes
+ * measured, not from imagination:
+ *
+ *   框架 bundle:  `role=` ×11 raw → 0 in code, 4 in strings, 7 in comments; `role: 'switch'` (object
+ *                 property, a standard role that is not an overlay role) ×2; `--dsw-alias-*` ×54, all
+ *                 inside CSS strings; one `body.appendChild` in code.
+ *   皮肤 bundle:  `role=` ×33, all inside CSS selectors; 156 colour literals, every one of them the value
+ *                 of a `--*:` declaration — the case that must NOT fire, or the skin becomes the biggest
+ *                 "violator" in the workspace.
+ *   骨架 bundle:  none of the above.
+ */
+
+/** One finding per case, or none — the shape every A-layer case is written against. */
+const findingsFor = (text) => scanClientBundle(text).findings
+const codesFor = (text) => findingsFor(text).map((finding) => finding.code)
+
+equal(
+  codesFor('<div role="dialog">hi</div>'),
+  [],
+  'a standard overlay role in an HTML string is not a finding',
+)
+equal(
+  codesFor('<div role="custom-dialog">hi</div>'),
+  [CONTRACT_CODES.NON_STANDARD_ROLE],
+  'a non-standard role in an HTML string is a finding',
+)
+equal(
+  codesFor("const panel = React.createElement('div', { role: 'popover' })"),
+  [CONTRACT_CODES.NON_STANDARD_ROLE],
+  'and so is one written as an object property, which is how this workspace writes roles',
+)
+equal(
+  codesFor("const css = `[role='custom-dialog'] { color: red }`"),
+  [],
+  'a role named inside a CSS SELECTOR is not a role assignment — the case the 9a probe got wrong',
+)
+equal(
+  codesFor("React.createElement('button', { role: 'switch' })"),
+  [],
+  'a standard ARIA role that is not an overlay role is still standard',
+)
+/*
+ * A LABEL IS NOT AN ASSIGNMENT. Found by the first package to consume this scanner: the two-sided
+ * example labels its surfaces with the very strings that assign their roles
+ * (`title: 'role="custom-dialog"'`), and the first version reported that as a second violation. A role
+ * assignment is an object key or a markup attribute; a role quoted inside a display string is neither.
+ */
+equal(
+  codesFor("const title = 'role=\"custom-dialog\"'"),
+  [],
+  'a display string that merely quotes a role is not an assignment',
+)
+equal(
+  codesFor("element.setAttribute('data-role', 'custom')"),
+  [],
+  'and a plugin’s own data-role is not an ARIA role at all',
+)
+equal(
+  codesFor('const x = 1; /* role="custom-dialog" and attachShadow({ mode: "closed" }) */'),
+  [],
+  'a violation written in a comment is not a violation: comments were 7 of the framework’s 11 raw hits',
+)
+equal(
+  codesFor('.card { background: #ffffff; }'),
+  [CONTRACT_CODES.HARD_CODED_COLOUR],
+  'a colour literal in a rule declaration is a finding',
+)
+equal(
+  codesFor(':root { --lg-glass-bg-light: #ffffff; }'),
+  [],
+  'the same literal as a custom-property DECLARATION is not — the case that keeps a skin innocent',
+)
+/*
+ * THE FALLBACK CASE, found by running this scanner against a real third-party plugin rather than by
+ * imagining one: `dsh-cost-meter` writes `var(--dsw-alias-bg-hover, rgba(127,127,127,.08))`, and the first
+ * version of the tokens rule reported five of those. A plugin that reads a token and names a fallback is
+ * DOING the contract, so the fallback half of a `var()` is exempt — while a literal anywhere else in the
+ * same value is still a violation, which the case below pins.
+ */
+equal(
+  codesFor('.pill { border-top: 3px solid var(--dsw-alias-state-info-primary, #3b82f6); }'),
+  [],
+  'a literal as the FALLBACK of a token is not a violation: the plugin is reading the token',
+)
+equal(
+  codesFor('.pill { background: #ff9800; border-color: var(--dsw-alias-bg-layer-1, #34a853); }'),
+  [CONTRACT_CODES.HARD_CODED_COLOUR],
+  'while a bare literal beside it still is — but only the bare one is reported',
+)
+equal(
+  codesFor('el.attachShadow({ mode: "closed" })'),
+  [CONTRACT_CODES.CLOSED_SHADOW_ROOT],
+  'a closed shadow root is a finding',
+)
+equal(
+  codesFor('el.attachShadow({ mode: "open" })'),
+  [],
+  'an open one is not: a skin’s selectors reach through it',
+)
+equal(
+  findingsFor('const a = 1\n<div role="custom-dialog">\n.card { background: #fff; }\n').map((f) => `${f.rule}:${f.evidence.line}`),
+  [`${CONTRACT_RULES.ROLE}:2`, `${CONTRACT_RULES.TOKENS}:3`],
+  'and findings are reported in source order, with the line they came from',
+)
+
+/*
+ * THE THREE-VIOLATION CASE is where the SORT is pinned: `(line, rule, code)`, so two findings on one line
+ * come out in a stable order that a dictionary or a Set would not guarantee.
+ */
+const threeViolations = scanClientBundle(
+  ['const a = 1', '<div role="custom-dialog">', 'el.attachShadow({mode:"closed"})', '.x { color: #123456 }'].join('\n'),
+)
+equal(
+  threeViolations.findings.map((finding) => finding.code),
+  [CONTRACT_CODES.NON_STANDARD_ROLE, CONTRACT_CODES.CLOSED_SHADOW_ROOT, CONTRACT_CODES.HARD_CODED_COLOUR],
+  'a bundle with three violations reports exactly three, in (line, rule, code) order',
+)
+equal(
+  [...new Set(threeViolations.findings.map((finding) => finding.severity))],
+  ['warning'],
+  'every finding is advice rather than a refusal: the contract is not a gate',
+)
+
+/*
+ * The standard-role list is hardcoded, so its SIZE is pinned: an edit to it is visible in the count.
+ * 94 = the 82 non-abstract roles of WAI-ARIA 1.2 §5.3.2–5.3.4 plus the 12 abstract roles of §5.3.1, which
+ * are accepted on purpose: this scanner reports a role it cannot RECOGNISE, and `role="widget"` is a real
+ * WAI-ARIA role. Source and version are in `contract-scan.js`'s header.
+ */
+equal(
+  WAI_ARIA_ROLES.size,
+  94,
+  'the hardcoded WAI-ARIA list is the 1.2 set: 82 non-abstract roles plus 12 abstract (and this count guards an edit)',
+)
+check(
+  ['dialog', 'menu', 'listbox', 'tooltip', 'switch', 'alertdialog', 'gridcell'].every((role) => WAI_ARIA_ROLES.has(role)),
+  'and it contains the roles the contract names, plus standard roles that are not overlays',
+)
+check(
+  ['custom-dialog', 'popover', 'my-thing', ''].every((role) => WAI_ARIA_ROLES.has(role) === false),
+  'while the non-standard names in this project’s own vocabulary are absent from it',
+)
+equal(
+  CONTRACT_LIMITS.length >= 3 && CONTRACT_LIMITS[0].includes('rule 3'),
+  true,
+  'and the standing limits travel with every result, starting with the rule this scanner cannot see',
+)
+
+/* ── B LAYER: the three bundles in this workspace, as a SNAPSHOT ─────────────
+ *
+ * THESE ARE SNAPSHOTS OF A STATE, NOT PERMANENT GUARANTEES, and the labels say so.
+ *
+ * A static scanner can only be shown to be right about the text in front of it, and this text is this
+ * workspace's own build output. When one of these numbers moves, the question is not "who broke the
+ * test" but "did a real violation appear, or did the scanner get worse" — and the answer is whichever
+ * `git log` explains. The day the framework's own bundle gains `role="custom-dialog"`, this layer SHOULD
+ * go red: that is a true finding about a real file.
+ *
+ * The skin's entry is the load-bearing one. It ships 156 colour literals in its bundle and every one of
+ * them is the value of a `--*:` declaration; if a future refinement of the tokens rule loses that
+ * exemption, this is the assertion that says so.
+ *
+ * THE FRAMEWORK'S TWO ARE ACCEPTED FINDINGS, NOT FALSE POSITIVES, and the count is 2 for that reason:
+ * `styles/core.css`'s `.uip-previewGlass` — the placeholder swatch the settings card draws when a project
+ * declares no preview — writes `border: 1px solid rgb(255 255 255 / 45%)` and
+ * `background: rgb(255 255 255 / 32%)`. By the contract as written (rule 2: colour belongs in a
+ * `--dsw-alias-*` token, the example being `background: #ffffff`) those ARE hard-coded colours. Changing
+ * them would move the preview's visual, which is out of scope for this round, so they are recorded here
+ * instead of being quietly narrowed out of the rule.
+ *
+ * THREE OR MORE IS A NEW VIOLATION AND MUST BE DEALT WITH — the equality below goes red there, and the
+ * assertion after the loop goes red if the pair ever becomes a DIFFERENT pair with the same count.
+ * If a later round edits `core.css` and these excerpts change (a literal added, or the values moved into
+ * tokens), that red is GOOD NEWS: it means the framework's contract surface moved and the decision should
+ * be taken again rather than inherited.
+ *
+ * The rule's boundary is visible in that same CSS rule: `box-shadow: 0 6px 18px rgb(15 23 42 / 18%)` on the
+ * next line is NOT reported, because decoration a plugin may legitimately author is out of scope by design.
+ */
+/** @type {Map<string, Array<{ code: string, evidence: { line: number, excerpt: string } }>>} */
+const findingsByBundle = new Map()
+for (const [name, relative, expected] of [
+  ['the framework', 'dsh-ui-projects', 2],
+  ['the skin', 'dsh-plugin-liquid-glass', 0],
+  ['the skeleton', 'dsh-ui-project-skeleton', 0],
+]) {
+  const bundlePath = resolve(packageRoot, '..', relative, 'lib', 'client.js')
+  let text = null
+  try {
+    text = await readFile(bundlePath, 'utf8')
+  } catch {
+    text = null
+  }
+  check(text !== null, `SNAPSHOT: ${name}’s bundle is readable, so the baseline below means something (${relative})`)
+  if (text !== null) {
+    const found = scanClientBundle(text).findings
+    findingsByBundle.set(name, found)
+    equal(
+      found.length,
+      expected,
+      `SNAPSHOT: ${name}’s bundle has ${expected} contract findings today (${relative}/lib/client.js, ${text.length} chars, got ${JSON.stringify(found)})`,
+    )
+  }
+}
+
+/*
+ * THE COUNT IS NOT ENOUGH: the framework's two must be the two that were ACCEPTED, by code AND by the
+ * declaration they came from. Two different findings with the same count would satisfy the loop above and
+ * would leave the acceptance note describing a rule that no longer trips — the kind of green that hides a
+ * change. When this goes red after an edit to `core.css`, read the excerpts before touching the baseline:
+ * a value moved into a token is an improvement (update the note), a new literal is a new violation.
+ */
+equal(
+  (findingsByBundle.get('the framework') ?? []).map((finding) => `${finding.code} :: ${finding.evidence.excerpt}`),
+  [
+    `${CONTRACT_CODES.HARD_CODED_COLOUR} :: border: 1px solid rgb(255 255 255 / 45%)`,
+    `${CONTRACT_CODES.HARD_CODED_COLOUR} :: background: rgb(255 255 255 / 32%)`,
+  ],
+  'SNAPSHOT: and the framework’s two are EXACTLY the accepted ones — a different pair with the same count is a new finding, not a baseline',
+)
+
+/* ── the scan reaches the listing, through the real profile scanner ──────────
+ *
+ * The A layer calls `scanClientBundle` directly; this layer drives `scanProfile` against a fixture
+ * profile, which is the path a listing actually takes. Two claims, and the second one is the reason the
+ * section exists: a row that was NOT judged must be distinguishable from a row that was judged clean —
+ * through a JSON round trip, because that is how it reaches the page.
+ */
+process.stdout.write('\n== the contract scan through the profile scanner ==\n')
+
+const guardedProfile = await makeProfile({
+  dependencies: {
+    'a-skin': 'link:./a-skin',
+    'an-enhancement': 'link:./an-enhancement',
+    'just-a-library': '^1.0.0',
+    'huge-bundle': 'link:./huge-bundle',
+  },
+  bundles: ['a-skin', 'an-enhancement'],
+  packages: {
+    'a-skin': {
+      dsh: uiProjectDsh(),
+      files: {
+        'lib/client.js': 'const a = 1\n<div role="custom-dialog">\n.card { background: #ffffff; }\n',
+      },
+    },
+    /*
+     * A PACKAGE THAT DECLARES A BUNDLE PATCH *AND* A CLIENT HALF — the shape every real plugin here has
+     * (`dsh-cost-meter` and this framework both do), and the one the first version of the predicate
+     * skipped: `kind` reports `bundle` for it, because it answers "what is this row in the listing", not
+     * "does anything of it run in the page". The subject of the scan is `dsh.client`.
+     */
+    'an-enhancement': {
+      dsh: { bundle: { patch: './cordis.patch.yml' }, client: { platform: 'web' } },
+      files: {
+        'cordis.patch.yml': '- insert:\n    - id: x\n      name: an-enhancement\n',
+        'lib/client.js': 'const clean = { role: "dialog", colour: "var(--dsw-alias-bg-layer-1)" }\n',
+      },
+    },
+    'just-a-library': { dsh: {}, files: { 'index.js': 'module.exports = 1\n' } },
+    'huge-bundle': {
+      dsh: { client: { platform: 'web' } },
+      files: { 'lib/client.js': ' '.repeat(4 * 1024 * 1024 + 1) },
+    },
+  },
+})
+const guarded = await scanProfile({ profileDir: guardedProfile })
+const byName = (name) => guarded.dependencies.find((dependency) => dependency.name === name)
+
+equal(
+  byName('a-skin')?.kind,
+  'ui-project',
+  'the fixture is a UI project package, which is the kind the scan is for',
+)
+equal(
+  byName('a-skin')?.contract.findings.map((finding) => finding.code),
+  [CONTRACT_CODES.NON_STANDARD_ROLE, CONTRACT_CODES.HARD_CODED_COLOUR],
+  'and the scanner’s findings arrive on the scan, in source order',
+)
+equal(byName('a-skin')?.contract.scanned, true, 'with the row marked as judged')
+equal(byName('a-skin')?.contract.reason, null, 'and no reason attached, because there was nothing to explain')
+check(byName('a-skin')?.contract.bytes > 0, 'and the size it read, so a report can say what it looked at')
+check(
+  (byName('a-skin')?.contract.limits ?? []).some((limit) => limit.includes('rule 3')),
+  'and the limits travel with the row, so the page can say what was NOT judged',
+)
+equal(
+  byName('an-enhancement')?.kind,
+  'bundle',
+  'the second fixture reports the kind that made the first predicate skip it',
+)
+equal(
+  byName('an-enhancement')?.contract.scanned,
+  true,
+  'and it is scanned anyway, because the subject is dsh.client and not the kind',
+)
+equal(
+  byName('an-enhancement')?.contract.findings.length,
+  0,
+  'a client half with a standard role and a token is scanned and clean',
+)
+equal(
+  byName('just-a-library')?.contract.scanned,
+  false,
+  'a package with no client half is not scanned at all',
+)
+check(
+  String(byName('just-a-library')?.contract.reason).includes('dsh.client'),
+  'and says why, so “nothing to scan” cannot be read as “clean”',
+)
+equal(
+  byName('huge-bundle')?.contract.scanned,
+  false,
+  'a bundle over the scan cap is refused rather than read',
+)
+check(
+  String(byName('huge-bundle')?.contract.reason).includes('scan cap'),
+  'with the size in the reason, so the cap is visible rather than mysterious',
+)
+
+/*
+ * EVERY ROW CARRIES THE FIELD, and `reason` survives JSON — which is the whole reason it is `null` instead
+ * of `undefined`: `JSON.stringify` drops an undefined property, and the column would then have to guess
+ * whether the host is old or the answer is "nothing to scan".
+ */
+const wire = JSON.parse(JSON.stringify(guarded.dependencies.map((dependency) => dependency.contract)))
+equal(
+  wire.every((contract) => contract !== undefined && Object.hasOwn(contract, 'reason')),
+  true,
+  'every dependency carries a contract object, and every one of them has `reason` after a JSON round trip',
+)
+equal(
+  wire.filter((contract) => contract.scanned === false).every((contract) => typeof contract.reason === 'string'),
+  true,
+  'and every row that was not judged names a reason in words',
 )
 
 await rm(root, { recursive: true, force: true })

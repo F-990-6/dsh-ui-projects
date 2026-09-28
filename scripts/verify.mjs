@@ -3385,6 +3385,29 @@ await test('the restart block repeats each row’s own command, in both language
   }
 })
 
+/*
+ * WHERE THE MAINTENANCE COMMANDS ARE RUN (9b).
+ *
+ * Every row of the plugins column prints `install.ps1 -Snapshot`, and the framework's own card prints the
+ * same three lines — but a package only has that script in its directory if it SHIPS one (the skin does;
+ * the two example packages deliberately do not, and neither does any ordinary third-party plugin). A
+ * person who pastes the command in such a directory gets "not recognized", which reads as a broken tool
+ * rather than as a command run in the wrong place.
+ *
+ * So the hint says where to run it, in both languages and in both places the commands appear. Asserted
+ * rather than trusted because copy is exactly what a later edit drops: the sentence is not decoration, it
+ * is the instruction that makes the printed command work.
+ */
+await test('the maintenance hint says where the command has to be run, in both languages', async () => {
+  for (const locale of ['en', 'zh']) {
+    const dictionary = strings(locale)
+    const card = dictionary.maintenanceHint
+    const column = dictionary.plugins.maintenanceHint
+    contains(card, '-Package', `${locale}: the card’s hint names the fallback for a package with no wrapper`)
+    contains(column, '-Package', `${locale}: and so does the column’s`)
+  }
+})
+
 await test('the uninstall block answers all three questions, in both languages', async () => {
   /*
    * Step 6b. Two of the three groups describe things a person could work out by trying them; the third
@@ -4961,7 +4984,18 @@ await test('a project registered without a source does not borrow the framework�
       }),
     }),
   )
-  excludes(markup, 'dsh-ui-projects', 'so nothing on the page claims the framework owns that project')
+  /*
+   * THE CLAIM IS ABOUT THE HEADING, not about the page's vocabulary. This used to assert that the string
+   * `dsh-ui-projects` appeared NOWHERE in the rendered page, which was true only while nothing else named
+   * the framework — and step 9b's maintenance hint legitimately does ("run them from dsh-ui-projects with
+   * -Package <name>"), which turned a proxy into a false failure. What the test is about is that no card is
+   * PRESENTED as maintaining the framework, and that is what it now asserts.
+   */
+  excludes(
+    markup,
+    strings('en').maintenanceTitle('dsh-ui-projects'),
+    'so no card is presented as maintaining the framework',
+  )
   contains(
     markup,
     strings('en').maintenanceTitleUnknown,

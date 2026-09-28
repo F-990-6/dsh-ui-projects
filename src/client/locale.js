@@ -67,7 +67,8 @@ export const STRINGS = {
      * below it address a package the page cannot identify.
      */
     maintenanceTitleUnknown: 'Maintenance commands (this project did not name the package it belongs to)',
-    maintenanceHint: 'These act on the package that owns this project, not on the project itself.',
+    maintenanceHint:
+      'These act on the package that owns this project, not on the project itself. Run them in that package’s own directory if it ships an install.ps1; if it does not, run them from dsh-ui-projects with -Package <name>.',
     maintenanceBadge: 'maintenance commands (printed) · a recorded version differs',
     maintenanceSnapshot: 'install.ps1 -Snapshot',
     maintenanceUpdate: 'install.ps1 -Update',
@@ -135,7 +136,8 @@ export const STRINGS = {
         ],
       },
       maintenanceTitle: (name) => `Maintaining the ${name} package (printed, not run)`,
-      maintenanceHint: 'These commands act on the PACKAGE, not on a project or a page: they rebuild, record or restore the package that owns this row.',
+      maintenanceHint:
+        'These commands act on the PACKAGE, not on a project or a page: they rebuild, record or restore the package that owns this row. Run them in this package’s own directory if it ships an install.ps1; if it does not, run them from dsh-ui-projects with -Package <name>.',
       cmdSnapshotWhy: 'Make the version that is running now restorable:',
       cmdUpdateWhy: 'After you bring a new version (git pull && npm run build), record what is there:',
       cmdRollbackWhy: 'Restore a recorded version (a name comes from the snapshot list):',
@@ -212,7 +214,8 @@ export const STRINGS = {
     maintenanceTitle: (name) => `维护 ${name} 包（只打印，不执行）`,
     /* 没有包身份的项目（经单参数 registry.register 注册的 definition）：没有名字可写，所以说事实。 */
     maintenanceTitleUnknown: '维护命令（这个项目没有说明它属于哪个包）',
-    maintenanceHint: '这些命令作用于拥有本项目的包，而不是项目本身。',
+    maintenanceHint:
+      '这些命令作用于拥有本项目的包，而不是项目本身。若该包自带 install.ps1，就在该包目录里运行；若没有，则在 dsh-ui-projects 目录用 -Package <name> 运行。',
     maintenanceBadge: '维护命令（只打印）· 有未记录的快照',
     maintenanceSnapshot: 'install.ps1 -Snapshot',
     maintenanceUpdate: 'install.ps1 -Update',
@@ -270,7 +273,8 @@ export const STRINGS = {
       },
       kinds: { 'ui-project': 'UI 项目', bundle: 'bundle', library: '库', 'plugin-with-client': '插件', unresolved: '未安装' },
       maintenanceTitle: (name) => `维护 ${name} 包（只打印，不执行）`,
-      maintenanceHint: '这些命令作用于**包**，不是某个项目或页面：它们重建、记录或恢复拥有这一行的包。',
+      maintenanceHint:
+        '这些命令作用于**包**，不是某个项目或页面：它们重建、记录或恢复拥有这一行的包。若该包自带 install.ps1，就在该包目录里运行；若没有，则在 dsh-ui-projects 目录用 -Package <name> 运行。',
       cmdSnapshotWhy: '先让当前运行的版本变成可回滚的：',
       cmdUpdateWhy: '在你带来新版本（git pull && npm run build）之后，记录当前状态：',
       cmdRollbackWhy: '恢复到某个已记录的版本（名字来自快照列表）：',
