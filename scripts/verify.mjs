@@ -19,7 +19,7 @@
  * Run: `npm test` (after `npm run build`).
  */
 
-import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
@@ -4235,6 +4235,218 @@ await test('the version-store layout rule is the same in install.ps1 and in the 
     )
   }
   equal(rows[0].dir, 'dsh-ui-projects', "and the framework's own name still maps to itself, as it did before the split")
+})
+
+/* ── the wrapper's parameter surface (8e-1) ───────────────────────────────── */
+
+/** The package whose `install.ps1` is a wrapper around this one. Same convention as `load-check.mjs`. */
+const skinRoot = resolve(packageRoot, '..', 'dsh-plugin-liquid-glass')
+
+/**
+ * Read both scripts' parameter surfaces, from PowerShell's own parser, in a fresh powershell.exe.
+ *
+ * The tool is a FILE rather than a `-Command` string on purpose: a PowerShell script assembled inside a
+ * JavaScript string has to survive two levels of quoting, and building one by hand during the 8e-1
+ * planning destroyed the parser on the first attempt (`Unexpected token '\'`). The paths are passed as
+ * SCALARS for the same reason in the other direction: a comma-separated list does not survive the Node →
+ * powershell.exe boundary as an array (it arrives as one string), and PowerShell 5.1 refuses a repeated
+ * `-Path` for a `[string[]]`.
+ *
+ * The answer comes back through a file, not through stdout: a piped child fails under this project's
+ * sandbox (`spawnSync ... EPERM`, the documented no-named-pipes boundary). Same arrangement, and the same
+ * reason, as `runPowerShellVersionsDirName` above.
+ * @returns {Promise<{ framework: Record<string, string>, wrapper: Record<string, string>, frameworkParamBlock: string }>}
+ */
+async function runPowerShellParamSurface(frameworkPath, wrapperPath) {
+  const tool = join(packageRoot, 'scripts', 'param-surface.ps1')
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-uiparams-'))
+  const outFile = join(dir, 'surface.json')
+  try {
+    try {
+      execFileSync(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tool,
+          '-Framework', frameworkPath, '-Wrapper', wrapperPath, '-Out', outFile],
+        { stdio: 'ignore' },
+      )
+    } catch (error) {
+      throw new Error(`scripts/param-surface.ps1 failed (exit ${error?.status ?? '?'}): ${String(error?.message ?? error)}`)
+    }
+    const parsed = JSON.parse((await readFile(outFile, 'utf8')).trim())
+    if (parsed.framework === undefined || parsed.wrapper === undefined || typeof parsed.frameworkParamBlock !== 'string') {
+      throw new Error(`the tool reported no comparable surface: ${JSON.stringify(parsed)}`)
+    }
+    return parsed
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
+/**
+ * Write a FAKE framework `install.ps1` into its own temporary directory.
+ *
+ * It declares the framework's REAL parameter block — handed over by the tool above, so the binding rules
+ * under test are the framework's own rather than a stub's idea of them — and its whole body writes one
+ * JSON file inside the directory it lives in. **It contains no statement that reads or writes
+ * `$DSH_HOME`, a profile, a settings document or any other path**: the two lines below are the complete
+ * list of what it does. `-SourceDir` and everything else come from the wrapper.
+ * @param {string} dir @param {string} paramBlock
+ */
+async function writeFakeFramework(dir, paramBlock) {
+  const body = [
+    paramBlock,
+    'Set-StrictMode -Version 2.0',
+    '$bound = [ordered]@{}',
+    'foreach ($key in ($PSBoundParameters.Keys | Sort-Object)) { $bound[$key] = "$($PSBoundParameters[$key])" }',
+    "$path = Join-Path $PSScriptRoot 'bound.json'",
+    '[System.IO.File]::WriteAllText($path, ($bound | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))',
+    'exit 0',
+  ].join('\n')
+  await writeFile(join(dir, 'install.ps1'), body, 'utf8')
+}
+
+/** Key order is not part of the claim, so both sides are canonicalized before they are compared. */
+const canonical = (value) => JSON.stringify(Object.fromEntries(Object.entries(value).sort()))
+
+/**
+ * Run a wrapper script against a fake framework and report what the fake was handed.
+ * @param {string} wrapperPath @param {string} fakeDir @param {string[]} args
+ * @returns {Promise<Record<string, string>>}
+ */
+async function runWrapperAgainstFakeFramework(wrapperPath, fakeDir, args) {
+  execFileSync(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', wrapperPath, '-FrameworkDir', fakeDir, ...args],
+    { stdio: 'ignore' },
+  )
+  return JSON.parse((await readFile(join(fakeDir, 'bound.json'), 'utf8')).trim())
+}
+
+/*
+ * TWO SUITES' WORTH OF GUARD, FOR THE ONE THING THAT MADE A MAINTENANCE COMMAND RUN AN INSTALL.
+ *
+ * `install.ps1 -Snapshot`, run in a UI project package's directory, used to run the framework's script
+ * with `$To = '-Snapshot'` and no verb at all — and the framework's mode selection falls through to
+ * INSTALL when no verb is bound. It did not fail; it installed. The cause was the wrapper's forwarding:
+ * `[Parameter(ValueFromRemainingArguments)] $Rest` collects a switch as the STRING `'-Snapshot'`, and
+ * `@Rest` splats that string POSITIONALLY, where it binds to the first positional parameter.
+ *
+ * So there are two claims to hold, and they are different in kind: the wrapper must DECLARE the whole
+ * surface (static, read from the parser), and it must FORWARD what it was given by name (behavioural, and
+ * only a real run can show it). Hence two tests.
+ */
+await test('the wrapper accepts the framework’s whole parameter surface, with the same types', async () => {
+  const surface = await runPowerShellParamSurface(join(packageRoot, 'install.ps1'), join(skinRoot, 'install.ps1'))
+  const expected = Object.fromEntries(Object.entries(surface.framework).filter(([name]) => name !== 'SourceDir'))
+  const missing = Object.keys(expected).filter((name) => surface.wrapper[name] === undefined)
+  const spurious = Object.keys(surface.wrapper).filter((name) => name !== 'FrameworkDir' && surface.framework[name] === undefined)
+  const wrongType = Object.keys(expected)
+    .filter((name) => surface.wrapper[name] !== undefined && surface.wrapper[name] !== expected[name])
+    .map((name) => `${name}: wrapper ${surface.wrapper[name]} vs framework ${expected[name]}`)
+
+  equal(missing, [], 'the wrapper declares every parameter the framework accepts, except the source directory it sets itself')
+  equal(spurious, [], 'and declares nothing the framework itself would refuse')
+  equal(
+    surface.framework.Snapshot,
+    'SwitchParameter',
+    'the parse reads TYPES rather than names: the framework’s -Snapshot is a switch, not a string',
+  )
+  equal(wrongType, [], 'each declared parameter has the same TYPE, so a switch cannot silently become a string')
+  equal(surface.wrapper.Rest, undefined, 'the wrapper declares no positional remainder any more')
+  equal(surface.wrapper.FrameworkDir, 'String', 'and the one parameter that is the wrapper’s own is declared')
+})
+
+await test('every argument the card prints arrives at the framework as the parameter it names', async () => {
+  /*
+   * Runs the REAL wrapper from the sibling package, against a FAKE install.ps1 written into mkdtemp. The
+   * iron rule forbids running the FRAMEWORK's install.ps1 (it writes $DSH_HOME); this test executes only
+   * the wrapper's forwarding path, whose target is a stub that writes to its own temp dir and nothing
+   * else. The real file is the subject — a stub of the wrapper would prove only that a stub can forward.
+   */
+  const surface = await runPowerShellParamSurface(join(packageRoot, 'install.ps1'), join(skinRoot, 'install.ps1'))
+  const fakeDir = await mkdtemp(join(tmpdir(), 'dsh-uipwrapper-'))
+  try {
+    await writeFakeFramework(fakeDir, surface.frameworkParamBlock)
+    /*
+     * THE SAFETY OF THE PROBE, AS A GUARD RATHER THAN AS A PROMISE. The fake is the only thing this test
+     * executes besides the wrapper, so what it can reach is worth pinning: no environment variable, no
+     * profile, no settings document, no version store, and not a single absolute path — the one path it
+     * writes is built from its own directory, which is the mkdtemp this test removes in `finally`.
+     * A future edit that reached for `$env:DSH_HOME` to "make the fake more realistic" fails here.
+     */
+    const fakeSource = await readFile(join(fakeDir, 'install.ps1'), 'utf8')
+    equal(
+      ['DSH_HOME', '$HOME', 'profiles', 'settings', 'Remove-Item', 'New-Item', 'Set-Content', 'Start-Process']
+        .filter((token) => fakeSource.includes(token)),
+      [],
+      'the fake framework names no environment variable, profile, settings document or store',
+    )
+    equal(
+      [...fakeSource.matchAll(/[A-Za-z]:\\/g)].map((match) => match[0]),
+      [],
+      'and contains no absolute path at all: the file it writes is built from $PSScriptRoot',
+    )
+    const wrapper = join(skinRoot, 'install.ps1')
+    const cases = [
+      ['a snapshot', ['-Snapshot'], { Snapshot: 'True' }],
+      ['a rollback to a named version', ['-Rollback', '-To', '03-v1.0.0'], { Rollback: 'True', To: '03-v1.0.0' }],
+      ['an update', ['-Update'], { Update: 'True' }],
+      ['a version listing', ['-ListVersions'], { ListVersions: 'True' }],
+      ['a dry run of an uninstall', ['-DryRun', '-Uninstall'], { DryRun: 'True', Uninstall: 'True' }],
+      ['an override of two framework defaults', ['-Profile', 'desktop', '-Keep', '5'], { Profile: 'desktop', Keep: '5' }],
+      ['nothing at all', [], {}],
+    ]
+    for (const [what, args, expected] of cases) {
+      const received = await runWrapperAgainstFakeFramework(wrapper, fakeDir, args)
+      equal(
+        canonical(received),
+        canonical({ ...expected, SourceDir: skinRoot }),
+        `the framework receives ${what} (${JSON.stringify(received)})`,
+      )
+    }
+    /*
+     * `-FrameworkDir` is the wrapper's OWN parameter: the framework script has never heard of it, so
+     * forwarding it is a refusal rather than a no-op. Every case above passes it (it is how the fake is
+     * found) and none of them may see it arrive — the equality assertions already imply that, and this
+     * one says it out loud so a failure reads as "the wrapper forwarded its own switch".
+     */
+    const received = await runWrapperAgainstFakeFramework(wrapper, fakeDir, ['-Snapshot'])
+    equal(
+      Object.keys(received).includes('FrameworkDir'),
+      false,
+      'and the wrapper excludes its own -FrameworkDir from what it forwards',
+    )
+    /*
+     * THE OTHER DIRECTION, so this probe is known to be able to fail. The old shape is written here
+     * rather than patched into the package: a probe proven only against the fixed file proves that the
+     * probe runs, not that it would have caught anything.
+     */
+    const oldShapeDir = await mkdtemp(join(tmpdir(), 'dsh-uipoldwrapper-'))
+    try {
+      const oldShape = [
+        '[CmdletBinding()]',
+        'param(',
+        "    [string]$FrameworkDir = '',",
+        '    [Parameter(ValueFromRemainingArguments = $true)]',
+        '    $Rest',
+        ')',
+        "& (Join-Path $FrameworkDir 'install.ps1') -SourceDir $PSScriptRoot @Rest",
+        'exit $LASTEXITCODE',
+      ].join('\n')
+      const oldShapePath = join(oldShapeDir, 'install.ps1')
+      await writeFile(oldShapePath, oldShape, 'utf8')
+      const misbound = await runWrapperAgainstFakeFramework(oldShapePath, fakeDir, ['-Snapshot'])
+      equal(
+        misbound.To,
+        '-Snapshot',
+        'and the probe can see the old shape fail: the positional remainder binds the switch into -To',
+      )
+    } finally {
+      await rm(oldShapeDir, { recursive: true, force: true })
+    }
+  } finally {
+    await rm(fakeDir, { recursive: true, force: true })
+  }
 })
 
 /*

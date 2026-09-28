@@ -127,8 +127,10 @@ one of them; the incidents that produced them, with their numbers, are in `CHANG
    package with neither is one bad edit from being rewritten from memory, and this project has lost a
    source tree twice. Adding a package is therefore three edits — the package, the roster here, and the
    snapshot roots — and `scripts/verify.mjs` asserts the third against the directory on disk, so a package
-   added tomorrow cannot be forgotten. — Round 46 (the skeleton had been uncovered since it was created,
-   and `dsh-plugin-liquid-glass` joined the workspace uncovered).
+   added tomorrow cannot be forgotten. **`E:\dsh\tools` counts.** It is a `ROOTS` entry, and it holds the
+   only copy of `snapshot.mjs` and `derive-boot-css.mjs` — a tree the snapshot protected while nothing
+   protected the snapshot, until step 8e put it under git. — Round 46 (the skeleton had been uncovered
+   since it was created, and `dsh-plugin-liquid-glass` joined the workspace uncovered).
 
 Rule 4 is the same discipline as `## Tool discipline` below, applied to bytes rather than to anchors:
 mutate with the file tools, or in memory, and never leave the tree in a state only a test could have
