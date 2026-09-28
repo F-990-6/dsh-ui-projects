@@ -9,9 +9,9 @@
  *      +  store   (what the settings page reads)
  *      → one `settings.section` contribution, rendered from the registry alone.
  *
- * Adding a UI project means adding an entry to `installBuiltInProjects` (or
- * registering from another plugin through the exported registry) — this file's
- * settings registration never changes.
+ * Adding a UI project means adding a PACKAGE — a client half that declares
+ * `inject: ['uiProjects']` and calls `ctx.uiProjects.register(manifest, definition)`.
+ * This file ships no project of its own, and its settings registration never changes.
  *
  * Delivered as a browser bundle: plain CommonJS against the shell's frozen module
  * table, no JSX, no TypeScript.
@@ -23,9 +23,10 @@
  * Only modules that touch neither React nor a UI project may appear here. The dsh
  * loader runs this module with a `require` that answers ONLY the shell's frozen
  * module table, and it materializes the module before it calls `apply` — so a
- * `require('react')` or a project import at load time is a module-table miss that
- * makes the whole plugin fail to load. Both are therefore deferred to first use
- * (see `installBuiltInProjects` and the section renderer below).
+ * `require('react')` at load time is a module-table miss that makes the whole plugin
+ * fail to load. React is therefore deferred to first use (see the section renderer
+ * below). No project module is required at all any more: a project arrives as a
+ * package's own client half, through the `uiProjects` service.
  */
 const { UiProjectRegistry } = require('./registry.js')
 const { createPersist, LOCAL_KEY, SETTINGS_NS } = require('./persist.js')
@@ -156,11 +157,22 @@ function apply(ctx) {
     insertCss: (id, css) => insertStyle(`dsh-ui-projects-${id}`, css),
   })
 
-  // Registered BEFORE the persisted state is applied: `start()` walks the registry,
-  // so a project added later would miss the restore that happens on this very boot.
-  // Deferring this to the settings-section callback (as an earlier version did) meant
-  // a skin enabled in a previous session came back off after a reload.
-  installBuiltInProjects(target)
+  /*
+   * NO PROJECT IS REGISTERED HERE, and the ordering problem this comment used to describe is gone
+   * with the registration that caused it.
+   *
+   * The framework used to register its own skin right here, BEFORE `start()` — because `start()`
+   * walks the registry, so a project added after it missed the restore that happens on that very
+   * boot, and a skin enabled in a previous session came back off after a reload. That ordering was
+   * the framework's to control only while the framework owned the project.
+   *
+   * A project now arrives from its own package, whenever that package's fiber applies, and the
+   * service closes the gap rather than the composition: `service.register()` calls `deps.adopt(id)`
+   * after the definition lands, and `runtime.adopt()` applies a project the restored record already
+   * asks for without persisting anything. So both orders are correct, and neither is the framework's
+   * business — `scripts/verify.mjs` pins the late one by name ("a record that arrives after the bind
+   * is still restored").
+   */
 
   const store = createStore({
     runtime,
@@ -267,10 +279,6 @@ function apply(ctx) {
       return () => {}
     }
     const injection = slots.inject('settings.section', () => {
-      // Idempotent: the projects are already registered by `apply` (before the
-      // persisted state is applied); re-registering here only refreshes their
-      // definitions if a hot reload changed them.
-      installBuiltInProjects(target)
       const registered = slots.register(
         {
           name: 'settings.section',
@@ -343,15 +351,6 @@ function apply(ctx) {
     }
   }, 'ui-projects: settings plugins section')
 
-}
-
-/**
- * Projects shipped inside this package. Registering here is the whole contract:
- * the settings page picks the project up with no further wiring.
- * @param {UiProjectRegistry} target
- */
-function installBuiltInProjects(target) {
-  target.register(require('./projects/liquid-glass/skin.js'))
 }
 
 /**
@@ -477,9 +476,5 @@ module.exports = {
      * that owns them is what makes a rename safe.
      */
     persistKeys: { localKey: LOCAL_KEY, settingsNamespace: SETTINGS_NS },
-  },
-  /** @returns {import('./registry.js').UiProjectDefinition} the shipped Liquid Glass project. */
-  get liquidGlass() {
-    return require('./projects/liquid-glass/skin.js')
   },
 }

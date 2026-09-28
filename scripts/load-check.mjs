@@ -208,11 +208,11 @@ await mount(hostRoot, skeletonHost)
 const table = emitIndexInjection(hostRoot)
 /*
  * Filtered on the presence row's own shape, never on the project id appearing anywhere in the
- * text. A loose substring is wrong here and was: the framework's first-paint stylesheet happens to
- * contain the word "skeleton" in one of its selectors, so "rows mentioning skeleton" matched a
- * style row as well — the kind of assertion that passes for the wrong reason until it fails for
- * one. The two conditions below are the contract: the row writes the presence global, and the id
- * it pushes is this package's.
+ * text. A loose substring is wrong here and was: the framework used to ship a first-paint
+ * stylesheet, and that sheet happened to contain the word "skeleton" in one of its selectors, so
+ * "rows mentioning skeleton" matched a style row as well — the kind of assertion that passes for
+ * the wrong reason until it fails for one. The two conditions below are the contract: the row
+ * writes the presence global, and the id it pushes is this package's.
  */
 const presenceRows = table.filter((row) => (row.text ?? '').includes('__dshUiProjectRows'))
 const forSkeleton = presenceRows.filter((row) => (row.text ?? '').includes('.push("skeleton")'))
@@ -221,7 +221,14 @@ if (forSkeleton.length === 1 && forSkeleton[0].kind === 'script') {
 } else {
   fail(`expected 1 presence row for the package, saw ${forSkeleton.length} of ${presenceRows.length}`)
 }
-equal(presenceRows.length, 2, 'and every mounted package announces itself exactly once')
+/*
+ * ONE, and it was two until 8c. The second was the framework's own: it pushed rows for the skin it
+ * shipped, which is exactly what this assertion should stop seeing once the framework ships no
+ * project. Read together with `aloneTable` above — a package with no framework emits nothing — the
+ * pair still says "one row per mounted package, contributed by the package", with the framework
+ * contributing none.
+ */
+equal(presenceRows.length, 1, 'and every mounted package announces itself exactly once, the framework contributing none')
 equal(forSkeleton[0]?.placement, 'body', 'the presence row is a body row, so it runs before any client bundle')
 equal(
   (forSkeleton[0]?.text ?? '').includes('__dshUiProjectRows'),

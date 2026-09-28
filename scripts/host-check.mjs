@@ -194,7 +194,13 @@ if (registrations.length !== 1) {
     fail(`an absent section must resolve, but threw: ${err.message}`)
   }
 
-  const written = { v: 1, initialized: true, enabled: ['liquid-glass'], settings: { 'liquid-glass': { scale: 1 } }, touched: true }
+  /*
+   * A record with one id in it, and the id is the suite's fixture rather than a real project. It used
+   * to be `liquid-glass` — the skin this package shipped — which made a schema round-trip assertion
+   * depend on which project happened to live here. The shape is what is under test, and the fixture is
+   * the only id this repository is entitled to name.
+   */
+  const written = { v: 1, initialized: true, enabled: [TEST_SKIN_ID], settings: { [TEST_SKIN_ID]: { scale: 1 } }, touched: true }
   try {
     if (sameShape(schema(written), written)) ok('a record the client writes round-trips unchanged')
     else fail(`round trip altered the record: ${JSON.stringify(schema(written))}`)

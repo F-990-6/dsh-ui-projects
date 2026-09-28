@@ -159,7 +159,21 @@ export function collectDiagnostics(projects, runtime) {
     })(),
     locale: root.lang,
     skinOn: root.getAttribute('data-ui-skin'),
-    projectMarker: body.getAttribute('data-ui-project-liquid-glass'),
+    /*
+     * ONE ENTRY PER REGISTERED PROJECT, keyed by id, and the id comes from the registry rather than
+     * from a literal typed here.
+     *
+     * This field used to be `projectMarker: body.getAttribute('data-ui-project-liquid-glass')` — the
+     * one skin this package shipped, named in the diagnostic that exists to explain why a skin is not
+     * working. The name survived the framework's ownership of the project and would have outlived the
+     * project itself: a field that asks about an id nobody registered reads `null` on a perfectly
+     * healthy page, and a diagnostic that reports `null` when everything is fine is one the next
+     * reader learns to skip. Reading the registry instead means the field answers about whatever is
+     * actually installed, and a marker that is missing is missing for a project that exists.
+     */
+    projectMarkers: Object.fromEntries(
+      projects.map((project) => [project.id, body.getAttribute(`data-ui-project-${project.id}`)]),
+    ),
     systemMarker: root.getAttribute('data-ui-projects'),
     activeProjects: projects.filter((project) => project.status === 'active').map((project) => project.id),
     errored: projects.filter((project) => project.status === 'error').map((project) => [project.id, project.error]),

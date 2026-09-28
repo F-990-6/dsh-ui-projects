@@ -313,8 +313,10 @@ export class UiProjectRuntime {
    *
    * With projects arriving from separate packages, composition order is not ours to choose, so a
    * registration landing after the restore is the normal case rather than an edge. Without this it
-   * would come back OFF on every reload — the same failure the phase-1 comment in `index.js`
-   * describes for a project added after `start()`.
+   * would come back OFF on every reload — which is the failure this project has already paid for
+   * once, when the framework registered its own project before `start()` so that the walk would
+   * find it. That is why this method exists at all, and `index.js` records the incident where the
+   * call used to be.
    *
    * Persists nothing: `#enable(id, { persist: false })`, exactly as `start()` does, because the
    * record already says what the user wants, and rewriting it here could drop the ids of packages

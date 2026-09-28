@@ -5,10 +5,11 @@ it. It is the framework: the registry, the runtime, the settings page, the persi
 contract and the maintenance tooling. Projects — skins and enhancements — are separate packages, and
 `dsh-ui-project-skeleton` is the smallest complete example of one.
 
-> **Step 8 is in progress.** This package still contains Liquid Glass (`src/client/projects/liquid-glass/`)
-> and still registers it from its own client half, so that the split can be done in verifiable steps. The
-> target state is written down in `## UI project packages` below, and step 8c removes the built-in copy
-> once `@xjl-resources/dsh-plugin-liquid-glass` is installed and verified.
+> **This package ships no UI project.** Step 8c moved the last one — Liquid Glass, now
+> `@xjl-resources/dsh-plugin-liquid-glass` — into a package of its own, and deleted the built-in
+> registration that used to install it. What remains here is the system: no `src/**` code names a
+> project, and both halves are exercised by a fixture (`scripts/test-skin.mjs`) and by mounting a real
+> package's real bundle (`scripts/load-check.mjs`).
 
 Two properties define the design:
 
@@ -61,15 +62,14 @@ no core package, no route, no business plugin. Any state the plugin persisted li
 
 ```
 src/host/index.js                 host row: the browser half's reachability, its settings
-                                  namespace, and the first-paint injection
-src/host/boot.css                 the first-paint subset of the skin, inlined into <head>
-                                  (derived — see tools/derive-boot-css.mjs)
+                                  namespace, and the `uiProjectsHost` first-paint service
 src/client/
   index.js                        composition root: registry + persistence + runtime + settings section
   project-constants.js            the shared vocabulary (skin/enhancement, light/dark/mobile,
                                   low/medium/high, and the tier ranking)
   registry.js                     what UI projects exist, and the enable/disable policy
   persist.js                      where state lives (dsh settings document, else localStorage)
+  boot-presence.js                the READ side of the first paint: what the host announced at boot
   runtime.js                      the only DOM-touching module in project code; applies and
                                   cleans up. diagnostics.js adds a temporary overlay, never
                                   touching a project's own DOM.
@@ -79,22 +79,22 @@ src/client/
   perf.js                         what the device can afford: signals, tiers, the frame probe
   store.js                        what the settings page reads
   panel.js                        the Settings › UI page, rendered from the registry alone
+  panel-plugins.js                the installed-packages column, read-only
   locale.js                       copy for the two shipped locales
   styles/core.css                 the Settings › UI page chrome (`.uip-*`) and nothing else
-  projects/liquid-glass/
-    skin.js                       Liquid Glass: metadata, apply, cleanup
-    tokens.css                    re-binds the shipped alias tokens to translucent fills
-    glass.css                     the skin's own `--lg-*` vocabulary, the material, the gradient
 ```
+
+There is no stylesheet here and no project directory: a project's CSS and its behaviour ship in that
+project's own package.
 
 ### The shape of a UI project
 
 ```js
 {
-  id: 'liquid-glass',            // stable key; drives `data-ui-project-<id>` and persistence
-  name: 'Liquid Glass',
+  id: 'my-project',              // stable key; drives `data-ui-project-<id>` and persistence
+  name: 'My Project',
   description: '…',              // one sentence, shown on the card
-  version: '1.0.0',
+  version: '1.0.0',              // the PACKAGE version, stamped at registration — never a second number
   type: 'skin',                  // 'skin' | 'enhancement' — see policy below
   defaultEnabled: false,         // a skin ships off; the user turns it on
   scope: 'global',               // 'global' | 'layout' | 'component'
@@ -110,6 +110,10 @@ src/client/
   cleanup(ctx) { … },            // optional extra teardown; must be idempotent
 }
 ```
+
+`id` here is a placeholder, and so is every other name in this file: the framework registers nothing, so
+it has no project to name. A definition reaches the registry through the `uiProjects` service — see
+`## UI project packages` below for the two files a package actually writes.
 
 ### Verifying a project by hand
 
@@ -183,10 +187,10 @@ Confirming requires the project to be applied, which is the point rather than a 
 checklist is confirmed by looking at the running thing. *Reading* a confirmation does not, so a card
 can say "confirmed for 3.0.0" while the project is switched off.
 
-The shipped skin declares three items, and they are the three failures this project actually had
-reported back — unreadable text, a settings dialog collapsed into a column, and a first frame in the
-default look. A checklist that repeats the specification is decoration; one that repeats the
-incident history is worth ticking.
+The skin this framework was extracted from declares three items, and they are the three failures this
+project actually had reported back — unreadable text, a settings dialog collapsed into a column, and a
+first frame in the default look. A checklist that repeats the specification is decoration; one that
+repeats the incident history is worth ticking.
 
 Reading a checklist is safe; **ticking one writes**. A browser run records a confirmation against
 the current version, which overwrites whatever was confirmed by hand and accumulates on every
@@ -329,7 +333,7 @@ sidebar to a rail.
 |---|---|
 | `markColumns()` | Mark the application's layout columns with `data-ui-skin-column`, and return the disposer. Frost must go on the columns and never on the frame's whole-viewport overlay container — blurring that softens every column at once, including the one being read. The runtime finds the frame by asking the DOM (a grid with a multi-track template), keeps only the children that actually occupy it, and **retries**, because the shell has not mounted yet when a project is first applied. That retry is **bounded**: it stops as soon as the columns are marked, and five seconds after activation at the latest. The `MutationObserver` behind it is not bounded and is never disconnected — a re-render that replaces the columns is a DOM mutation, so it is the observer, not the timer, that keeps the marking correct for the life of the project. A retry that gives up does not call `fail()`: the project stays enabled and a frame that appears later is still marked. |
 | `dismissBootPage()` | Remove the shell's boot page if it is still occupying `#root` beside the application. The shipped frontend never removes it, and both are full-height children of the same container, so the page ends up about twice the viewport tall — it scrolls to a second screen and the application's own layout is measured against a box twice the size of the window. Removes nothing unless the container is genuinely oversized, so a slow boot is untouched. `watchBootPage()` drives it with the same bounded retry, and tears the whole watcher down once the page is gone. |
-| `controls` (on the definition) | Controls the settings card renders: `{ id, type: 'slider', labelKey, min, max, step, defaultValue, storageKey }`. Each control is self-describing, so neither the settings page nor the store needs any vocabulary of its own — a project declares a slider and gets one. **Liquid Glass declares none**: its material has one fixed look, described below. |
+| `controls` (on the definition) | Controls the settings card renders: `{ id, type: 'slider', labelKey, min, max, step, defaultValue, storageKey }`. Each control is self-describing, so neither the settings page nor the store needs any vocabulary of its own — a project declares a slider and gets one. A skin may declare none, and Liquid Glass does: its material has one fixed look, for the reason its own README records. |
 
 #### Two rules about `:where()`, learned the hard way
 
@@ -346,117 +350,13 @@ Selectors in a project stylesheet are scoped to the project's marker. Whether to
 The same applies to the scoper's own output: a compound inside `:where(...)` or `:is(...)` has to
 be bound to the marker individually, or a rule meant for menus ends up applying to the document.
 
-### Why transparency is not adjustable
+### The material moved with its package
 
-There used to be an opacity slider. It was removed deliberately, and the reason is worth keeping
-next to the design:
-
-The slider mapped 0–100 onto a multiplier with a floor, so that the bottom of the scale meant
-"very translucent" rather than "invisible". The floor was set to `0.45` of the nominal fill — which
-put a surface at roughly **15% alpha**: technically present, invisible in practice. A user found the
-bottom of the slider and reasonably concluded the skin had stopped working. That single number
-caused a whole round of misdiagnosis.
-
-Two lessons, both now enforced by tests:
-
-1. **A control that can express a value the design was never tuned for will eventually be used to
-   express it.** The material has one look; there is no dial to break it.
-2. **"Subtle" and "absent" are hard to tell apart on a white page.** Transparency values are
-   asserted against rendered contrast, not chosen by eye.
-
-### How Liquid Glass is built
-
-The skin deliberately does **not** style components one by one. The shipped client paints
-almost everything from its own alias tokens, so the skin re-binds those tokens
-(`tokens.css`) and every component that already reads them — sidebar, cards, menus,
-dialogs, inputs, buttons — becomes glass, without the skin knowing a single class name.
-That is also what makes it robust: a component whose markup changes still reads the token.
-
-A token cannot express refraction, because `backdrop-filter` needs a selector rather than a value —
-and the selector is the hard part. So the skin's entire material is **one frost layer on the
-application frame**:
-
-```css
-:where(:has(> [data-ui-skin-column])) { isolation: isolate }
-
-:where(:has(> [data-ui-skin-column]))::before {
-  content: ''; position: absolute; inset: 0; z-index: -1;
-  backdrop-filter: blur(var(--lg-glass-blur)) saturate(var(--lg-glass-saturate));
-}
-```
-
-`:has(> [data-ui-skin-column])` finds the frame because the runtime marks its columns, and the frame
-is the only element whose *direct children* carry that marker — no build-hashed class named, and no
-new marker invented for the purpose. Floating surfaces are reached by ARIA role instead,
-`:where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip'])`, because a WAI-ARIA role
-is a published interface rather than somebody's markup. Every selector sits in `:where()` at zero
-specificity, so a component that wants its own material still wins.
-
-Three constraints decide that shape, and each was measured rather than reasoned about — the probe
-cases are named in `glass.css`:
-
-- **Never on a column**, for two independent reasons. `backdrop-filter` creates a containing block
-  for `position: fixed` descendants, and dsh renders its settings dialog — `position: fixed;
-  inset: 0` — *inside a layout column*: frosting a column captures that dialog and confines it to
-  the column, and the reported symptom was the settings panel collapsing into a narrow strip on the
-  left. The dialog was never the cause, and the skin cannot repair it from the outside. Separately,
-  the shipped columns are `position: static` while the frame is `position: relative`, so an
-  absolutely positioned child written inside a column resolves against the frame anyway — probe
-  case 7 measured a frost on a static 169px column as a **351px** box, the frame's width. On the
-  columns it would have been one frame-sized layer *per column*, stacked over the same area.
-- **The stacking context comes from `isolation`, not from the blur.** `z-index: -1` needs a
-  stacking context to land in, or the layer escapes to an outer one and can end up behind the page
-  background. `isolation: isolate` supplies it — and, unlike `backdrop-filter`, `transform`,
-  `filter`, `perspective` or `contain`, it does **not** create a containing block for
-  `position: fixed` descendants. That is precisely what keeps the settings dialog attached to the
-  viewport while the frame is frosted.
-- **The layer paints between the frame's fill and the columns.** That is what a transparent
-  `--dsw-alias-bg-base` is for, and it is why the text survives: `backdrop-filter` blurs what is
-  behind a surface, never what is painted on it, so a see-through column keeps crisp type while the
-  ambient gradient behind the frame is refracted.
-
-If a browser lacks `:has()`, none of the above matches and the skin degrades to translucent fills
-alone — nothing captured, nothing leaked.
-
-**The composer is the one surface reached by a `data-` hook of its own.** It is not a floating surface
-by role and it is not the frame, and it paints an opaque fill of its own
-(`--dsw-specific-input-major` → `#fff` / `#2c2c2e`), so the frame's frost stopped at its edge. It gets
-the material through `[data-composer-card]` — a hand-written attribute in `ui-conversation`, which the
-shell's own layout code queries too — and its frost sits on `[data-composer-card]::before` with the
-card carrying `isolation: isolate`. The blur is deliberately **not** on the card itself: the card is
-already `position: relative` and has no `fixed` descendant today, so putting it there would work and
-would also make the card a containing block for anything a future client renders inside it — the
-failure this project has already paid for twice. The shared fill token is not rebound, because five
-other surfaces paint with it.
-
-The composer's frost is in **every** degradation list — both tiers, the mobile query, and all four
-suppression branches — and under those four branches its fill goes opaque with every other one. That
-completeness is the part that is easy to miss and impossible to see: a block that forgets the composer
-leaves the one large card at full blur on the device or in the mode that asked for less.
-
-**The seat around it is deliberately untouched.** The shipped rule on the seat ramps to
-`var(--dsw-alias-bg-base)` over 36px and then holds that colour for the rest of the seat — invisible
-only while the token matches the page around it, which is exactly what a translucent skin stops being
-true. Restating it in glass terms was tried and seen in a screenshot of the running application: a
-glass-tinted rectangle spanning the column below the card, with a hard edge where the seat ends. The
-suite now asserts that the skin says nothing about the seat at all. A fade that dissolves content
-instead of painting a fill is a `mask-image` on the scroller, which is a different change.
-
-Two rules keep the result readable, and both are asserted by the suite:
-
-- **Label tokens are never redefined.** Text keeps its shipped colour, so every
-  foreground/background pair the design system validated still holds; only fills become
-  translucent, and layer 3 / the overlay token stay essentially opaque for menus and
-  dialogs, where dense text sits over arbitrary content.
-- **Degradation is honest.** Without `backdrop-filter`, and under
-  `prefers-reduced-transparency`, every fill returns to opaque and the blur is dropped:
-  the layout, hierarchy and edges survive, the transparency does not.
-- **A contrast request is answered, not resisted.** Under `prefers-contrast: more` the fills go
-  opaque, the hairlines get real weight, and the decorative gradient and the now-redundant blur go
-  with them. That is a different request from `forced-colors`, which hands the palette to the
-  platform, and from `prefers-reduced-transparency`, which is about seeing through things. The text
-  colours are never redefined in any of the three: the design system validated every pair it ships,
-  so the background is the only lever that can raise the ratio without inventing a relationship.
+Two sections used to sit here: *why transparency is not adjustable*, and *how Liquid Glass is built* — the
+`:has()` frame frost, its three measured constraints, the composer, the seat left untouched. Both describe
+a PACKAGE's CSS, and they now live in `@xjl-resources/dsh-plugin-liquid-glass`'s README, next to the
+stylesheets whose rules they explain. What stays here is what the framework owns: the scoper's `:where()`
+rules above, and the first-paint contract below.
 
 ### First paint
 
@@ -464,19 +364,31 @@ A skin that arrives with the client bundle is a skin the first frame does not ha
 paints, and only afterwards does the bundle load and apply anything. The last state is meant to be
 on screen from the first frame, so the part of it that can be is served inside the HTML.
 
-The mechanism is the **host half**, through `webserver/index-inject` — the same route
-`dsh-client-ui-theme` uses for its own bootstrap:
+**The framework owns the contract; the package owns the rows.** `src/host/service.js` provides
+`uiProjectsHost`, and a package's host half asks it for the three things the first frame needs and
+pushes them into `webserver/index-inject` — the same route `dsh-client-ui-theme` uses for its own
+bootstrap:
 
-- `src/host/boot.css` is inlined as a `<style>` immediately after `<head>`. It is the body-level
-  subset of the skin, already written in the marker form the runtime scoper emits, and the build
-  proves it rule-for-rule against that scoper's output. Because every selector carries the marker,
-  the sheet is **inert while the skin is off** — so it is emitted unconditionally, with no branch
-  to get wrong.
-- One `<script>` is emitted, immediately after `<body>` opens, and only when the settings document
-  says the skin is on. It sets `data-ui-project-liquid-glass="on"` on the body and
-  `data-ui-skin="liquid-glass"` on the root — before the application mounts and before anything
-  paints. If the document cannot be read at all, no script is emitted and the page paints the
-  default look.
+1. **Presence**, immediately after `<body>` opens: a `<script>` that writes
+   `window.__dshUiProjectRows`. It runs before any client bundle, which is what lets the browser half
+   tell "the page was served by a host that knows about projects" from "it was not" — the framework's
+   own host half pushes no rows, so a composition without a UI project package is a normal one and
+   reads as `absent` rather than as a failure.
+2. **The stylesheet**, immediately after `<head>`: the package's own body-level subset, already
+   written in the marker form the runtime scoper emits. Because every selector carries the marker,
+   the sheet is **inert while the project is off** — so it is emitted unconditionally, with no branch
+   to get wrong.
+3. **The marker**, on the body, and only when the settings document says the project is on: it sets
+   `data-ui-project-<id>="on"` on the body and `data-ui-skin="<id>"` on the root, before the
+   application mounts and before anything paints. If the document cannot be read at all, no script is
+   emitted and the page paints the default look.
+
+Read and write are two modules on purpose. `bootRows` is written once per package, in that package's
+`src/host/index.js`, because it is the only thing that can hand over its own CSS; the READ side is
+`src/client/boot-presence.js`, which is fully parameterized by id and reads the presence global, the
+fragment tag and the body marker without knowing any project. `scripts/host-check.mjs` drives the
+service over a fixture sheet, and `scripts/load-check.mjs` mounts a real package's real host half —
+so the contract is exercised from both sides without this package owning either.
 
 The state comes from the **settings document**, read at render time, never from `localStorage`.
 This is a deliberate departure from the specification, which asks for a head script that reads
@@ -484,13 +396,11 @@ This is a deliberate departure from the specification, which asks for a head scr
 removes the `localStorage` copy after its first successful write — so a script reading that key
 would find nothing on exactly the loads that matter.
 
-**The physical boundary, stated rather than discovered.** A first frame gets the `--lg-*` tokens,
-the re-bound `--dsw-alias-*` colours, the body background with its ambient gradient, and the base
-text colours — the colours, the background and the material hierarchy. It does **not** get the
-blur: the frost hangs off `data-ui-skin-column`, which the client runtime stamps once the
-application's DOM exists, and no first frame can precede that. The blur lands a few milliseconds
-later. "The first frame is already Liquid Glass" holds inside that boundary: no white flash, and no
-default-look-to-skin jump.
+A package's sheet is DERIVED from its own stylesheets rather than hand-written, and the tool that
+does it (`tools/derive-boot-css.mjs --package <dir>`), the predicate it shares with the package's
+build, and the check that the sheet is exactly what the CSS implies all live with the package. There
+is nothing here to derive: this package has no CSS. The worked example, including what a first frame
+can and cannot have, is in `@xjl-resources/dsh-plugin-liquid-glass`'s README.
 
 Two deviations from the specification are recorded here rather than left to be rediscovered:
 
@@ -508,7 +418,7 @@ Two deviations from the specification are recorded here rather than left to be r
 
 ```jsonc
 // $DSH_HOME/settings.yaml → `ui-projects` (preferred), else localStorage
-{ "v": 1, "initialized": true, "enabled": ["liquid-glass"], "settings": {}, "touched": true }
+{ "v": 1, "initialized": true, "enabled": ["my-project"], "settings": {}, "touched": true }
 ```
 
 `enabled` is the **complete** set the user wants on. Storing "what is on" rather than a
@@ -612,8 +522,11 @@ A package's host half pushes its own stylesheet into the served `<head>`, so the
 skinned. That sheet is derived from the package's own CSS —
 `node tools/derive-boot-css.mjs --package <dir>` — and consists of the body-level rules only, authored
 already-scoped (`body[data-ui-project-<id>="on"]…`) because the host has no scoper to run. The tool and the
-package's build share one predicate (`scripts/boot-css-rules.mjs`), which is what keeps "boot.css says
-exactly what the skin says" true in both directions.
+package's build share one predicate, which each package keeps in its own `scripts/boot-css-rules.mjs`, and
+that shared file is what keeps "boot.css says exactly what this package's CSS says" true in both
+directions. A package's build should RUN the derivation tool in `--check` mode before writing anything, so
+a stale sheet fails the build instead of shipping — `@xjl-resources/dsh-plugin-liquid-glass`'s
+`scripts/build.mjs` is the worked example.
 
 
 ### Writing a project's CSS
@@ -669,51 +582,39 @@ source's ESM imports/exports into one CommonJS graph, converts `*.css` files int
 modules, and wraps the result in the registration block the dsh shell expects. React is
 the only external it requests, resolved from the shell's frozen module table.
 
-### Build artefacts — `lib/` is complete only with all three files
+### Build artefacts — `lib/` is complete only with both files
 
 | file | what it is |
 |---|---|
-| `lib/index.js` | the host half, copied from `src/host/index.js` after its package imports are checked |
+| `lib/index.js` | the host half, copied from `src/host/index.js` after its package imports are checked, together with every other host module |
 | `lib/client.js` | the browser bundle, built from `src/client/**` |
-| `lib/boot-css.js` | `src/host/boot.css` as a module — the first-paint stylesheet the host inlines |
 
-`lib/index.js` imports `./boot-css.js`, so a `lib/` holding only `index.js` and `client.js` is
-not merely stale: **dsh refuses the loader entry at boot**, and the GUI sits on "Loading
-plugins…". `npm run build` produces all three together; nothing else does.
+A `lib/` holding only one of them is not merely stale: **dsh refuses the loader entry at boot**, and the
+GUI sits on "Loading plugins…". `npm run build` produces both together; nothing else does.
 
-The third artefact is generated rather than copied because the host half ships as plain ESM and
-cannot import CSS. Before writing it, the build proves `src/host/boot.css` is a subset of the CSS
-the skin itself emits — rule by rule, whitespace-insensitively, with any drift failing the build
-and naming the offending rule. That check is the only thing keeping two copies of the same
-palette from becoming two different palettes.
+There used to be a third artefact, `lib/boot-css.js` — the first-paint stylesheet, generated from
+`src/host/boot.css` after a rule-by-rule proof that the sheet was exactly what the skin emitted, in both
+directions. It is gone in step 8c, and it went with the thing it described rather than being kept empty:
+a first-paint sheet is a subset of a PACKAGE's CSS, so the sheet, the tool that derives it
+(`tools/derive-boot-css.mjs --package <dir>`), the predicate that decides what is body-level and the
+check that runs before the build writes anything all moved to the package that owns the CSS. **This
+package derives nothing, because it has no CSS**, and `node tools/derive-boot-css.mjs --check` run here
+exits 1 saying so.
 
-`src/host/boot.css` itself is DERIVED, not written. After changing a body-level rule in
-`tokens.css` or `glass.css` — adding a token, adding a conditional branch — regenerate it:
+What is worth keeping from that arrangement is the reason it was built the way it was, because it applies
+to every package that does have CSS:
 
-```powershell
-node tools/derive-boot-css.mjs          # rewrite src/host/boot.css from the scoped skin CSS
-node tools/derive-boot-css.mjs --check  # report drift and change nothing (exits 1 when stale)
-```
-
-It copies every rule whose selector is about the marked body element itself — those are the
-declarations a first paint can use — and skips descendant rules like `body[marker] .lg-glass`, which
-need DOM a first frame does not have. Editing the file by hand is how the first frame starts to
-disagree with every later one.
-
-The build then checks the result **in both directions**, and both are fatal: every rule in
-`boot.css` must exist in the skin's emitted CSS (it may not invent anything), and every body-level
-rule the skin declares must exist in `boot.css` (it may not be missing anything). One direction
-alone would have missed the likelier mistake — a new body-level rule in the skin and no
-re-derivation — and would have shipped a first frame quietly without it.
-
-What counts as a body-level selector is decided in **one** place, `scripts/boot-css-rules.mjs`, which
-both the tool above and `scripts/build.mjs` import. They each used to hold a copy; the copies agreed
-with each other and were both wrong, and the sheet silently lost rules that decide the first frame.
-The predicate answers three ways, not two — `body`, `other`, and `mixed` for a selector list that is
-partly body-level — and `mixed` is fatal rather than skipped, because a sheet that omits half a rule
-looks complete and is not. It also distinguishes a compound from a descendant: the space in
-`body[marker] [role='menu']` is a combinator, so that rule is not body-level, while
-`body[marker][data-ds-dark-theme]` is.
+- The predicate answers three ways, not two — `body`, `other`, and `mixed` for a selector list that is
+  partly body-level — and `mixed` is fatal rather than skipped, because a sheet that omits half a rule
+  looks complete and is not. It also distinguishes a compound from a descendant: the space in
+  `body[marker] [role='menu']` is a combinator, so that rule is not body-level, while
+  `body[marker][data-ds-dark-theme]` is.
+- It is decided in **one** place, which the deriving tool and the package's build both import. They each
+  used to hold a copy; the copies agreed with each other and were both wrong, and the sheet silently lost
+  the three suppression blocks that decide the first frame.
+- Both directions are checked and both are fatal: the sheet may not invent a rule the CSS does not have,
+  and it may not miss a body-level rule the CSS does have. One direction alone misses the likelier
+  mistake — a new body-level rule and no re-derivation.
 
 ### Verifying against a running dsh
 
@@ -803,10 +704,17 @@ Three things this checked that nothing else can:
 DOM, then asserts: registry validation (including that an id is CSS-selector-safe),
 skin exclusivity, markers and stylesheets while on, *no* residue after off, CSS scoping
 including at-rules, rollback of a failing project, persistence and reload in both
-directions, the settings-document adapter, the rendered card markup (`role="switch"`,
-`aria-checked`, its label), and — for the palette — that every token the skin re-binds
-is one the **installed** design system really declares, and that turning the skin off
-removes every token it introduced.
+directions, the settings-document adapter, and the rendered card markup (`role="switch"`,
+`aria-checked`, its label). Every project it mounts is `scripts/test-skin.mjs`, the suite's own
+fixture: this package registers nothing, and two assertions pin that from both directions — a
+`boot()` harness holds exactly the fixture, and a composition with no UI project package in it holds
+nothing at all.
+
+The assertions about a PALETTE moved with the palette. Every token a skin re-binds, the value it
+re-binds it to, and whether turning it off removes exactly what it introduced are properties of that
+skin's CSS, and they now live in `@xjl-resources/dsh-plugin-liquid-glass`'s suite. This one still
+asserts the half the framework owns: that a registered project's stylesheets are scoped, inserted
+while it is on and removed when it is off, whichever CSS they contain.
 
 ### Module resolution in the bundle
 

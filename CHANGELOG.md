@@ -20,8 +20,199 @@ Verification vocabulary used below:
 | `host` | `node scripts/host-check.mjs` — the host half loads, `apply` runs, and it answers the index injection |
 | `browser` | measured in a real Chrome over CDP, with screenshots |
 | `browser (user)` | confirmed by the user looking at their own running instance |
-| `emitted` | `node scripts/emitted-css.mjs` / `scope-peek.mjs` — the CSS the browser actually receives |
+| `emitted` | `scope-peek.mjs` here, and `emitted-css.mjs` in the package that owns the CSS (it moved to `dsh-plugin-liquid-glass` in 8c) — the CSS the browser actually receives |
 | **unverified** | written from reasoning about the source; never observed running |
+
+---
+
+## Round 47 — Step 8c: the framework ships no project
+
+**Status: done. `suite` 725 assertions / 0 failing (737 → 725, and every one of the twelve is accounted
+for: the derivation-predicate test moved to the skin), `host` 26 ok / 0 failing, `load` 85 / 0,
+`conformance` 67 / 0, `skeleton` 13 / 0, `browser --self-check` green. The skin package: `check` 23 / 0,
+`suite` 237 / 0 (225 → 237, +12 = the same twelve cases), build green with `lib/client.js` at
+`sha256:425444fe2bf2` — UNCHANGED, because 8c touched no statement in it. The framework's
+`lib/client.js` is `sha256:0a9aeb5dab4c` (296277 bytes, 17 modules; it was 20 modules and 351854 bytes).
+`derive-boot-css --package <skin> --check` → 13 blocks / 10484 bytes; `derive-boot-css --check` with no
+`--package` now exits 1 here, which is the first expected consequence below. NO browser run: this round
+installs nothing, and the running page is unchanged — see the intermediate state at the end.
+`install.ps1` was NOT executed in any mode, and nothing under `$DSH_HOME` was written.**
+
+The framework now registers nothing, names no project, contains no CSS, and derives no first-paint sheet.
+`src/**` code mentions a project id in exactly one place — `persist.js`'s `LEGACY_LOCAL_KEYS`, which is a
+migration constant and has to keep the old spelling.
+
+### What left, file by file
+
+| Gone from this package | Where it went |
+|---|---|
+| `src/client/projects/liquid-glass/{skin.js,tokens.css,glass.css}` | the skin package, unchanged |
+| `src/host/boot.css` | the skin package, unchanged (it was already derived from the two sheets above) |
+| `scripts/boot-css-rules.mjs` | the skin package, byte-identical — the predicate is a statement about THAT CSS |
+| `scripts/emitted-css.mjs` | the skin package, and it stopped holding copies of its own parameters: the marker and the sheet list now come from `boot-css-rules.mjs` |
+| `scripts/capture-skin.mjs` | the skin package, byte-identical; it held no framework path, so the move changed no statement |
+| `lib/boot-css.js` | deleted outright — a build artefact nothing imports now |
+
+Deleted with them: `installBuiltInProjects` and both of its call sites, the `__internals.liquidGlass`
+getter, `SHIPPED_SKIN_ID` with its `ctx.on('webserver/index-inject')` push and the `BOOT_CSS` import,
+`writeBootCss()` with `cssSegments` / `normalizeCss` / `leafRules` / `ruleKey`, the guard that refused a
+`src/host/boot-css.js`, the `MARKER` import and `LIQUID_GLASS_SELECTOR`, and the twelve-case predicate
+test.
+
+### The one semantic risk, and what replaced it
+
+The framework registered its own skin **before** `runtime.start()` walked the registry, and the comment
+at that call site explained why the order mattered: a project added later missed the restore, so a skin
+enabled in a previous session came back off after a reload. Deleting the call deletes the ordering
+guarantee with it, and the comment that stated the guarantee would then have been describing code that
+was not there.
+
+**No guarantee was lost, and the claim is testable rather than argued.** A project now arrives from its
+own package, whenever that package's fiber applies; `service.register()` calls `deps.adopt(id)` after the
+definition lands, and `runtime.adopt()` applies a project the restored record already asks for without
+persisting anything. Both orders are therefore correct, and that is not new code — it is the mechanism
+8b's fixture exercises, pinned by name in `verify.mjs` as *"a record that arrives after the bind is still
+restored"*. The comment was rewritten to say that instead, and the rewritten text points at that test
+rather than at the deleted function. `runtime.js`'s own comment referred to the old `index.js` note as
+"the phase-1 comment"; it now refers to the behaviour.
+
+### The assertion arithmetic, and the two claims that had to change value
+
+Twelve assertions left with the predicate test, and nothing else changed count. Three assertions changed
+VALUE, each because it had been stating the 8b world:
+
+- `verify.mjs`, the fixture's own contract: *"and the framework still ships its own skin until 8c moves
+  it"* asserted `ids().includes('liquid-glass') === true`. It now asserts the registry holds exactly one
+  project — the fixture — and names no package: a count, not a name, because this suite must not depend on
+  which packages are installed beside it.
+- `verify.mjs`, the package-less probe: `probe.registry.ids().length` was `1` (the built-in skin, the one
+  registration that skipped the service) and is now `0`.
+- `load-check.mjs`: the presence rows in a two-package composition were `2` and are now `1`, because the
+  second one was the framework's own. Together with `aloneTable` — a package with no framework emits
+  nothing — the pair still says "one row per mounted package", with the framework contributing none.
+
+### A test that had been agreeing with the product by accident
+
+The suite went green except for **one** assertion, in *"the card says which state the version information
+is in"*: it expected `data-uip-version-state="same"` and got `different`. The cause was not in the product.
+The test read the package name off `projects[0]` and then keyed its version map with it, while
+`scanWith()` hard-coded `dsh-ui-projects` in the scan's `dependencies` — so it passed for as long as
+`projects[0]` was a registration with no `package` field, which is exactly what the framework's built-in
+skin was. 8c removed it, `projects[0]` became the fixture (`test-skin-package`), the card's lookup found
+no entries for that name, and the state came out `different`. The fixture now builds the pair explicitly
+(`scanFor`), so the map key and the dependency row cannot disagree again.
+
+The failure ALSO explains a five-assertion gap that a first reading of the total could not: `contains()`
+throws on a miss, so the failing assertion aborted the rest of its test body. 719 + 1 was never the final
+count — with the fixture fixed the run is 725 / 0.
+
+### `lib/boot-css.js` was generated, not written
+
+The guard this round deleted refused a `src/host/boot-css.js`, because the host-copy loop would have
+overwritten the generated `lib/boot-css.js`. Before deleting it, the artefact was checked rather than
+assumed: its first line says `GENERATED by scripts/build.mjs — do not edit`, `lib/` is in `.gitignore`,
+and `git ls-files lib` is empty — so the only writer was `writeBootCss()`, and the collision it prevented
+cannot happen once that function is gone. Deleting the guard is therefore a deletion and not a
+weakening, and the loop now carries a comment saying so, including that a `lib/boot-css.js` found in a
+working tree is a leftover from before this round that nothing reads. The stale artefact in this tree was
+removed by hand.
+
+### Diagnostics: one field becomes a table
+
+`diagnostics.js` reported `projectMarker: body.getAttribute('data-ui-project-liquid-glass')` — the one
+skin this package shipped, named inside the instrument whose job is to explain why a skin is not working.
+A field that asks about an id nobody registered reads `null` on a healthy page. It is now
+`projectMarkers`, keyed by the ids the registry actually holds. Nothing asserted the old field, so this
+is a pure widening; it is also the second thing this round that would have become a lie about somebody
+else's package.
+
+### `browser-verify.mjs` keeps its references, and what they mean
+
+Its 64 mentions of the skin across 29 tests are not a framework dependency, and the ruling for this round
+recorded why they stay: **`scripts/browser-verify.mjs` drives the INSTALLED skin in a real browser, which
+after step 8d is the normal state of this workspace.** Parameterizing it by project id is a separate
+piece of work. The target this round is met without it — `src/**` CODE names no project — and this
+paragraph exists so a later reader does not measure the 64 as a leftover.
+
+One of them was a real path and is fixed: the mobile-blur token is read out of `glass.css`, and that file
+moved. The read now points at the sibling package, the same arrangement `load-check.mjs` uses to mount its
+real bundle. Without it `--self-check` would not have loaded.
+
+### Smaller pieces
+
+- **`scope-peek.mjs` takes `--marker`** and defaults to a placeholder (`example` is not a project). It is a
+  tool about the SCOPERS, so a hard-coded project id in it was a fact about a package that could rename
+  itself; the skin's `--marker` value is now passed in.
+- **`bundle-client.mjs`'s comments use a neutral example** (`a/b/index.js` → `a/b`) where they used the skin's
+  directory to explain id collapsing. This is the one place the round neutralized an existing name, per the
+  ruling; every other name in a comment is a record of a real incident and was left alone.
+- **`host-check.mjs`'s schema round-trip fixture** used `liquid-glass` as the id inside a record. It uses the
+  suite's fixture now: a schema round-trip is about the SHAPE, and the fixture is the only id this
+  repository is entitled to name.
+- **`src/host/index.js` has no `webserver/index-inject` subscription at all.** A listener whose only
+  statement would be `table.push(...[])` is a line claiming a job it does not do. The contract stays tested
+  from both sides: `host-check.mjs` drives `bootRows` over a fixture sheet with this package's real host
+  half mounted, and `load-check.mjs` mounts a real package's rows.
+- **`package.json`'s `description`** said this package ships Liquid Glass. It says it ships no UI project.
+
+### Documentation
+
+- **The framework README** lost two sections that describe a PACKAGE's CSS — *why transparency is not
+  adjustable* and *how Liquid Glass is built* (the `:has()` frame frost, its three measured constraints,
+  the composer, the seat left untouched). Both moved into the skin's README, next to the stylesheets whose
+  rules they explain; a short section here says where they went and what stayed. Rewritten in place: the
+  "step 8 is in progress" note (now a statement of what this package is not), the `src/` tree, the project
+  definition template (id `my-project`, with a note that it is a placeholder because the framework
+  registers nothing), the *First paint* section (the contract, with the three rows written out and the
+  read/write split named), and *Build artefacts* — **"`lib/` is complete only with both files"** now, with
+  the third artefact's story kept as the reason the derivation is built the way it is, because that reason
+  applies to every package that has CSS.
+- **`CONTRIBUTING.md`** gained the rule this round creates: *this package ships no UI project, and a test
+  that names one is a test that names a package it does not own* — where fixtures come from, why the two
+  suites may still mount an installed package by path, and the two deliberate exceptions that keep a name
+  in `src/**`.
+- **`CHANGELOG.md`'s verification vocabulary** listed `scripts/emitted-css.mjs`, which no longer lives
+  here.
+
+### The first expected consequence, and the intermediate state
+
+**`node tools/derive-boot-css.mjs --check`, run in this directory, now exits 1** with *cannot read the
+first-paint rules of …\dsh-ui-projects*. That is correct and is the intended result, not a regression: the
+tool reads the target package's `scripts/boot-css-rules.mjs`, and a package with no CSS has no first-paint
+rules to state. The command belongs in the package that owns the sheet —
+`node tools/derive-boot-css.mjs --package <package dir> --check` — and the skin's build runs exactly that
+before it writes anything.
+
+**Between 8c and 8d the workspace is in a state nobody should run.** The framework no longer ships Liquid
+Glass and the skin package is not installed in the profile yet, so restarting `dsh web` in this window
+shows no Liquid Glass card and no material. The two rounds must be adjacent and the web process must not be
+restarted between them. This is written down because it is the only way this pair of rounds can be
+mistaken for a broken build.
+
+### Negative results and things that went wrong on the way
+
+- **The build.mjs block deletion left three lines behind on its first run.** The two anchors matched, the
+  write happened, and the residual scan then found `writeBootCss` still called from inside `build()` —
+  below the second anchor, so outside the slice. The leftover call, the guard and the output line were
+  removed with anchored edits and the file was re-checked. The lesson is the one this file keeps
+  relearning: a patch script that verifies AFTER writing can leave a described half-state, and the
+  residual scan is what made it a two-minute fix instead of a broken build.
+- **The README move refused on a phrase that straddled a newline.** The check `'bottom of the slider'`
+  failed against text that reads `A user found the` / `bottom of the slider` — prose anchors are not
+  stable across wrapping. The retry matched WHOLE LINES and passed. Nothing was written by the failed run.
+- **A filtered run's count is not a suite's count.** The single failing test was measured at 6 assertions
+  on its own (5 passed + 1 failed, and the remaining 5 skipped by the throw), which is how the 720 total
+  was traced to that one test rather than to lost coverage.
+
+### What this round did NOT verify
+
+- **No browser run, at all.** The `--verify-refusal` / `--self-check` leg is green, and nothing else could
+  be: this round installs no package, and 8d is the round that puts the skin into the profile. Everything
+  about the running page — the card, the material, the first frame — is verified in 8d.
+- **`install.ps1` was not executed in any mode**, including `-DryRun`, and nothing under `$DSH_HOME` was
+  read or written. The workspace's own profile is untouched.
+- **The 64 skin references in `browser-verify.mjs` are unchanged and unexercised**: they cannot pass until
+  8d installs the package.
 
 ---
 
@@ -124,6 +315,21 @@ cannot render is a fact nobody sees. `check-installed.mjs` now prints an `UNATTR
 section (with each directory's snapshot count and why the name is not decoded back), and
 `install.ps1 -ListVersions` warns per snapshot and counts them in its summary. Both are asserted: the CLI by
 reading its wiring (a section that is never printed is what could silently rot), the script by its guard.
+
+### The assertion arithmetic, recorded by the next round because this one did not
+
+`939 → 732` is thirteen tests and **211** assertions leaving for the skin package, plus four assertions
+added here in their place (two for the two-sided `#42` rule check, and two for the `unattributed` outlet),
+with `#26` rewritten two-sided at no net change: `939 − 211 + 4 = 732`. The status line above stops there;
+the third commit of this step — the snapshot-root guard that keeps every package in `tools/snapshot.mjs` —
+added five more, and the suite stood at **737** when step 8c began, which is the number 8c then measured
+against.
+
+One thing is deliberately NOT claimed: that the skin's 225 is "the 211 plus fourteen". It is 211 + 14
+arithmetically, and the 14 are the skin's own new legs (thirteen registration assertions and the bundle-id
+one) — but a per-TEST correspondence between the 211 that left and the assertions the skin now makes was
+never recorded, so the sum is a coincidence of totals rather than a ledger. Anyone re-deriving this should
+count tests, not totals.
 
 ### Negative results and things that failed on the way
 

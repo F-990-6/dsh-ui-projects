@@ -27,21 +27,9 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import vm from 'node:vm'
 
-import { MARKER } from './boot-css-rules.mjs'
-
 const here = dirname(fileURLToPath(import.meta.url))
 const packageRoot = resolve(here, '..')
 const nodeRequire = createRequire(join(packageRoot, 'package.json'))
-
-/**
- * The marker the scoper puts on the body element — IMPORTED, so this suite cannot agree with a
- * marker that no longer exists.
- *
- * The assertions below are about the same string the build and the derive tool use, and the sheet
- * they produce carries it. Spelling it out here as well would have meant three places to change and
- * two of them to forget.
- */
-const LIQUID_GLASS_SELECTOR = MARKER
 
 const react = nodeRequire('react')
 const server = nodeRequire('react-dom/server')
@@ -1014,7 +1002,14 @@ await test('the test skin registers through the service, the way an external pac
   equal(project.source.package, 'test-skin-package', 'stamped with the package that registered it')
   equal(project.source.version, '1.0.0', 'and that package’s version')
   equal(harness.registry.isEnabled('test-skin'), false, 'registered is not enabled')
-  equal(harness.registry.ids().includes('liquid-glass'), true, 'and the framework still ships its own skin until 8c moves it')
+  /*
+   * AND IT IS THE ONLY PROJECT IN THIS HARNESS. The framework ships none of its own: the fixture
+   * `boot()` mounts is the whole registry, so the count below is the honest form of a claim that
+   * used to be written as "and the framework still ships its own skin until 8c moves it". Stating
+   * it as a count rather than by naming the moved project is deliberate — this suite must not
+   * depend on which package happens to be installed beside it.
+   */
+  equal(harness.registry.ids().length, 1, 'the fixture is the only project in the registry: this package registers none of its own')
 
   // The fiber is real: unloading the package withdraws the project, and nothing else. Withdrawal is
   // asynchronous — it retires the project (releasing its stylesheets, its marker and the persisted
@@ -1075,7 +1070,7 @@ await test('disabling test-skin leaves no style, marker or theme residue', async
 
   await harness.runtime.disable('test-skin')
   equal(harness.dom.styles().length, before, 'stylesheet removed')
-  excludes(harness.allCss(), '--ts-fill', 'no glass CSS left')
+  excludes(harness.allCss(), '--ts-fill', 'no fixture CSS left — the label said "no glass CSS left" until 8c, when the frame it described became this suite\'s own fixture')
   equal(harness.dom.ambient().length, 0, 'ambient layer removed')
   equal(harness.registry.isEnabled('test-skin'), false, 'registry state')
   equal(harness.projectMarker('test-skin'), null, 'project marker removed')
@@ -1471,11 +1466,11 @@ await test('the project modules register only once the settings slot is declared
      *
      * Until 8b this package registered its own skin straight into the registry
      * (`installBuiltInProjects`) — the one registration that skipped the service, because a package
-     * cannot hand itself a manifest it does not have. The framework now ships no project at all (8c makes
-     * that final), so what appears in this registry appears because a PACKAGE registered it: the fixture
-     * `boot()` mounts goes through `ctx.uiProjects.register`, and the test above this one asserts exactly
-     * that path. A custom context with no package in it therefore has an empty registry, which is the
-     * honest assertion rather than a gap.
+     * cannot hand itself a manifest it does not have. Step 8c deleted that call for good, so what
+     * appears in a registry appears because a PACKAGE registered it: the fixture `boot()` mounts goes
+     * through `ctx.uiProjects.register`, and the test above this one asserts exactly that path. A
+     * custom context with no package in it therefore has an empty registry, which is the honest
+     * assertion rather than a gap — and the two below it are the same claim from both directions.
      */
     equal(diagnosis.projects.length, 0, 'no project is service-registered until a package registers one')
     equal(registeredSection, undefined, 'and it does not register before the slot exists')
@@ -1484,10 +1479,18 @@ await test('the project modules register only once the settings slot is declared
     truthy(registeredSection !== undefined, 'the section registers once the slot exists')
     equal(registeredSection.id, 'ui', 'section id')
     equal(typeof registeredSection.label, 'function', 'localized label thunk')
+    /*
+     * ZERO, and it used to be one. This is the assertion that would have caught the framework
+     * quietly keeping a built-in project: a composition with no UI project package in it must have
+     * an empty registry, because the framework has nothing of its own to put there. `registering a
+     * settings section` used to be the moment the shipped skin was (re-)installed — the ordering
+     * hazard `src/client/index.js` documents at length — so the count is read here, after that
+     * callback has run, rather than only at load.
+     */
     equal(
       probe.registry.ids().length,
-      1,
-      'the framework’s own skin is the one registration that still skips the service — it moves out in 8c',
+      0,
+      'a package-less composition has an empty registry: this package registers no project of its own',
     )
 
     // The retired reminders section used to be a second registration here, with
@@ -2198,29 +2201,15 @@ await test('the boot page is dismissed once it is genuinely in the way', async (
   equal(harness.runtime.dismissBootPage(), false, 'a second attempt is a no-op')
 })
 
-await test('the first-paint predicate reads selectors the way CSS does', async () => {
-  const { classifyPrelude } = await import(
-    pathToFileURL(join(packageRoot, 'scripts', 'boot-css-rules.mjs')).href
-  )
-  const M = LIQUID_GLASS_SELECTOR
-  const cases = [
-    [M, 'body'],
-    [`${M}[data-ds-dark-theme]`, 'body'],
-    [`${M}, ${M}[data-ds-dark-theme]`, 'body'],
-    [`${M}[data-ui-perf='low']`, 'body'],
-    [`${M} .lg-glass`, 'other'],
-    [`${M} [role='dialog']`, 'other'],
-    [`${M}[data-ui-perf='low'] :where(:has(> [data-ui-skin-column]))::before`, 'other'],
-    [`${M}, ${M}[data-ui-perf='low'] :where([role='dialog'], [role='menu'])`, 'mixed'],
-    [`:where(${M} [role='dialog'], ${M} [role='menu'])`, 'other'],
-    [`${M}, .lg-glass`, 'mixed'],
-    ['.lg-glass', 'other'],
-    ['', 'other'],
-  ]
-  for (const [selector, expected] of cases) {
-    equal(classifyPrelude(selector), expected, `classifyPrelude(${JSON.stringify(selector)})`)
-  }
-})
+/*
+ * `the first-paint predicate reads selectors the way CSS does` MOVED OUT in 8c.
+ *
+ * `classifyPrelude` decides which rules a first paint may carry, and it is a statement about a
+ * PACKAGE's CSS — `tools/derive-boot-css.mjs` runs it over a package's stylesheets to write that
+ * package's `src/host/boot.css`. This suite has no CSS of its own any more, so the twelve cases now
+ * live in `@xjl-resources/dsh-plugin-liquid-glass`, against the real sheets whose first frame they
+ * decide. `scripts/boot-css-rules.mjs` and the derivation tool went with them.
+ */
 
 /*
  * The effect tier — step 6, first workstream.
@@ -4599,15 +4588,32 @@ const scanWith = (versions, version = '0.1.0') => ({
 
 await test('the card says which state the version information is in, and never more than it knows', async () => {
   const harness = await boot()
+  /*
+   * WHICH NAME THE CARD LOOKS UP. A card asks for `project.package` (falling back to this package's
+   * own name), so the fixture has to key `versions` by THAT string and also list that same name in
+   * `dependencies` — the comparison in the card is between the newest snapshot's version and the
+   * version the scan reports for the same package.
+   *
+   * This test used to read the name off `projects[0]` and rely on `scanWith`'s hard-coded
+   * `dsh-ui-projects`: it passed only because the first project was the skin this package shipped,
+   * which has no `package` field, so the fallback produced a name that matched. Step 8c removed that
+   * skin, `projects[0]` became the fixture (whose package is `test-skin-package`), the lookup fell to
+   * "no entries" and the state below came out `different` — a fixture that had been agreeing with the
+   * product by accident. `scanFor` states both halves of the pair explicitly.
+   */
   const packageName = harness.store.snapshot().projects[0]?.package ?? 'dsh-ui-projects'
+  const scanFor = (versions, version = '0.1.0') => ({
+    ...scanWith(versions, version),
+    dependencies: [{ name: packageName, version, kind: 'ui-project', bundled: true, problems: [] }],
+  })
 
   // No `versions` field at all: the host that answered has no such code.
-  const stale = renderProjectsWith(harness, installedStoreLike({ status: 'ready', scan: scanWith(undefined) }))
+  const stale = renderProjectsWith(harness, installedStoreLike({ status: 'ready', scan: scanFor(undefined) }))
   contains(stale, 'data-uip-version-state="host-stale"', 'a host without the field is reported as needing a restart')
   contains(stale, strings('en').snapshotHostStale, 'in words that say so')
 
   // The field is there and this package has none recorded: a fact about the profile.
-  const none = renderProjectsWith(harness, installedStoreLike({ status: 'ready', scan: scanWith({ [packageName]: [] }) }))
+  const none = renderProjectsWith(harness, installedStoreLike({ status: 'ready', scan: scanFor({ [packageName]: [] }) }))
   contains(none, 'data-uip-version-state="none"', 'an empty list is a different state from a missing field')
   contains(none, strings('en').snapshotNone, 'with its own sentence')
 
@@ -4617,7 +4623,7 @@ await test('the card says which state the version information is in, and never m
     harness,
     installedStoreLike({
       status: 'ready',
-      scan: scanWith({
+      scan: scanFor({
         [packageName]: [{ name: '01-v0.1.0', version: '0.1.0', createdAt: '2026-09-27T08:15:00.1234567Z' }],
       }),
     }),
@@ -4632,7 +4638,7 @@ await test('the card says which state the version information is in, and never m
     harness,
     installedStoreLike({
       status: 'ready',
-      scan: scanWith({ [packageName]: [{ name: '01-v0.0.9', version: '0.0.9', createdAt: '2026-09-20T08:15:00Z' }] }),
+      scan: scanFor({ [packageName]: [{ name: '01-v0.0.9', version: '0.0.9', createdAt: '2026-09-20T08:15:00Z' }] }),
     }),
   )
   contains(different, 'data-uip-version-state="different"', 'a snapshot that differs is its own state')

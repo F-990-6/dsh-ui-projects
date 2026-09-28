@@ -22,9 +22,10 @@
  *     and "read the settings document at emit time" — lives in `./service.js`, so
  *     it is written once for every package rather than once per package.
  *
- * The project shipped inside this package uses that same service rather than a private copy of
- * the contract. When it moves out to its own package (the extraction that makes this framework
- * skin-agnostic), this file keeps reasons 1–4 and loses every mention of a project id.
+ * The project that used to ship inside this package reaches that same service from its own package
+ * now. This file keeps reasons 1–4 and names no project id at all: the extraction is what makes the
+ * framework skin-agnostic, and a framework that still named one project would be a framework that
+ * had one.
  */
 
 import z from '@deepseek-ai/schemastery'
@@ -32,7 +33,6 @@ import z from '@deepseek-ai/schemastery'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
-import { BOOT_CSS } from './boot-css.js'
 import { registerInstalledEndpoint } from './installed-endpoint.js'
 import { UI_PROJECTS_SETTINGS_NAMESPACE, createHostService } from './service.js'
 
@@ -74,15 +74,6 @@ export const UI_PROJECTS_SETTINGS_SCHEMA = z.object({
   settings: z.dict(z.any()).default({}).description('Per-project options, keyed by project id.'),
   touched: z.boolean().default(false).description('Whether the user has changed anything yet.'),
 })
-
-/**
- * The project shipped inside this package.
- *
- * The host half needs exactly one id, and only for the first paint: a package's own host half
- * names its own project, and everything else here is generic. This is the one place this package
- * names a project, and it disappears with the project when the skin moves out.
- */
-const SHIPPED_SKIN_ID = 'liquid-glass'
 
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
@@ -189,13 +180,14 @@ export function apply(ctx) {
   /*
    * First paint — see reason 4 in the file header, and `service.js` for the contract.
    *
-   * This package is its own first client of the service, which is deliberate: it is the same
-   * three lines a third-party UI project package writes, so the framework cannot quietly depend
-   * on anything a package does not have.
+   * This half used to be the service's first client: it pushed its own shipped skin's rows into
+   * `webserver/index-inject` to prove the contract was writable from outside `service.js`. It now
+   * pushes nothing, and deliberately has no `index-inject` subscription at all — a listener whose
+   * only statement would be `table.push(...[])` is a line that claims a job it does not do. The
+   * rows belong to whichever package owns the stylesheet, and the contract stays tested from both
+   * sides: `scripts/host-check.mjs` drives `uiProjectsHost.bootRows` over a fixture sheet with this
+   * package's own host half mounted, and `load-check.mjs` mounts a REAL package's rows.
    */
-  ctx.on('webserver/index-inject', (table) => {
-    table.push(...hostService.bootRows(SHIPPED_SKIN_ID, BOOT_CSS))
-  })
 }
 
 /**

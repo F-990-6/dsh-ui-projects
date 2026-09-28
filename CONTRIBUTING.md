@@ -44,6 +44,25 @@ Two consequences worth carrying into new code:
 | `scripts/` | builds, suites and tools. `bundle-client.mjs` and `fake-dom.mjs` are shared with sibling UI project packages |
 | `docs/` | `uninstall.md` (the twelve things a removal consists of, which driver holds each one) and `update-and-rollback.md` (the snapshot → update → rollback workflow, its on-disk layout, and what each mode refuses to do). Both end in manual acceptance steps, because the host half can only be verified by a real run |
 
+**This package ships no UI project, and a test that names one is a test that names a package it does not
+own.** The framework owns the registry, the runtime, the settings page, the persistence and the
+first-paint CONTRACT (`src/host/service.js`); a look or an enhancement owns its stylesheet, its
+first-paint rows and its markers, and lives in its own repository —
+`@xjl-resources/dsh-plugin-liquid-glass` and `dsh-ui-project-skeleton` are the two that exist. Three
+consequences for anything added here:
+
+- Fixtures use `scripts/test-skin.mjs`, whose id is `test-skin`. `src/**` used to contain one real
+  project; since step 8c it contains none, and `scripts/verify.mjs` asserts that both ways round
+  (a `boot()` harness holds exactly the fixture, and a package-less composition holds nothing).
+- A suite may still name an INSTALLED package by its directory — `load-check.mjs` mounts the skin's
+  real `lib/client.js`, and `browser-verify.mjs` drives it in a real browser. Those are tests of the
+  framework driving a package, not the framework depending on one; the rule is about `src/**` CODE,
+  which must name no project at all. Two things keep a name in `src/**` on purpose: a comment that
+  records an incident keeps the name it happened under, because a neutralised comment loses the trace,
+  and `persist.js`'s `LEGACY_LOCAL_KEYS` is a migration constant that has to keep the old spelling.
+- The snapshot roots in `tools/snapshot.mjs` are where "every first-class package" is enumerated. A
+  new package is a new root.
+
 ## The verification set
 
 ```powershell

@@ -440,12 +440,15 @@ if (selfCheckOnly) {
  * A miss is now a thrown error rather than a default, which is the part that matters: a value this
  * script asserts against must never be something it invented. (Round 20 removed the same class of
  * silence from the Node suite by reading a storage key from the module that owns it.)
+ *
+ * The path follows the sheet, not the framework: this suite drives the INSTALLED skin, so the value
+ * it compares against has to come from the skin's own source. That file was this package's until
+ * step 8c; the relative path to the sibling package is the same arrangement `load-check.mjs` uses to
+ * mount the package's real bundle.
  */
 const MOBILE_BLUR_TOKEN = '--lg-glass-blur-mobile'
-const mobileBlurSource = await (await import('node:fs/promises')).readFile(
-  new URL('../src/client/projects/liquid-glass/glass.css', import.meta.url),
-  'utf8',
-)
+const SKIN_GLASS_CSS = new URL('../../dsh-plugin-liquid-glass/src/client/projects/liquid-glass/glass.css', import.meta.url)
+const mobileBlurSource = await (await import('node:fs/promises')).readFile(SKIN_GLASS_CSS, 'utf8')
 const mobileBlurMatch = new RegExp(`${MOBILE_BLUR_TOKEN}:\\s*(\\d+)px`).exec(mobileBlurSource)
 if (mobileBlurMatch === null) {
   throw new Error(`glass.css declares no ${MOBILE_BLUR_TOKEN}, so the mobile assertion has nothing to compare against`)

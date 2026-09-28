@@ -156,8 +156,7 @@ export function transform(id, source, context = { hasModule: () => false, direct
  * Map a source file path to its module id.
  *
  * The extension is dropped, a directory index module collapses to its directory
- * (`projects/liquid-glass/index.js` → `projects/liquid-glass`), and the package
- * entry becomes `entry`.
+ * (`a/b/index.js` → `a/b`), and the package entry becomes `entry`.
  *
  * Deliberately not `index`: ids collapse directory index modules, so an id
  * literally named `index` would be indistinguishable from the collapse of an
@@ -176,11 +175,11 @@ export function toId(posix, entryFile = 'index.js', entryId = 'entry') {
  * The directory a relative request resolves against, for one module id.
  *
  * A relative specifier is relative to the directory CONTAINING the importing
- * file. Because ids collapse a directory index module (`projects/liquid-glass` is
- * the id of `projects/liquid-glass/index.js`), that containing directory is the
- * id itself — unless the id names a plain module, in which case it is the id's
- * parent. `projects/liquid-glass` and `projects/liquid-glass/index` therefore
- * behave identically, which is the whole point of collapsing them.
+ * file. Because ids collapse a directory index module (`a/b` is the id of
+ * `a/b/index.js`), that containing directory is the id itself — unless the id
+ * names a plain module, in which case it is the id's parent. `a/b` and
+ * `a/b/index` therefore behave identically, which is the whole point of
+ * collapsing them.
  *
  * The browser bundle runs the identical rule against its own registry. When the
  * build knows the importing file's real directory it passes that instead of
@@ -212,7 +211,7 @@ export function resolveRequest(id, spec, hasModule, containingDirectory) {
   const directory = containingDirectory ?? directoryOf(id, hasModule)
   // Join FIRST, then normalize the whole path: `..` must be able to consume
   // segments contributed by the base directory, which is what
-  // `projects/liquid-glass` + `../registry.js` depends on.
+  // `a/b` + `../c.js` depends on.
   const joined = directory === '' ? spec : `${directory}/${spec}`
   /** @type {string[]} */
   const parts = []
