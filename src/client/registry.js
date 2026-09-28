@@ -523,6 +523,19 @@ export function normalize(definition) {
      * dropped between the declaration and the card.
      */
     controls: Object.freeze(Array.isArray(definition.controls) ? definition.controls.map((entry) => Object.freeze({ ...entry })) : []),
+    /**
+     * The package that registered this project — `{ package, version, registeredBy }`, stamped by
+     * `service.js` from the manifest the caller passed.
+     *
+     * IT HAS TO BE NAMED HERE, and that is the whole lesson: `normalize` is a whitelist, so a field the
+     * service sets and nobody lists is dropped between the service and the card. This one WAS dropped,
+     * for every project, from the round that introduced it: `store.js` reads
+     * `project.source?.package ?? 'dsh-ui-projects'`, so the fallback answered for everything — correct
+     * by accident for the framework's own skin, and a lie on any card belonging to another package.
+     * A test fixture whose package is `test-skin-package` is what surfaced it, which is the argument for
+     * fixtures that are distinguishable from the thing under test.
+     */
+    source: definition.source === undefined ? undefined : Object.freeze({ ...definition.source }),
   })
 }
 

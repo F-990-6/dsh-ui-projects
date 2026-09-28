@@ -19,9 +19,11 @@
  * Run: `npm test` (after `npm run build`).
  */
 
-import { readdir, readFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import vm from 'node:vm'
 
@@ -327,45 +329,131 @@ function createCtx(input) {
     },
   })
 
-  const ctx = {
-    get: (/** @type {string} */ name) => services.get(name),
-    /**
-     * Cordis' dependency-resolved injection. The fake runs the callback immediately when
-     * every named service already exists, which is how the real one behaves — and it
-     * calls back synchronously, so the bundle's subscriptions exist by the time `apply`
-     * returns, exactly as they do in the browser.
-     * @param {string[]} names
-     * @param {(scoped: any) => any} callback
-     */
-    inject(names, callback) {
-      const ready = names.every((name) => services.get(name) !== undefined)
-      if (!ready) return () => {}
-      const result = callback(ctx)
-      const dispose = typeof result === 'function' ? result : () => {}
-      disposers.push(dispose)
-      return dispose
-    },
-    provide(/** @type {string} */ name, /** @type {unknown} */ value) {
-      services.set(name, value)
-      return () => services.delete(name)
-    },
-    on() {
-      return () => {}
-    },
-    /** @param {() => any} callback */
-    effect(callback) {
-      const result = callback()
-      const dispose = typeof result === 'function' ? result : () => {}
-      effects.push(dispose)
-      return dispose
-    },
-    cleanup() {
-      for (const dispose of effects.reverse()) dispose()
-      effects.length = 0
-      registrations.length = 0
-      handlers.clear()
-    },
+  /**
+   * Cordis's traceable-service contract, in the small.
+   *
+   * A service carrying `Symbol.for('cordis.tracker')` is handed back as a proxy whose
+   * `tracker.property` (for `uiProjects`, `ctx`) is the context that REACHED it, and whose methods run
+   * with a shadow of the service as `this` — the shadow inherits everything and differs only in that
+   * property. This is not decoration: `src/client/service.js` reads `this.ctx` to bind a registration's
+   * lifetime to the caller's fiber, so without it the fixture's `ctx.uiProjects.register(...)` would
+   * throw "must be called as ctx.uiProjects.register(...)" — a fake that refuses the real call shape.
+   *
+   * Production implementation: `cordis/lib/index.js` (`createTraceable`, and the shadow it builds for
+   * methods). The tracker itself is declared in `src/client/service.js`.
+   * @param {any} accessingCtx @param {any} value @param {{ property: string }} tracker
+   */
+  const traceableFor = (accessingCtx, value, tracker) => {
+    const shadow = Object.create(value)
+    shadow[tracker.property] = accessingCtx
+    return new Proxy(value, {
+      get(target, prop, receiver) {
+        if (prop === tracker.property) return accessingCtx
+        const inner = Reflect.get(target, prop, receiver)
+        if (typeof inner !== 'function') return inner
+        return (/** @type {any[]} */ ...args) => inner.apply(shadow, args)
+      },
+    })
   }
+
+  /**
+   * One context over the shared service map.
+   *
+   * `own` is where this context's `effect` registrations go, and that is the whole of `child()`: the
+   * root keeps the plugin's own disposers, and a child stands in for a PACKAGE's fiber, so a test can
+   * unload one package (`fiber.cleanup()`) without tearing down the framework it registered against.
+   * @param {Array<() => void>} own
+   * @param {boolean} isRoot
+   */
+  const makeCtx = (own, isRoot) => {
+    /** One traceable view per (context, service), so `ctx.uiProjects === ctx.uiProjects` holds. */
+    const views = new WeakMap()
+    /**
+     * A service as THIS context sees it.
+     *
+     * The traceable wrapper is built per access rather than once at `provide` time, and that is the
+     * whole point: `this.ctx` must be the context that REACHED the service — a package's fiber when a
+     * package registers, the framework's own context when the framework does. Building it once would
+     * pin every caller to whoever provided it first.
+     * @param {string} name
+     */
+    const resolve = (name) => {
+      const raw = services.get(name)
+      if (raw === null || typeof raw !== 'object') return raw
+      const tracker = /** @type {any} */ (raw)[Symbol.for('cordis.tracker')]
+      if (tracker === undefined) return raw
+      const cached = views.get(raw)
+      if (cached !== undefined) return cached
+      const view = traceableFor(ctx, raw, tracker)
+      views.set(raw, view)
+      return view
+    }
+    const base = {
+      get: (/** @type {string} */ name) => resolve(name),
+      /**
+       * Cordis' dependency-resolved injection. The fake runs the callback immediately when
+       * every named service already exists, which is how the real one behaves — and it
+       * calls back synchronously, so the bundle's subscriptions exist by the time `apply`
+       * returns, exactly as they do in the browser.
+       * @param {string[]} names
+       * @param {(scoped: any) => any} callback
+       */
+      inject(names, callback) {
+        const ready = names.every((name) => services.get(name) !== undefined)
+        if (!ready) return () => {}
+        const result = callback(ctx)
+        const dispose = typeof result === 'function' ? result : () => {}
+        own.push(dispose)
+        return dispose
+      },
+      provide(/** @type {string} */ name, /** @type {unknown} */ value) {
+        services.set(name, value)
+        return () => services.delete(name)
+      },
+      on() {
+        return () => {}
+      },
+      /** @param {() => any} callback */
+      effect(callback) {
+        const result = callback()
+        const dispose = typeof result === 'function' ? result : () => {}
+        own.push(dispose)
+        return dispose
+      },
+      /** A fiber of its own, for a package that registers through the service. */
+      child: () => makeCtx([], false),
+      cleanup() {
+        for (const dispose of own.reverse()) dispose()
+        own.length = 0
+        /*
+         * The slots bookkeeping belongs to the ROOT only: unloading a package must not unregister the
+         * framework's own settings sections, which is exactly the mistake this distinction prevents.
+         */
+        if (isRoot) {
+          registrations.length = 0
+          handlers.clear()
+        }
+      },
+    }
+    /*
+     * A provided service is also a PROPERTY (`ctx.uiProjects`), which is how every UI project package
+     * reaches it — the client half of a package writes `ctx.uiProjects.register(...)`, not
+     * `ctx.get('uiProjects')`. The proxy adds that, and nothing else: everything already on the context
+     * wins, and symbols are passed straight through.
+     */
+    const ctx = new Proxy(base, {
+      get(target, prop, receiver) {
+        if (typeof prop === 'string' && !(prop in target)) {
+          const service = resolve(prop)
+          if (service !== undefined) return service
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+    return ctx
+  }
+
+  const ctx = makeCtx(effects, true)
 
   void dom
   return {
@@ -597,12 +685,141 @@ const { MATERIAL_ALPHA_CEILING, MATERIAL_ALPHA_FLOOR, MATERIAL_SCALE_REVISION } 
 /** Tears down the most recent boot, so tests cannot leak into one another. */
 let activeCleanup
 
+/*
+ * ── THE TEST SKIN ─────────────────────────────────────────────────────────────
+ *
+ * The framework's own fixture, registered the way an EXTERNAL UI project package registers: a manifest
+ * shaped like `dsh.uiProject` plus a definition carrying behaviour and nothing else, handed to
+ * `ctx.uiProjects.register(manifest, definition)` from a fiber of its own.
+ *
+ * WHY IT EXISTS. Until step 8 the framework shipped Liquid Glass inside itself and the suite used it as
+ * its subject: every runtime, registry, panel and store test turned the skin on and asserted what
+ * happened. That made the suite unable to tell "the framework works" from "Liquid Glass works" — and
+ * once the skin moves to its own package (8c) those tests would either have to reach across packages or
+ * stop existing. `test-skin` is the framework's own subject, and its name says so: `liquid-glass` in a
+ * framework test was always a borrowed noun.
+ *
+ * The package name is `test-skin-package` rather than the project id, deliberately: the card shows the
+ * PACKAGE a project came from, and the fixture has to exercise that path to be worth anything.
+ */
+const TEST_SKIN_MANIFEST = {
+  schemaVersion: 1,
+  pluginApiVersion: 1,
+  package: 'test-skin-package',
+  version: '1.0.0',
+  id: 'test-skin',
+  name: 'Test Skin',
+  description: 'The framework suite’s own skin. It exists to be a subject, not a look.',
+  type: 'skin',
+  scope: 'global',
+  defaultEnabled: false,
+  supports: ['light', 'dark', 'mobile'],
+  perfLevel: 'high',
+  testItems: [
+    { id: 'one', label: 'The first thing a person should look at' },
+    { id: 'two', label: 'The second thing' },
+    { id: 'three', label: 'The third thing' },
+  ],
+  preview: 'linear-gradient(160deg, #f7f9ff 0%, #e6ecff 100%)',
+  previewLabel: 'Test skin preview',
+}
+
+/**
+ * The fixture's stylesheet, and every rule shape in it is there on purpose.
+ *
+ * A fixture that inserts one trivial rule would let thirty tests pass while testing nothing: the
+ * framework's own claims are about what it does to REAL stylesheets — scoping conditionals, keeping
+ * `:has()` in one piece, refusing an impossible selector, noticing a filter declaration, publishing a
+ * tier. Each shape below exists because some assertion needs it:
+ *
+ *   1. a body-level token rule        → scoped to the marker itself; the first-paint shape
+ *   2. a rule reaching a shipped surface by ARIA role → the "published interface, not a hash" rule
+ *   3. `:has(… )::before` with a blur → the frost. The `::before` is NOT decoration: `backdrop-filter`
+ *      creates a containing block, so a blur written directly on the column would capture every `fixed`
+ *      descendant (the settings dialog). Liquid Glass learned that in 7d and the fixture keeps the shape
+ *   4. an `@supports` branch           → a conditional the scoper must recurse into
+ *   5. an `@media` branch              → the same, and the shape a contrast mode arrives in
+ *   6. two tier variants               → `data-ui-perf` is read off the body, so the rule is authored
+ *      as `body[data-ui-perf='…'] …` and the scoper must MERGE the marker into that compound rather
+ *      than nest a second body inside it
+ *
+ * And two shapes it must NOT contain, because two rules kept in this suite as the skin author's own
+ * contract assert their absence: no `backdrop-filter` on a container that holds every surface, and no
+ * build-hashed class name.
+ */
+const TEST_SKIN_CSS = `
+:root {
+  --ts-fill: rgb(255 255 255 / 82%);
+  --ts-accent: #4d6bfe;
+  --dsv-accent: var(--ts-accent);
+}
+[role='dialog'] {
+  background: var(--ts-fill);
+}
+:has(> [data-ui-skin-column])::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  backdrop-filter: blur(20px);
+}
+@supports (backdrop-filter: blur(1px)) {
+  [data-composer-card] {
+    backdrop-filter: blur(20px);
+  }
+}
+@supports not (backdrop-filter: blur(1px)) {
+  :root {
+    --ts-fill: rgb(255 255 255);
+  }
+}
+@media (prefers-contrast: more) {
+  :root {
+    --ts-fill: rgb(255 255 255 / 97%);
+  }
+}
+body[data-ui-perf='medium'] :has(> [data-ui-skin-column])::before {
+  backdrop-filter: blur(16px);
+}
+body[data-ui-perf='low'] :has(> [data-ui-skin-column])::before {
+  backdrop-filter: blur(12px);
+}
+`
+
+/**
+ * Register the test skin through the service, from a fiber of its own.
+ *
+ * This is the same three lines an external package's client half writes — `inject: ['uiProjects']`, then
+ * `register(manifest, definition)` — with the injection already satisfied. `harness.testSkin.unmount()`
+ * unloads that fiber, which is how "a package going away withdraws its projects" becomes testable here
+ * rather than only in `load-check.mjs`.
+ * @param {any} harness
+ * @param {{ manifest?: Record<string, any>, definition?: Record<string, any> }} [overrides]
+ */
+function mountTestSkin(harness, overrides = {}) {
+  const manifest = { ...TEST_SKIN_MANIFEST, ...(overrides.manifest ?? {}) }
+  const fiber = harness.ctx.child()
+  fiber.uiProjects.register(manifest, {
+    apply(/** @type {any} */ ctx) {
+      ctx.insertCss(TEST_SKIN_CSS)
+      /*
+       * Every skin that paints the frame needs the runtime's column seam (`data-ui-skin-column`), so the
+       * fixture asks for it too — `glass.css` selects it through `:has(> [data-ui-skin-column])`, and the
+       * retry/observer tests are about that request rather than about Liquid Glass.
+       */
+      ctx.markColumns()
+    },
+    cleanup() {},
+    ...(overrides.definition ?? {}),
+  })
+  return { manifest, fiber, unmount: () => fiber.cleanup() }
+}
+
 /**
  * Boot a plugin instance against fake DOM globals and fake services.
  *
  * Each boot tears down the previous one first, so tests neither leak effects into
  * one another nor double-dispose them.
- * @param {{ withStorage?: boolean | ReturnType<typeof createStorage>, withSettingsScope?: boolean, scopeRecord?: Record<string, unknown>, scopeDelayMs?: number, scopeError?: string, withTheme?: boolean, detachedFrame?: boolean, viewportWidth?: number, viewportHeight?: number, fakeTimers?: boolean, device?: { cores?: number, saveData?: boolean } }} [options]
+ * @param {{ withStorage?: boolean | ReturnType<typeof createStorage>, withSettingsScope?: boolean, scopeRecord?: Record<string, unknown>, scopeDelayMs?: number, scopeError?: string, withTheme?: boolean, detachedFrame?: boolean, viewportWidth?: number, viewportHeight?: number, fakeTimers?: boolean, device?: { cores?: number, saveData?: boolean }, withTestSkin?: boolean }} [options]
  */
 async function boot(options = {}) {
   // Tear down BEFORE the sandbox globals move: a previous instance's disposers
@@ -710,6 +927,15 @@ async function boot(options = {}) {
   const runtime = plugin.runtime
   if (runtime === undefined) throw new Error('the plugin did not publish its runtime')
 
+  /*
+   * THE FIXTURE IS MOUNTED HERE, by default, because a framework test almost always needs a project to
+   * be about — and mounting it in `boot()` is what keeps the thirty-two converted tests from growing a
+   * setup paragraph each. `withTestSkin: false` is for the tests whose subject is the ABSENCE of a
+   * registration: an empty registry, a refusal that must leave nothing behind, or "nothing registers
+   * before the slot is declared".
+   */
+  const testSkin = options.withTestSkin === false ? undefined : mountTestSkin({ ctx: host.ctx })
+
   activeCleanup = () => {
     host.ctx.cleanup()
     sandbox.document = undefined
@@ -728,6 +954,8 @@ async function boot(options = {}) {
      * than re-deriving it. Captured at boot: the module-level handle moves on with the next boot.
      */
     store: plugin.store,
+    /** The fixture, when one was mounted: its manifest, its fiber, and how to unload the package. */
+    testSkin,
     /** Present only with `fakeTimers`, and then the only place timers can be inspected. */
     timers,
     persistKind: runtime.persist.kind,
@@ -856,34 +1084,58 @@ await test('the registry rejects a malformed project id', () => {
 await test('the runtime feeds the theme service a layer it can take back', async () => {
   const harness = await boot({ withTheme: true })
   equal(harness.themeLayers(), 0, 'no layer before the skin is on')
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
   equal(harness.themeLayers(), 0, 'the skin itself registers no theme layer (its palette is a stylesheet)')
   harness.runtime.dispose()
   equal(harness.themeLayers(), 0, 'and none survives')
 })
 
-await test('liquid-glass registers as a skin that is off by default', () => {
-  const registry = new Registry()
-  registry.register(plugin.liquidGlass)
-  const project = registry.get('liquid-glass')
-  equal(project.type, 'skin', 'type')
-  equal(project.defaultEnabled, false, 'defaultEnabled')
-  equal(project.version, '3.0.0', 'version')
-  equal(registry.isEnabled('liquid-glass'), false, 'initial state')
+/*
+ * THE FIXTURE'S OWN CONTRACT — the one test that says what `boot()` mounts, and that the way it mounts
+ * is the way an external package mounts.
+ *
+ * It replaces `test-skin registers as a skin that is off by default`, which read the framework's own
+ * built-in definition out of `__internals`. That export disappears with the skin in 8c; what is left is
+ * the property the framework actually owns — a package hands over a manifest and behaviour, the service
+ * validates and stamps them, and the registry sees one project whose fields came from the manifest.
+ */
+await test('the test skin registers through the service, the way an external package does', async () => {
+  const harness = await boot()
+  const project = harness.registry.get('test-skin')
+  truthy(project !== undefined, 'the registry holds the fixture')
+  equal(project.type, 'skin', 'its type comes from the manifest')
+  equal(project.defaultEnabled, false, 'it is off by default')
+  equal(project.version, '1.0.0', 'and its version IS the package version — never a second number')
+  equal(project.source.package, 'test-skin-package', 'stamped with the package that registered it')
+  equal(project.source.version, '1.0.0', 'and that package’s version')
+  equal(harness.registry.isEnabled('test-skin'), false, 'registered is not enabled')
+  equal(harness.registry.ids().includes('liquid-glass'), true, 'and the framework still ships its own skin until 8c moves it')
+
+  // The fiber is real: unloading the package withdraws the project, and nothing else. Withdrawal is
+  // asynchronous — it retires the project (releasing its stylesheets, its marker and the persisted
+  // record) before dropping the definition — so this waits for the registry to change rather than
+  // assuming how many ticks that takes.
+  const registeredBefore = harness.registry.ids().length
+  harness.testSkin.unmount()
+  for (let attempt = 0; attempt < 50 && harness.registry.get('test-skin') !== undefined; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  equal(harness.registry.get('test-skin'), undefined, 'unloading the package withdraws its project')
+  equal(harness.registry.ids().length, registeredBefore - 1, 'and takes nothing else with it')
 })
 
-await test('enabling liquid-glass marks the root and mounts its material', async () => {
+await test('enabling test-skin marks the root and mounts its material', async () => {
   const harness = await boot()
   const before = harness.dom.styles().length
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
 
-  equal(harness.registry.isEnabled('liquid-glass'), true, 'registry state')
-  equal(harness.projectMarker('liquid-glass'), 'on', 'project marker')
-  equal(harness.dom.root.getAttribute('data-ui-skin'), 'liquid-glass', 'skin marker')
+  equal(harness.registry.isEnabled('test-skin'), true, 'registry state')
+  equal(harness.projectMarker('test-skin'), 'on', 'project marker')
+  equal(harness.dom.root.getAttribute('data-ui-skin'), 'test-skin', 'skin marker')
   equal(harness.dom.root.getAttribute('data-ui-projects'), 'on', 'system marker')
   truthy(harness.dom.styles().length > before, 'a stylesheet was inserted')
-  truthy(harness.stylesContain('--lg-fill'), 'design tokens present')
-  truthy(harness.stylesContain('body[data-ui-project-liquid-glass="on"]'), 'CSS scoped to the marker')
+  truthy(harness.stylesContain('--ts-fill'), 'design tokens present')
+  truthy(harness.stylesContain('body[data-ui-project-test-skin="on"]'), 'CSS scoped to the marker')
   truthy(harness.stylesContain('@supports not'), 'the no-backdrop-filter fallback ships with it')
   equal(harness.dom.ambient().length, 0, 'this skin mounts no DOM: stylesheets only')
 })
@@ -898,30 +1150,30 @@ await test('skins are mutually exclusive and the previous one is fully removed',
     type: 'skin',
   })
 
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
   await harness.runtime.enable('other-skin')
 
-  equal(harness.registry.isEnabled('liquid-glass'), false, 'previous skin off')
+  equal(harness.registry.isEnabled('test-skin'), false, 'previous skin off')
   equal(harness.registry.isEnabled('other-skin'), true, 'new skin on')
   equal(harness.dom.root.getAttribute('data-ui-skin'), 'other-skin', 'skin marker follows the winner')
-  equal(harness.projectMarker('liquid-glass'), null, 'previous marker removed')
+  equal(harness.projectMarker('test-skin'), null, 'previous marker removed')
   equal(harness.dom.ambient().length, 0, 'previous skin DOM removed')
-  excludes(harness.allCss(), '--lg-fill', 'previous skin CSS removed')
+  excludes(harness.allCss(), '--ts-fill', 'previous skin CSS removed')
 })
 
-await test('disabling liquid-glass leaves no style, marker or theme residue', async () => {
+await test('disabling test-skin leaves no style, marker or theme residue', async () => {
   const harness = await boot({ withTheme: true })
   const before = harness.dom.styles().length
 
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
   truthy(harness.dom.styles().length > before, 'stylesheet added while on')
 
-  await harness.runtime.disable('liquid-glass')
+  await harness.runtime.disable('test-skin')
   equal(harness.dom.styles().length, before, 'stylesheet removed')
-  excludes(harness.allCss(), '--lg-fill', 'no glass CSS left')
+  excludes(harness.allCss(), '--ts-fill', 'no glass CSS left')
   equal(harness.dom.ambient().length, 0, 'ambient layer removed')
-  equal(harness.registry.isEnabled('liquid-glass'), false, 'registry state')
-  equal(harness.projectMarker('liquid-glass'), null, 'project marker removed')
+  equal(harness.registry.isEnabled('test-skin'), false, 'registry state')
+  equal(harness.projectMarker('test-skin'), null, 'project marker removed')
   equal(harness.dom.root.getAttribute('data-ui-skin'), null, 'skin marker removed')
   equal(harness.dom.root.getAttribute('data-ui-projects'), 'on', 'system marker stays while mounted')
   equal(harness.themeLayers(), 0, 'no theme token layer left')
@@ -1015,15 +1267,15 @@ await test('a project that throws on apply is rolled back and reported as an err
 
 await test('dispose() removes every effect it owns', async () => {
   const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
   harness.runtime.dispose()
-  equal(harness.registry.isEnabled('liquid-glass'), false, 'nothing active after dispose')
+  equal(harness.registry.isEnabled('test-skin'), false, 'nothing active after dispose')
   equal(
     harness.dom.styles().length,
     1,
     'the project stylesheet is removed; only the system stylesheet is left',
   )
-  excludes(harness.allCss(), '--lg-fill', 'no project CSS left')
+  excludes(harness.allCss(), '--ts-fill', 'no project CSS left')
   equal(harness.dom.ambient().length, 0, 'ambient removed')
   equal(harness.dom.root.getAttribute('data-ui-projects'), null, 'system marker removed')
 })
@@ -1031,11 +1283,11 @@ await test('dispose() removes every effect it owns', async () => {
 await test('state persists and survives a reload, in both directions', async () => {
   const storage = createStorage()
   const first = await boot({ withStorage: storage })
-  await first.runtime.enable('liquid-glass')
-  equal(first.registry.isEnabled('liquid-glass'), true, 'enabled before reload')
+  await first.runtime.enable('test-skin')
+  equal(first.registry.isEnabled('test-skin'), true, 'enabled before reload')
   equal(
     JSON.stringify(first.runtime.persist.read().enabled),
-    '["liquid-glass"]',
+    '["test-skin"]',
     'the record stores what is on, not what is off',
   )
 
@@ -1043,14 +1295,14 @@ await test('state persists and survives a reload, in both directions', async () 
   // must therefore survive it — the bug the record shape exists to prevent.
   const reloaded = await boot({ withStorage: storage })
   await reloaded.runtime.start()
-  equal(reloaded.registry.isEnabled('liquid-glass'), true, 'restored on reload')
-  equal(reloaded.projectMarker('liquid-glass'), 'on', 'marker restored')
+  equal(reloaded.registry.isEnabled('test-skin'), true, 'restored on reload')
+  equal(reloaded.projectMarker('test-skin'), 'on', 'marker restored')
   equal(reloaded.dom.ambient().length, 0, 'and it mounts no DOM on reload either')
-  truthy(reloaded.stylesContain('--lg-fill'), 'its stylesheet restored')
+  truthy(reloaded.stylesContain('--ts-fill'), 'its stylesheet restored')
 
   const turnedOff = await boot({ withStorage: storage })
   await turnedOff.runtime.start()
-  await turnedOff.runtime.disable('liquid-glass')
+  await turnedOff.runtime.disable('test-skin')
   equal(
     JSON.stringify(turnedOff.runtime.persist.read().enabled),
     '[]',
@@ -1059,8 +1311,8 @@ await test('state persists and survives a reload, in both directions', async () 
 
   const third = await boot({ withStorage: storage })
   await third.runtime.start()
-  equal(third.registry.isEnabled('liquid-glass'), false, 'stays off after reload')
-  equal(third.projectMarker('liquid-glass'), null, 'no marker after reload')
+  equal(third.registry.isEnabled('test-skin'), false, 'stays off after reload')
+  equal(third.projectMarker('test-skin'), null, 'no marker after reload')
 })
 
 await test('storage keys from a previous generation are swept on load', async () => {
@@ -1099,12 +1351,12 @@ await test('state uses the dsh settings document when the host offers a scope', 
   const harness = await boot({ withSettingsScope: true })
   equal(harness.persistKind, 'settings', 'adapter kind')
 
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
   equal(harness.settingsSection()?.touched, true, 'touched recorded')
   equal(harness.settingsSection()?.initialized, true, 'initialized recorded')
-  equal(JSON.stringify(harness.settingsSection()?.enabled), '["liquid-glass"]', 'enabled recorded')
+  equal(JSON.stringify(harness.settingsSection()?.enabled), '["test-skin"]', 'enabled recorded')
 
-  await harness.runtime.disable('liquid-glass')
+  await harness.runtime.disable('test-skin')
   equal(JSON.stringify(harness.settingsSection()?.enabled), '[]', 'disabled recorded as an empty set')
 })
 
@@ -1122,13 +1374,13 @@ await test('a record that arrives after the bind is still restored', async () =>
   const harness = await boot({
     withSettingsScope: true,
     scopeDelayMs: 20,
-    scopeRecord: { v: 1, initialized: true, enabled: ['liquid-glass'], settings: {}, touched: true },
+    scopeRecord: { v: 1, initialized: true, enabled: ['test-skin'], settings: {}, touched: true },
   })
 
   equal(harness.persistKind, 'settings', 'the settings document is the backend')
   equal(harness.runtime.persist.readiness, 'ready', 'and the wait settled on a real answer')
-  equal(harness.registry.isEnabled('liquid-glass'), true, 'the stored choice is applied, not the shipped default')
-  truthy(harness.projectMarker('liquid-glass') !== null, 'so the skin is genuinely on')
+  equal(harness.registry.isEnabled('test-skin'), true, 'the stored choice is applied, not the shipped default')
+  truthy(harness.projectMarker('test-skin') !== null, 'so the skin is genuinely on')
 })
 
 await test('a failed read settles instead of waiting out the deadline', async () => {
@@ -1139,15 +1391,15 @@ await test('a failed read settles instead of waiting out the deadline', async ()
 
   equal(harness.runtime.persist.readiness, 'error', 'a snapshot carrying an error is terminal')
   equal(harness.persistKind, 'settings', 'the backend is still the settings document')
-  equal(harness.registry.isEnabled('liquid-glass'), false, 'and the defaults apply rather than a hang')
+  equal(harness.registry.isEnabled('test-skin'), false, 'and the defaults apply rather than a hang')
 })
 
 await test('resetAll returns to the shipped default in one step', async () => {
   const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
   await harness.runtime.resetAll()
-  equal(harness.registry.isEnabled('liquid-glass'), false, 'back to its default')
-  equal(harness.projectMarker('liquid-glass'), null, 'no marker')
+  equal(harness.registry.isEnabled('test-skin'), false, 'back to its default')
+  equal(harness.projectMarker('test-skin'), null, 'no marker')
   equal(harness.dom.styles().length, 1, 'only the system stylesheet remains')
 })
 
@@ -1171,19 +1423,19 @@ await test('the rendered page shows a keyboard-accessible switch per project', a
   const markup = harness.render()
 
   contains(markup, 'class="uip-root"')
-  contains(markup, 'Liquid Glass')
+  contains(markup, 'Test Skin')
   contains(markup, 'role="switch"')
   contains(markup, 'aria-checked="false"')
-  contains(markup, 'aria-label="Turn on Liquid Glass"')
+  contains(markup, 'aria-label="Turn on Test Skin"')
   contains(markup, 'v1.0.0')
   contains(markup, 'Skin')
   contains(markup, 'Restore default UI')
   contains(markup, 'data-status="inactive"')
 
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
   const after = harness.render()
   contains(after, 'aria-checked="true"')
-  contains(after, 'aria-label="Turn off Liquid Glass"')
+  contains(after, 'aria-label="Turn off Test Skin"')
   contains(after, 'data-status="active"')
 })
 
@@ -1310,21 +1562,28 @@ await test('the project modules register only once the settings slot is declared
     equal(diagnosis.hostPlane, 'absent', 'with no host announcement the host plane is reported as absent, not as a failure')
     equal(Array.isArray(diagnosis.projects), true, 'the diagnosis lists the projects it covers')
     /*
-     * `liquid-glass` is NOT in that list, and that is the shape of the transition rather than a
-     * gap: the project shipped inside THIS package is registered straight into the registry
-     * (`installBuiltInProjects`), because a package cannot hand itself a manifest it does not have
-     * yet. Every package that arrives through `dsh.uiProject` registers through the service —
-     * which is what makes `source` complete for them — and the built-in one joins them when it
-     * moves out to its own package.
+     * NO PROJECT IS REGISTERED BY THE FRAMEWORK ITSELF, and this probe is where that became visible.
+     *
+     * Until 8b this package registered its own skin straight into the registry
+     * (`installBuiltInProjects`) — the one registration that skipped the service, because a package
+     * cannot hand itself a manifest it does not have. The framework now ships no project at all (8c makes
+     * that final), so what appears in this registry appears because a PACKAGE registered it: the fixture
+     * `boot()` mounts goes through `ctx.uiProjects.register`, and the test above this one asserts exactly
+     * that path. A custom context with no package in it therefore has an empty registry, which is the
+     * honest assertion rather than a gap.
      */
     equal(diagnosis.projects.length, 0, 'no project is service-registered until a package registers one')
-    equal(registeredSection, undefined, 'and it does not register before it')
+    equal(registeredSection, undefined, 'and it does not register before the slot exists')
 
     injections[0]()
     truthy(registeredSection !== undefined, 'the section registers once the slot exists')
     equal(registeredSection.id, 'ui', 'section id')
     equal(typeof registeredSection.label, 'function', 'localized label thunk')
-    truthy(probe.registry.ids().includes('liquid-glass'), 'the built-in project registered with it')
+    equal(
+      probe.registry.ids().length,
+      1,
+      'the framework’s own skin is the one registration that still skips the service — it moves out in 8c',
+    )
 
     // The retired reminders section used to be a second registration here, with
     // its own id, label, and `probe.reminders` handle. Nothing replaced it: the
@@ -1507,8 +1766,8 @@ await test('every inserted stylesheet is owned and removable', async () => {
     1,
     'exactly the system stylesheet before any project is on',
   )
-  await harness.runtime.enable('liquid-glass')
-  equal(harness.dom.styles().length, 3, 'system + palette + material')
+  await harness.runtime.enable('test-skin')
+  equal(harness.dom.styles().length, 2, 'system + the fixture’s one stylesheet')
   for (const style of harness.dom.styles()) truthy(String(style.id).length > 0, 'style element carries an id')
   harness.runtime.dispose()
   equal(
@@ -1571,7 +1830,7 @@ await test('the skin adds nothing to the document flow', async () => {
 
 await test('a project can declare a control, and the page renders it without knowing what it does', async () => {
   /*
-   * The mechanism outlives the feature. Liquid Glass used to declare an opacity slider and no
+   * The mechanism outlives the feature. Test Skin used to declare an opacity slider and no
    * longer does — the material has one fixed look — but "a project may declare controls and the
    * settings page renders them without knowing what any of them mean" is the extensibility
    * promise this package exists to keep. So the control is exercised through a purpose-built
@@ -1613,13 +1872,13 @@ await test('a project can declare a control, and the page renders it without kno
   contains(markup, 'value="4"')
 
   // A project that declares no controls renders none — the card is not obliged to have any.
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
   excludes(harness.render(), 'data-control="opacity"', 'the skin no longer declares a control')
 })
 
 await test('the slider mirrors the switch exactly', async () => {
   const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
   const css = harness.allCss()
   /** @param {string} needle */
   const rule = (needle) => {
@@ -1712,7 +1971,7 @@ await test('marking the columns survives the application not being mounted yet',
    * timing.
    */
   const harness = await boot({ detachedFrame: true })
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
 
   const markedCount = () =>
     harness.dom.document.body.querySelectorAll('div').filter((el) => el.hasAttribute('data-ui-skin-column')).length
@@ -1723,13 +1982,13 @@ await test('marking the columns survives the application not being mounted yet',
   FakeMutationObserver.flushAll()
 
   equal(markedCount(), 3, 'the columns are marked as soon as the frame appears')
-  const state = harness.runtime.markingState.get('liquid-glass')
+  const state = harness.runtime.markingState.get('test-skin')
   truthy(
     typeof state?.note === 'string' && /marked/.test(state.note),
     `the diagnostic records that it succeeded (${JSON.stringify(state)})`,
   )
 
-  await harness.runtime.disable('liquid-glass')
+  await harness.runtime.disable('test-skin')
   equal(markedCount(), 0, 'and a disable still unmarks them')
 })
 
@@ -1743,7 +2002,7 @@ await test('marking the columns survives the application not being mounted yet',
  */
 await test('the column-marking retry stops once it succeeds, and the observer repairs a re-render', async () => {
   const harness = await boot({ detachedFrame: true, fakeTimers: true })
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
 
   const marked = () =>
     harness.dom.document.body.querySelectorAll('div').filter((el) => el.hasAttribute('data-ui-skin-column'))
@@ -1789,13 +2048,13 @@ await test('the column-marking retry stops once it succeeds, and the observer re
     "and that repair needed no timer at all: it is the observer's job",
   )
 
-  await harness.runtime.disable('liquid-glass')
+  await harness.runtime.disable('test-skin')
   equal(marked().length, 0, 'a disable still unmarks them')
 })
 
 await test('a retry that never succeeds stops at its deadline, and leaves the observer connected', async () => {
   const harness = await boot({ detachedFrame: true, fakeTimers: true })
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
 
   equal(
     harness.timers.runningPeriods.join(','),
@@ -1813,13 +2072,13 @@ await test('a retry that never succeeds stops at its deadline, and leaves the ob
     0,
     'both deadlines clear their intervals, so NEITHER loop can poll forever',
   )
-  const state = harness.runtime.markingState.get('liquid-glass')
+  const state = harness.runtime.markingState.get('test-skin')
   equal(state.timedOut, true, 'giving up is recorded where the diagnostics overlay reads it')
   truthy(/stopped retrying/.test(String(state.note)), `the note carries the reason (${String(state.note)})`)
   // `ctx.fail()` would deactivate the project while its stylesheet stayed inserted, so the
   // deadline deliberately does not call it. The registry must therefore still say "on".
   equal(
-    harness.runtime.registry.isEnabled('liquid-glass'),
+    harness.runtime.registry.isEnabled('test-skin'),
     true,
     'and the project is NOT deactivated — a timer giving up is not the project failing',
   )
@@ -1849,7 +2108,7 @@ await test('a retry that never succeeds stops at its deadline, and leaves the ob
  *               class of coupling as the hash-class and `!important` overrides that broke
  *               this skin twice. It is not the frost bug, but it is the same shape.
  *
- * So the rows are visible again while Liquid Glass is on. Nothing else about the skin depends
+ * So the rows are visible again while Test Skin is on. Nothing else about the skin depends
  * on them, and the two elements belong to `dsh-cost-meter` rather than to dsh.
  *
  * CORRECTION — that last paragraph described the state on the day it was written and stopped
@@ -2216,12 +2475,12 @@ await test('the scoper refuses to emit a doubled project marker', async () => {
   /*
    * The bug this catches, in full.
    *
-   * A rule was written as `body[data-ui-project-liquid-glass='on'] .VOzbGW_panel` — the marker
+   * A rule was written as `body[data-ui-project-test-skin='on'] .VOzbGW_panel` — the marker
    * spelled out by hand, which is allowed. The scoper leaves a selector containing the marker
    * alone, but this one did not match the runtime's marker exactly (single quotes against double),
    * so it was scoped a second time into:
    *
-   *     body[data-ui-project-liquid-glass="on"][data-ui-project-liquid-glass='on'] .VOzbGW_panel
+   *     body[data-ui-project-test-skin="on"][data-ui-project-test-skin='on'] .VOzbGW_panel
    *
    * The same attribute twice on one compound. That matches nothing, on any page, forever — and it
    * reads as perfectly reasonable CSS. The guard makes the next occurrence a thrown error instead
@@ -2248,7 +2507,7 @@ await test('the scoper refuses to emit a doubled project marker', async () => {
 
   // And no emitted rule in the shipped sheet carries the marker twice.
   const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
   const doubled = /\[data-ui-project-[a-z0-9-]+[^\]]*\][^\s>+~]*\[data-ui-project-/.exec(harness.allCss())
   equal(doubled, null, 'the shipped sheet contains no doubled marker')
 })
@@ -2304,15 +2563,15 @@ await test('a settings record left over from the removed opacity slider is harml
     const storage = createStorage()
     storage.setItem(
       'dsh.ui-projects.v1',
-      JSON.stringify({ v: 1, initialized: true, enabled: ['liquid-glass'], settings, touched: true }),
+      JSON.stringify({ v: 1, initialized: true, enabled: ['test-skin'], settings, touched: true }),
     )
     return storage
   }
 
   const leftovers = await boot({
-    withStorage: storageWith({ 'liquid-glass': { opacity: 0, opacityScale: 1 } }),
+    withStorage: storageWith({ 'test-skin': { opacity: 0, opacityScale: 1 } }),
   })
-  await leftovers.runtime.enable('liquid-glass')
+  await leftovers.runtime.enable('test-skin')
   // Read everything from the first harness BEFORE booting the second: `boot()` tears the previous
   // instance down, so a harness held across another boot has had its stylesheets removed — which
   // is what made this comparison read 0 against 26293 and look like a product bug.
@@ -2320,7 +2579,7 @@ await test('a settings record left over from the removed opacity slider is harml
   const leftoverStyle = leftovers.dom.document.body.style.getPropertyValue('--lg-material-swap')
 
   const clean = await boot()
-  await clean.runtime.enable('liquid-glass')
+  await clean.runtime.enable('test-skin')
 
   truthy(leftoverCss.length > 0, 'the leftover record still produces a stylesheet')
   equal(
@@ -2374,7 +2633,7 @@ await test('a scanner never emits a selector that cannot match', async () => {
   // And the shipped sheet itself must contain no rule of the impossible kind: the two bug
   // shapes are checked against what the skin actually emits, not only against examples.
   const harness = await boot()
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
   const css = harness.allCss()
   excludes(css, `] :where(body)`, 'the shipped sheet has no body-inside-body selector')
   excludes(css, `] :where(html)`, 'and no html-inside-body selector')
@@ -2382,7 +2641,7 @@ await test('a scanner never emits a selector that cannot match', async () => {
   // because `overflow` is a layout property. What remains is a plain `body` selector for the
   // system background, which the scoper binds directly to the marker — the form that cannot
   // produce a body-inside-body.
-  contains(css, 'body[data-ui-project-liquid-glass="on"]', 'the sheet binds its body rules to the marker')
+  contains(css, 'body[data-ui-project-test-skin="on"]', 'the sheet binds its body rules to the marker')
 })
 
 await test('the boot page is dismissed once it is genuinely in the way', async () => {
@@ -3034,9 +3293,9 @@ await test('the effect tier is decided by pure functions over signals', () => {
 await test('the tier in force is published on the body, and removed with the last project', async () => {
   const capable = await boot({ device: { cores: 8 } })
   equal(capable.dom.document.body.getAttribute('data-ui-perf'), null, 'no project, no tier')
-  await capable.runtime.enable('liquid-glass')
+  await capable.runtime.enable('test-skin')
   equal(capable.dom.document.body.getAttribute('data-ui-perf'), 'high', 'the skin asks for the full tier')
-  await capable.runtime.disable('liquid-glass')
+  await capable.runtime.disable('test-skin')
   equal(capable.dom.document.body.getAttribute('data-ui-perf'), null, 'and the tier goes with it')
 
   /*
@@ -3048,10 +3307,10 @@ await test('the tier in force is published on the body, and removed with the las
    * would leave every one of those rules matching nothing, silently.
    */
   const weak = await boot({ device: { saveData: true } })
-  await weak.runtime.enable('liquid-glass')
+  await weak.runtime.enable('test-skin')
   equal(weak.dom.document.body.getAttribute('data-ui-perf'), 'low', 'saveData caps the skin at reduced')
   equal(
-    weak.dom.document.body.getAttribute('data-ui-project-liquid-glass'),
+    weak.dom.document.body.getAttribute('data-ui-project-test-skin'),
     'on',
     'the project marker itself is unaffected by the tier',
   )
@@ -3060,7 +3319,7 @@ await test('the tier in force is published on the body, and removed with the las
 
 await test('the card shows the declared tier, and says when the device demoted it', async () => {
   const harness = await boot({ device: { cores: 2 } })
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
   const markup = harness.render()
   contains(markup, 'Performance: full')
   // A cheaper material with no explanation reads as a rendering bug, so the demotion is stated.
@@ -3189,7 +3448,7 @@ await test('priority is validated, and the card shows it only where it means som
    */
   const cardOf = (id) => new RegExp(`data-project="${id}"[\\s\\S]*?</li>`).exec(markup)?.[0] ?? ''
   const enhancementCard = cardOf('plain')
-  const skinCard = cardOf('liquid-glass')
+  const skinCard = cardOf('test-skin')
   truthy(enhancementCard.length > 0, 'the enhancement card rendered')
   truthy(skinCard.length > 0, 'the skin card rendered')
   contains(enhancementCard, 'Priority 100')
@@ -3232,9 +3491,9 @@ await test('shared regions are detected between enhancements, and only advisory'
 await test('a conflict with a skin is not reported, because a skin is alone by policy', async () => {
   const harness = await boot()
   harness.registry.register({ id: 'shares-with-skin', name: 'Shares', modifies: ['tokens', 'background'] })
-  await harness.runtime.enable('liquid-glass')
+  await harness.runtime.enable('test-skin')
   await harness.runtime.enable('shares-with-skin')
-  equal(harness.registry.isEnabled('liquid-glass'), true, 'the skin is on')
+  equal(harness.registry.isEnabled('test-skin'), true, 'the skin is on')
   equal(
     harness.registry.regionConflicts().length,
     0,
@@ -3315,7 +3574,7 @@ await test('an unknown region is refused, and the warnings reach the panel', asy
   const cardOf = (id) => new RegExp(`data-project="${id}"[\\s\\S]*?</li>`).exec(markup)?.[0] ?? ''
   contains(cardOf('warn-a'), 'Shares the right panel with Warn B')
   contains(cardOf('warn-b'), 'Shares the right panel with Warn A')
-  excludes(cardOf('liquid-glass'), 'Shares', 'a project in no conflict gets no line')
+  excludes(cardOf('test-skin'), 'Shares', 'a project in no conflict gets no line')
 })
 
 /*
@@ -3404,8 +3663,8 @@ await test('a checklist is declared, validated, and rendered as a disclosure', a
     'data-uip-action="confirm-checks"',
     'a project with no items gets no empty checklist disclosure',
   )
-  contains(cardOf('liquid-glass'), 'Verification checklist', 'and the shipped skin declares a real one')
-  contains(cardOf('liquid-glass'), 'data-uip-action="confirm-checks"', 'with the same hook')
+  contains(cardOf('test-skin'), 'Verification checklist', 'and the shipped skin declares a real one')
+  contains(cardOf('test-skin'), 'data-uip-action="confirm-checks"', 'with the same hook')
 })
 
 await test('a confirmation is worth exactly what the version and the checklist are worth', async () => {
@@ -3539,8 +3798,10 @@ await test('a confirmation is worth exactly what the version and the checklist a
 
 await test('the record an instance actually had is read from the document, not from a click', async () => {
   /*
-   * The shape found on a real machine: `{version: '3.0.0', items: {}}` for the shipped skin — a
-   * confirmation claiming a version with nothing ticked in it.
+   * The shape found on a real machine: `{version: '<the installed version>', items: {}}` — a
+   * confirmation claiming a version with nothing ticked in it. The fixture's version is what makes
+   * `incomplete` the answer rather than `stale`: a record stamped with a DIFFERENT version is a claim
+   * about other code, which is the other state entirely.
    *
    * Booted with the document already holding it, rather than written through a context, so this also
    * covers the path that matters in practice: the state is computed from the settings document at
@@ -3557,11 +3818,11 @@ await test('the record an instance actually had is read from the document, not f
       v: 1,
       initialized: true,
       enabled: [],
-      settings: { 'liquid-glass': { checks: { version: '3.0.0', items: {} } } },
+      settings: { 'test-skin': { checks: { version: '1.0.0', items: {} } } },
       touched: true,
     },
   })
-  const project = harness.store.snapshot().projects.find((p) => p.id === 'liquid-glass')
+  const project = harness.store.snapshot().projects.find((p) => p.id === 'test-skin')
   equal(project?.checksState, 'incomplete', 'the record reads as incomplete, not as confirmed')
 
   /*
@@ -3573,7 +3834,7 @@ await test('the record an instance actually had is read from the document, not f
   const sentence = /<p[^>]*data-uip-checks[^>]*>([^<]*)<\/p>/.exec(harness.render())?.[1]
   equal(
     sentence,
-    'Confirmed for v3.0.0, but the checklist changed since; confirm it again.',
+    'Confirmed for v1.0.0, but the checklist changed since; confirm it again.',
     'and the panel says the checklist moved, not the version',
   )
   /*
@@ -4366,24 +4627,24 @@ await test('retiring the active skin returns the shipped interface, not a half-a
    * effect it owns`.
    */
   const harness = await boot({ device: { cores: 8 } })
-  await harness.runtime.enable('liquid-glass')
-  equal(harness.dom.body.getAttribute('data-ui-project-liquid-glass'), 'on', 'the skin marker is on while it is applied')
+  await harness.runtime.enable('test-skin')
+  equal(harness.dom.body.getAttribute('data-ui-project-test-skin'), 'on', 'the skin marker is on while it is applied')
   equal(harness.dom.body.getAttribute('data-ui-perf'), 'high', 'and the tier this device allows is published')
   truthy(
-    harness.allCss().includes('data-ui-project-liquid-glass'),
+    harness.allCss().includes('data-ui-project-test-skin'),
     'with its scoped stylesheet in the document',
   )
 
-  await harness.runtime.retire('liquid-glass')
+  await harness.runtime.retire('test-skin')
   equal(harness.registry.activeIds().length, 0, 'nothing is applied any more')
-  equal(harness.dom.body.getAttribute('data-ui-project-liquid-glass'), null, 'the skin marker is gone')
+  equal(harness.dom.body.getAttribute('data-ui-project-test-skin'), null, 'the skin marker is gone')
   equal(
     harness.dom.body.getAttribute('data-ui-perf'),
     null,
     'and the tier goes with it, so no rule keyed on it can keep matching a project that is not applied',
   )
   equal(
-    harness.allCss().includes('data-ui-project-liquid-glass'),
+    harness.allCss().includes('data-ui-project-test-skin'),
     false,
     'its stylesheet is out of the document, which is what the shipped interface is made of',
   )
@@ -4759,6 +5020,209 @@ await test('the update mode is a read-only plan, and refuses to pretend otherwis
     branch.includes('Write-Note "  $($settingsLine[0].Trim())"'),
     'and its label is taken from the line itself',
   )
+})
+
+/*
+ * THE LOCAL SHORT-CIRCUIT IN THE UPDATE BRANCH, AS ITS OWN TEST.
+ *
+ * The branch's `Preconditions` block already refuses a missing record — through a counter shared with two
+ * other preconditions — so the line this test guards is unreachable today. That is the point: the loop
+ * that walks `$recorded.PSObject.Properties` must not depend on a reader reconstructing a connection to a
+ * counter three sections up. Locking the ORDER makes the invariant local and visible.
+ *
+ * Its own `test()` rather than three assertions inside the update guard, for the rule in CONTRIBUTING: an
+ * assertion added inside an existing test prints nothing of its own, so the count moving is the only
+ * evidence it ran.
+ */
+await test('the update mode cannot walk a record it does not have', async () => {
+  const source = await readFile(join(packageRoot, 'install.ps1'), 'utf8')
+  const start = source.indexOf("Write-Head 'Update plan'")
+  const end = source.indexOf('# =================================================================== SNAPSHOT ===')
+  truthy(start > 0 && end > start, `the update branch is where this guard looks for it (start=${start}, end=${end})`)
+  const branch = source.slice(start, end)
+
+  const lines = branch.split('\n')
+  /*
+   * CODE lines only: comment-only lines and `<# … #>` blocks are not code, and this guard's own
+   * explanatory comment names `$recorded.PSObject.Properties` while saying why the short-circuit exists.
+   * The first version of this test scanned the raw text and failed on that comment — a guard reading its
+   * own documentation, which is the same mistake the column's copy guard records in Round 43.
+   */
+  /** @type {string[]} */
+  const code = []
+  let inBlockComment = false
+  for (const line of lines) {
+    let text = line
+    if (inBlockComment) {
+      const close = text.indexOf('#>')
+      if (close < 0) continue
+      text = text.slice(close + 2)
+      inBlockComment = false
+    }
+    const open = text.indexOf('<#')
+    if (open >= 0) {
+      inBlockComment = true
+      text = text.slice(0, open)
+    }
+    if (text.trim().startsWith('#')) continue
+    code.push(text)
+  }
+
+  let guardAt = -1
+  let firstRecordUse = -1
+  for (let index = 0; index < code.length; index += 1) {
+    if (code[index].includes('there is no install record to extend')) guardAt = index
+    if (firstRecordUse < 0 && /\$recorded\.\w/.test(code[index])) firstRecordUse = index
+  }
+  truthy(guardAt > 0, 'the branch refuses a missing record in its own words, where a reader can find them')
+  truthy(
+    branch.slice(Math.max(0, branch.indexOf('there is no install record to extend') - 160), branch.indexOf('there is no install record to extend')).includes('if ($recorded -eq $null)'),
+    'and that refusal is a short-circuit on the record itself, not a warning that carries on',
+  )
+  truthy(
+    firstRecordUse > guardAt,
+    `every read of a record field happens after it (short-circuit on line ${guardAt}, first $recorded.<field> on line ${firstRecordUse})`,
+  )
+  const recordWriteAt = code.findIndex((line) => line.includes('Write-TextFile $StateNew'))
+  truthy(recordWriteAt > guardAt, `and the record is written only after it (${guardAt} < ${recordWriteAt})`)
+})
+
+/*
+ * `-Package`, THE LAYOUT RULE, AND THE RECORD NAME — the four things that make this script maintain more
+ * than one package. Source-level, because install.ps1 cannot be executed by a suite; the parity test below
+ * is what turns the one behavioural claim (the mapping) into an executed one.
+ */
+await test('install.ps1 takes a package name, and the version store keeps one directory per package', async () => {
+  const source = await readFile(join(packageRoot, 'install.ps1'), 'utf8')
+
+  truthy(source.includes("[string]$Package = ''"), 'the package can be named on the command line')
+  truthy(
+    source.includes('no package.json in the source directory, so -Package is the only way'),
+    'and when it is not, the source directory has to answer — with a message that says so',
+  )
+
+  /*
+   * The name must be settled BEFORE any path derived from it. `$LinkPath` is where a scoped package's
+   * extra directory level appears, and the version store's directory is spelled from the name; both are
+   * built in the path block, so an ordering mistake here would silently address the wrong package.
+   */
+  const nameSettledAt = source.indexOf('$PackageName = $Package')
+  const linkPathAt = source.indexOf('$LinkPath = Join-Path $NodeModulesDir')
+  const versionsAt = source.indexOf('$PackageVersionsDir = Join-Path $VersionsDir')
+  truthy(nameSettledAt > 0, 'the name is resolved in one place')
+  truthy(
+    nameSettledAt < linkPathAt && nameSettledAt < versionsAt,
+    `and before the paths built from it (${nameSettledAt} < ${linkPathAt}, ${versionsAt})`,
+  )
+  equal(
+    source.includes("$PackageName = 'dsh-ui-projects'"),
+    false,
+    'the hard-coded package name is gone: nothing may re-pin this script to one package',
+  )
+
+  truthy(source.includes('function Get-VersionsDirName('), 'the name-to-directory rule is a function, so it can be executed and compared')
+  const rule = source.slice(source.indexOf('function Get-VersionsDirName('), source.indexOf('function Get-VersionsDirName(') + 400)
+  truthy(rule.includes("StartsWith('@')"), 'which only rewrites a SCOPED name')
+  truthy(rule.includes("Replace('/', '+')"), "using `+`, the separator npm forbids in a name and pnpm's lockfile already uses")
+  truthy(
+    source.includes('$PackageVersionsDir = Join-Path $VersionsDir $VersionsDirName'),
+    'the store directory comes from that rule rather than from the raw name',
+  )
+  truthy(source.includes('$LinkPath = Join-Path $NodeModulesDir ($PackageName.Replace(\'/\', \'\\\'))'), 'while the node_modules path uses the REAL name, one level deeper for a scope')
+
+  truthy(source.includes("'.dsh-ui-projects-install.json'"), "the framework keeps its record's historical name, so its baseline is not thrown away")
+  truthy(
+    source.includes('".dsh-ui-projects-install.$VersionsDirName.json"'),
+    'and every other package gets a record named after itself',
+  )
+  truthy(source.includes('REFUSED  -Package names $PackageName, but'), 'a name that disagrees with the source manifest is refused')
+  truthy(source.includes('declares $sourceName.'), 'naming both documents, because the usual cause is a -SourceDir one level too high')
+})
+
+/**
+ * Run `Get-VersionsDirName` OUT of `install.ps1` and against the given names.
+ *
+ * WHY THIS EXISTS AT ALL. Every other install.ps1 guard reads the script's text, and text can only be
+ * judged by its shape: a comparison can be replaced by something that always passes and read identically
+ * to a source scan. That limit is written down in `docs/uninstall.md`. The mapping is the one rule in this
+ * round that BOTH halves of the system implement — PowerShell writes the directory, the host half reads
+ * the store — so it is the one rule that can be checked by running both and comparing.
+ *
+ * The function's text is sliced out of the script and evaluated in a fresh PowerShell. Nothing else from
+ * install.ps1 is executed: no mode runs, no file is touched.
+ *
+ * THE ANSWER COMES BACK THROUGH A FILE, not through stdout. A piped child fails outright under the
+ * sandbox this project's tooling runs in (`spawnSync ... EPERM`, the documented no-named-pipes boundary),
+ * and a check that only works when nobody is looking is not a check. PowerShell writes JSON to a file in
+ * the OS temp directory and this side reads it — which also survives a PowerShell that decides to write
+ * a warning to stdout.
+ * @param {string} source install.ps1's text
+ * @param {string[]} names package names to map
+ * @returns {Promise<Array<{ name: string, dir: string }>>}
+ */
+async function runPowerShellVersionsDirName(source, names) {
+  const start = source.indexOf('function Get-VersionsDirName(')
+  if (start < 0) throw new Error('install.ps1 no longer defines Get-VersionsDirName')
+  const end = source.indexOf('\n}\n', start)
+  if (end < 0) throw new Error('the Get-VersionsDirName function has no end')
+  const body = source.slice(start, end + 2)
+  const literals = names.map((name) => `'${name.replace(/'/g, "''")}'`).join(', ')
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-uipmapping-'))
+  const outFile = join(dir, 'mapping.json')
+  const quote = (value) => `'${String(value).replace(/'/g, "''")}'`
+  const script = [
+    'Set-StrictMode -Version 2.0',
+    body,
+    `$names = @(${literals})`,
+    'try {',
+    '    $rows = foreach ($name in $names) { [pscustomobject]@{ name = $name; dir = (Get-VersionsDirName $name) } }',
+    `    $text = ($rows | ConvertTo-Json -Compress -Depth 3)`,
+    '} catch {',
+    '    $text = "ERROR " + $_.Exception.Message',
+    '}',
+    `[System.IO.File]::WriteAllText(${quote(outFile)}, $text, (New-Object System.Text.UTF8Encoding($false)))`,
+  ].join('\n')
+  try {
+    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: 'ignore' })
+    const text = await readFile(outFile, 'utf8')
+    if (text.startsWith('ERROR ')) throw new Error(text.trim())
+    const parsed = JSON.parse(text.trim())
+    return Array.isArray(parsed) ? parsed : [parsed]
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
+/*
+ * THE PARITY ITSELF: the same four names, mapped by both halves, compared.
+ *
+ * The expected values come from the host half's own function — not from a second literal table — so this
+ * asserts AGREEMENT rather than re-asserting one spelling twice. `verify.mjs` is the right home because
+ * install.ps1's guards live here; the general contract of the JS function (injectivity, legality as a
+ * directory segment) is asserted in `check-installed.test.mjs`, next to the scanner that reads the store.
+ */
+await test('the version-store layout rule is the same in install.ps1 and in the host half', async () => {
+  const { versionsDirNameOf } = await import('../src/host/profile-scan.js')
+  const source = await readFile(join(packageRoot, 'install.ps1'), 'utf8')
+  // `@a/b/c` is not a legal npm name; it is here because the two implementations must agree on ANY input,
+  // and the first version of the JS half replaced only the first separator while PowerShell replaces them
+  // all. A parity check that cannot fail on the difference is not a parity check.
+  const names = ['dsh-ui-projects', '@xjl-resources/dsh-plugin-liquid-glass', '@scope/name', '@a/b/c']
+  let rows
+  try {
+    rows = await runPowerShellVersionsDirName(source, names)
+  } catch (error) {
+    throw new Error(`install.ps1's Get-VersionsDirName could not be run: ${String(error?.message ?? error)}`)
+  }
+  equal(rows.length, names.length, `PowerShell mapped every name it was given (${JSON.stringify(rows)})`)
+  for (const row of rows) {
+    equal(
+      row.dir,
+      versionsDirNameOf(row.name),
+      `both halves agree on ${row.name} (powershell ${JSON.stringify(row.dir)}, host ${JSON.stringify(versionsDirNameOf(row.name))})`,
+    )
+  }
+  equal(rows[0].dir, 'dsh-ui-projects', "and the framework's own name still maps to itself, as it did before the split")
 })
 
 /*

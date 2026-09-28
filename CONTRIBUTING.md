@@ -79,7 +79,7 @@ something was not verified.
 
 ## Verification discipline
 
-Four rules, each one learned by getting it wrong. They live here because every reader of this file touches
+Five rules, each one learned by getting it wrong. They live here because every reader of this file touches
 one of them; the incidents that produced them, with their numbers, are in `CHANGELOG.md`.
 
 1. **Changing `src/**` means rebuilding before verifying.** The suite and the browser both load `lib/`, so a
@@ -96,10 +96,16 @@ one of them; the incidents that produced them, with their numbers, are in `CHANG
    decodes and re-encodes through the ANSI code page on the Windows PowerShell available here, which
    destroys every non-ASCII character in the file and reports nothing. Edit through the file tools or
    Node; if a shell round-trip is unavoidable, move bytes and compare hashes. — Round 43, lesson 5.
+5. **A guard reads CODE, not the prose around it.** Comments, and the guard's own explanation of why it
+   exists, are matched by a text scan exactly like the code is — so a guard that scans raw text can fail
+   on its own documentation (and pass on a comment that looks like the code it is looking for). Strip
+   comments first, or scan code lines only, and prove the guard is sensitive by removing the thing it
+   guards rather than by rewording a message near it. — Round 43, lesson 2 (the column's copy guard) and
+   Round 45 (the `-Update` ordering guard, which failed on its own comment before it ever ran clean).
 
 Rule 4 is the same discipline as `## Tool discipline` below, applied to bytes rather than to anchors:
 mutate with the file tools, or in memory, and never leave the tree in a state only a test could have
-caught.
+caught. Rule 5 is the same discipline applied to what a guard is allowed to look at.
 
 ## Test the path, not the function
 
