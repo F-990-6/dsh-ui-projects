@@ -301,10 +301,46 @@ export async function scanProfile({ profileDir }) {
 }
 
 /**
+ * The directory name one package's snapshots live under, inside the version store.
+ *
+ * THE LAYOUT RULE, in the half that reads the store, and it exists because a scoped package name is not a
+ * directory name: `@xjl-resources/dsh-plugin-liquid-glass` contains a `/`, which would make it a NESTED
+ * directory — and this module reads the store exactly one level deep. So the name and the directory are
+ * two different things with one agreed translation, and `install.ps1` holds the same rule on the writing
+ * side (`Get-VersionsDirName`, asserted equal to this function by a parity check in the suites, because a
+ * source guard can prove the shape of a PowerShell function but not its behaviour).
+ *
+ * `+` is the separator because npm forbids it in a package name — so a directory containing `+` can only
+ * have come from a scoped name — and because pnpm's lockfile uses the same convention. An unscoped name
+ * maps to ITSELF, which is what leaves every snapshot taken before the split exactly where it is.
+ *
+ * EVERY separator is replaced, not the first one, and that is not pedantry: PowerShell's `String.Replace`
+ * replaces all occurrences, so a JS `String.replace` with a string pattern would disagree with it on any
+ * input holding two slashes. The two halves are compared by running both (`scripts/verify.mjs`), and the
+ * first version of this function failed that comparison — which is the only reason the difference was
+ * found rather than shipped.
+ *
+ * THERE IS NO REVERSE FUNCTION, on purpose. `readVersions` keys its map by the `package` field each
+ * snapshot's manifest records, which is the authoritative answer and needs no decoding; a directory whose
+ * snapshots record no package is REPORTED rather than guessed at, because a name reconstructed from a
+ * directory name would be a claim this module cannot support.
+ * @param {string} packageName
+ * @returns {string}
+ */
+export const versionsDirNameOf = (packageName) =>
+  packageName.startsWith('@') ? packageName.split('/').join('+') : packageName
+
+/**
  * The version snapshots a package has recorded, newest first — identity and counts only.
  *
  * READ-ONLY like the rest of this module, and deliberately blind to paths: a snapshot NAME is what a
  * person pastes into `-Rollback -To`, and the directory it lives in is none of the page's business.
+ *
+ * THE KEYS ARE PACKAGE NAMES, taken from each snapshot's own `manifest.package` rather than from the
+ * directory it sits in. That is the difference between reading the layout and guessing at it, and it is
+ * what lets the client stay ignorant of the layout entirely: the page looks up
+ * `versions[project.source.package]` and never has to know that a scoped package's directory is spelled
+ * with a `+`.
  *
  * THE DISTINCTION THAT MATTERS TO A CALLER: a package this function was not asked about is absent from
  * the map, which is NOT the same as a package with an empty list. A host whose code predates this field
@@ -336,10 +372,19 @@ async function readVersions(profileDir) {
     if (!entry.isDirectory()) continue
     if (scanned >= VERSIONS_MAX_PACKAGES) break
     scanned += 1
-    const name = entry.name
+    const dirName = entry.name
     /** @type {any[]} */
     const list = []
-    const packageDir = join(profileDir, VERSIONS_DIR_NAME, name)
+    /*
+     * The package this directory belongs to, taken from a snapshot's OWN manifest. Every snapshot
+     * `install.ps1 -Snapshot` has ever written carries `package` (7b onward), so this is the field the
+     * writer already publishes for exactly this purpose -- and reading it means the reader never has to
+     * decode the directory name, which is a derived spelling (`@scope+name`) that would be a guess the
+     * moment a directory was made by hand.
+     */
+    /** @type {string | undefined} */
+    let packageName
+    const packageDir = join(profileDir, VERSIONS_DIR_NAME, dirName)
     try {
       /* Named apart from the outer list on purpose: shadowing it would read as a bug to the next person. */
       const snapshotDirs = await readdir(packageDir, { withFileTypes: true })
@@ -348,6 +393,8 @@ async function readVersions(profileDir) {
         try {
           const manifest = JSON.parse(await readFile(join(packageDir, snapshot.name, 'manifest.json'), 'utf8'))
           const payload = manifest?.payload ?? {}
+          const declared = typeof manifest?.package === 'string' ? manifest.package : ''
+          if (packageName === undefined && declared.length > 0) packageName = declared
           list.push({
             name: snapshot.name,
             version: String(manifest.version ?? 'unknown'),
@@ -367,8 +414,20 @@ async function readVersions(profileDir) {
     } catch {
       /* no versions directory for this package — an empty list, which is a fact about the profile */
     }
+    if (packageName === undefined) {
+      /*
+       * REPORTED, NOT DECODED. Nothing in this directory said which package it belongs to, and the
+       * directory name is not allowed to answer for it: `@scope+name` is a spelling this project chose,
+       * so turning it back into a name would invent an authority the file on disk never claimed. The
+       * listing says the directory is there and that it cannot be attributed -- which is how a damaged or
+       * hand-made snapshot gets noticed instead of quietly disappearing from the page.
+       */
+      out.unattributed = Array.isArray(out.unattributed) ? out.unattributed : []
+      out.unattributed.push({ directory: dirName, snapshots: list.length })
+      continue
+    }
     list.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
-    out[name] = list.slice(0, VERSIONS_MAX)
+    out[packageName] = list.slice(0, VERSIONS_MAX)
   }
   return out
 }
@@ -448,4 +507,7 @@ export function previewCommand({ action, profileName, packageName, spec, version
  * @property {string[]} orphanedBindings
  * @property {string[]} unresolved
  * @property {Problem[]} problems
+ * @property {Record<string, Array<{ name: string, version: string, createdAt: string, files: number, bytes: number, ours: boolean }>> & { unattributed?: Array<{ directory: string, snapshots: number }> }} [versions]
+ *   Keyed by PACKAGE NAME, taken from each snapshot's own manifest. `unattributed` lists version-store
+ *   directories whose snapshots record no package, so a damaged store is visible instead of silent.
  */

@@ -27,6 +27,11 @@ They catch a check being **deleted, renamed or moved**. They cannot catch one be
 comparison replaced by something that always passes reads the same to a source scan. The real verification
 is a real run, which is why this document ends in an acceptance list rather than in a test.
 
+**One rule is executed rather than read**, and it is the one both halves implement: the name-to-directory
+mapping above. `scripts/verify.mjs` slices `Get-VersionsDirName` out of `install.ps1`, runs it in a fresh
+PowerShell, and compares its answers with the host half's `versionsDirNameOf` over the same names — the
+guard that a source scan cannot provide, applied where it is possible.
+
 ## The three commands, and the order they go in
 
 | Command | Writes | Never writes | Run it when |
@@ -57,7 +62,8 @@ destroy what `-Uninstall` compares against. If `lib/client.js` is missing it say
 
 ```text
 <profile>/
-  .dsh-ui-projects-install.json            the install record: before, lastVerified, lastRollback
+  .dsh-ui-projects-install.json            the framework's record: before, lastVerified, lastRollback
+  .dsh-ui-projects-install.<pkg>.json      one record per OTHER package, named after it
   .dsh-ui-projects-versions/
     dsh-ui-projects/
       0.1.0-20260927T044712Z/              one snapshot
@@ -67,6 +73,7 @@ destroy what `-Uninstall` compares against. If `lib/client.js` is missing it say
           cordis.patch.yml
           CHANGELOG.md
           lib/**
+    @xjl-resources+dsh-plugin-liquid-glass/    a SCOPED package's snapshots (see below)
     .rollback-backup/
       0.1.0-20260927T044712Z-20260927T051653Z/    one rollback backup
         manifest.json
@@ -74,10 +81,33 @@ destroy what `-Uninstall` compares against. If `lib/client.js` is missing it say
 ```
 
 `$VersionsDir` is `<profile>/.dsh-ui-projects-versions` and `$PackageVersionsDir` is
-`<VersionsDir>/dsh-ui-projects` (`install.ps1:489`). A **snapshot name becomes a directory name**, so
+`<VersionsDir>/<the package's directory name>`. **A snapshot name becomes a directory name**, so
 `-Name` is validated against `^[A-Za-z0-9._-]+$` and a name that does not match is refused with exit 2
-before anything is read (`install.ps1:1395`). The default name is `<version>-<stamp>`, the stamp being UTC
+before anything is read. The default name is `<version>-<stamp>`, the stamp being UTC
 `yyyyMMddTHHmmssZ` — which is why `0.1.0-20260927T044712Z` is one name and not three fields.
+
+**A scoped package's directory is not its name.** `@xjl-resources/dsh-plugin-liquid-glass` would be a
+nested directory, and the version store is read exactly one level deep, so the name and the directory are
+two different things with one agreed translation: `@scope/name` becomes `@scope+name`
+(`install.ps1`'s `Get-VersionsDirName`). `+` is the separator because npm forbids it in a package name —
+so a directory containing `+` can only have come from a scoped one — and because pnpm's lockfile uses the
+same convention. An unscoped name maps to itself, which is what leaves every snapshot taken before a skin
+could live outside the framework exactly where it is.
+
+**Nothing ever decodes that directory name back into a package.** The reading half keys its map by the
+`package` field each snapshot's own manifest carries, and a directory whose snapshots record no package is
+reported as unattributed rather than guessed at — a name reconstructed from a directory name would be a
+claim the file on disk never made.
+
+**One record per package**, and the framework keeps the name it has always had: its record is the baseline
+every other mode compares against, and renaming it would throw that away for the sake of symmetry nobody
+reads. A package whose record is missing is treated exactly as it always was — the modes that need a
+baseline say so, and **`-Update` refuses** rather than inventing one.
+
+**Which package a run is about** comes from `-Package`, or from the `name` field of
+`<SourceDir>\package.json` when the flag is absent; the two must agree, and a disagreement is refused
+(exit 2) with both values printed. `-Snapshot`, `-Update`, `-Rollback` and `-Uninstall` all take it, which
+is what lets one script maintain the framework and every skin.
 
 **What a snapshot records is what a package IS**: `package.json`, `cordis.patch.yml`, `CHANGELOG.md` (each
 only if present) and every file under `lib/**`. An untracked notes file in the working directory is not

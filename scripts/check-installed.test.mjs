@@ -25,7 +25,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { PROBLEM_CODES, checkUiProjectDeclaration, KNOWN_PROJECT_TYPES } from '../src/host/conformance.js'
-import { discoverProfiles, previewCommand, scanProfile } from '../src/host/profile-scan.js'
+import { discoverProfiles, previewCommand, scanProfile, versionsDirNameOf } from '../src/host/profile-scan.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const packageRoot = resolve(here, '..')
@@ -262,6 +262,101 @@ equal(
   ['dsh', 'plugin', '--profile', 'web', 'add', 'dsh-skin@1.2.3'],
   'a published dependency rolls back by asking for the exact version',
 )
+
+process.stdout.write('\n== the version store: the layout rule, and the keys ==\n')
+
+/*
+ * THE LAYOUT RULE, asserted here because this is the JS half of a pair whose other half is PowerShell.
+ *
+ * `install.ps1` owns the writing side (`Get-VersionsDirName`) and cannot import this function; a source
+ * guard can prove that function's SHAPE but never its behaviour. So the rule is stated once here, in the
+ * language that can be executed, and `scripts/verify.mjs` extracts the PowerShell function's text and runs
+ * it against this same table — a real parity check rather than a hopeful one.
+ */
+const LAYOUT_CASES = [
+  ['dsh-ui-projects', 'dsh-ui-projects'],
+  ['@xjl-resources/dsh-plugin-liquid-glass', '@xjl-resources+dsh-plugin-liquid-glass'],
+  ['dsh-cost-meter', 'dsh-cost-meter'],
+  ['@scope/name', '@scope+name'],
+]
+for (const [packageName, dirName] of LAYOUT_CASES) {
+  equal(versionsDirNameOf(packageName), dirName, `versionsDirNameOf(${packageName}) is ${dirName}`)
+}
+const mapped = LAYOUT_CASES.map(([packageName]) => versionsDirNameOf(packageName))
+equal(new Set(mapped).size, mapped.length, 'the mapping is injective over these names, so two packages never share one directory')
+equal(
+  mapped.filter((dir) => /[\\/:*?"<>|]/.test(dir)).length,
+  0,
+  'and every mapped name is a single legal directory segment — a scoped name would otherwise nest',
+)
+equal(
+  versionsDirNameOf('dsh-ui-projects'),
+  'dsh-ui-projects',
+  'an unscoped name maps to ITSELF, which is what leaves every snapshot taken before the split in place',
+)
+
+/** Write one snapshot into a profile's version store. `package` omitted means "the manifest does not say". */
+async function writeSnapshot(profileDir, dirName, snapshot, manifest) {
+  const dir = join(profileDir, '.dsh-ui-projects-versions', dirName, snapshot)
+  await mkdir(dir, { recursive: true })
+  await writeFile(
+    join(dir, 'manifest.json'),
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        tool: 'install.ps1 -Snapshot',
+        name: snapshot,
+        version: manifest.version ?? '1.0.0',
+        createdAt: manifest.createdAt ?? '2026-09-27T04:47:12.2663764Z',
+        payload: { files: 2, bytes: 10 },
+        ...(manifest.package === undefined ? {} : { package: manifest.package }),
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  )
+}
+
+const scopedName = '@xjl-resources/dsh-plugin-liquid-glass'
+const scopedDir = versionsDirNameOf(scopedName)
+const storeProfile = await makeProfile({ dependencies: {} })
+await writeSnapshot(storeProfile, scopedDir, '1.0.0-20260927T044712Z', { package: scopedName, version: '1.0.0' })
+await writeSnapshot(storeProfile, 'wrong-directory-name', '0.1.0-20260927T044712Z', { package: 'dsh-ui-projects', version: '0.1.0' })
+await writeSnapshot(storeProfile, 'nobody-claims-this', '9.9.9-20260927T044712Z', {})
+const store = await scanProfile({ profileDir: storeProfile })
+
+equal(
+  store.versions[scopedName]?.[0]?.name,
+  '1.0.0-20260927T044712Z',
+  'a scoped package is keyed by its REAL name, taken from the snapshot manifest',
+)
+equal(
+  store.versions[scopedDir],
+  undefined,
+  'and NOT by the directory it lives in, whose `+` spelling is this project\'s choice rather than the package\'s name',
+)
+equal(
+  store.versions['dsh-ui-projects']?.[0]?.name,
+  '0.1.0-20260927T044712Z',
+  'the key follows the manifest even when the directory is named something else entirely',
+)
+equal(
+  store.versions['wrong-directory-name'],
+  undefined,
+  'so a directory name is never echoed back as if it were a package',
+)
+equal(
+  store.versions.unattributed,
+  [{ directory: 'nobody-claims-this', snapshots: 1 }],
+  'a store directory whose snapshots record no package is REPORTED, not decoded from its directory name',
+)
+equal(
+  store.versions['nobody-claims-this'],
+  undefined,
+  'and it contributes no key to the map, so nothing can look it up by a name it never claimed',
+)
+equal(store.versions['never-installed'], undefined, 'a package with no directory is absent — which is not the same as having none recorded')
 
 process.stdout.write('\n== profile discovery ==\n')
 

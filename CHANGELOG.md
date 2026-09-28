@@ -25,6 +25,106 @@ Verification vocabulary used below:
 
 ---
 
+## Round 45 — Step 8a: the installer learns which package it is maintaining
+
+**Status: done. `suite` 934 assertions / 0 failing (909 → 934), `load` 70 / 0, `host` green,
+`conformance` 63 / 0 (49 → 63), `skeleton` 13 / 0, `derive-boot-css --check` unchanged
+(13 blocks, 10484 bytes — byte-identical), `browser --self-check` green. `lib/client.js` is unchanged:
+`sha256:ccc2a7c7d569`, the same value it had before this round, because nothing in the browser half moved.
+NO browser run. `install.ps1` was NOT executed in any mode, and nothing under `$DSH_HOME` was written.**
+
+Step 8 splits Liquid Glass out of this package. This round is the groundwork that makes a second package
+possible while the framework still ships its own, and it is deliberately behaviour-free: the framework's
+own maintenance commands produce the same output and the same exit codes, and its snapshot store keeps its
+directory and its record file name.
+
+### One script, many packages
+
+`-Package` names the package a run is about; without it the name comes from the `name` field of
+`<SourceDir>\package.json`, which is the document the installer already trusts for `dsh.bundle.patch`.
+The two must agree, and a disagreement is a **usage** error (exit 2) that prints both values — the usual
+cause is a `-SourceDir` one directory too high, and "expected X" alone sends the reader to the wrong file.
+
+The name is resolved **before** any path derived from it, because three of them are: the node_modules
+link (a scoped package lives one level deeper), the version store's directory, and the install record.
+`$PackageName` stayed the variable it always was, so the ~35 places that use it needed no edit at all —
+most of why this round is reviewable.
+
+### The version store: `@scope+name`, and no decoding
+
+A scoped package name is not a directory name: `@xjl-resources/dsh-plugin-liquid-glass` contains a `/`,
+the store is read exactly one level deep, so the two have to be different things with one agreed
+translation. `install.ps1`'s `Get-VersionsDirName` writes `@scope+name`; `+` is the separator because npm
+forbids it in a package name and because pnpm's lockfile already uses it; an unscoped name maps to itself,
+which is what leaves every existing snapshot where it is.
+
+**The reading half decodes nothing.** `readVersions` keys its map by the `package` field each snapshot's
+manifest has carried since 7b, so the client still looks up `versions[project.source.package]` and knows
+nothing about the layout. A directory whose snapshots record no package is reported as *unattributed*
+rather than reverse-mapped from its name: `@scope+name` is a spelling this project chose, and turning it
+back into a name would invent an authority the file on disk never claimed. **The reverse function the plan
+sketched was therefore not written at all** — the case it existed for is the case that must be reported.
+
+### The parity check runs PowerShell instead of reading it
+
+Every other guard on `install.ps1` scans its text, and `docs/uninstall.md` states the limit plainly: a
+source scan catches a check being deleted or moved, never one being weakened. The mapping is the one rule
+in this round that **both halves implement**, so it is the one that can be checked by running both:
+`scripts/verify.mjs` slices `Get-VersionsDirName` out of the script, evaluates it in a fresh
+`powershell.exe`, and compares its answers with the host half's `versionsDirNameOf` over the same names.
+
+**It earned its keep before it was finished.** The first JS version used `String.replace('/', '+')`, which
+replaces ONE separator; PowerShell's `String.Replace` replaces all of them. Real package names contain one
+slash, so no unit test could have caught it — the table includes `@a/b/c` precisely because two
+implementations must agree on *any* input, and with the single-replace version the check fails with
+`powershell "@a+b+c", host "@a+b/c"`. The JS half now splits and joins, and both agree.
+
+**The answer comes back through a file, not stdout.** A piped child fails under this project's sandbox
+(`spawnSync ... EPERM`, the documented no-named-pipes boundary), and a check that only works when nobody is
+looking is not a check — PowerShell writes JSON to a temp file, which also survives a stray warning on
+stdout.
+
+### `-Update` cannot walk a record it does not have
+
+Reported in the 8a plan as "a path never really walked", then corrected before implementing it:
+`Preconditions` has always counted a missing record as a failure and refused on it, so the loop over
+`$recorded.PSObject.Properties` was never reachable with a null record. The protection was **indirect** —
+one counter shared with two unrelated preconditions — so this round adds a local short-circuit in front of
+the record write *and* a guard that locks the order, with a line scan asserting that every
+`$recorded.<field>` read comes after it. The short-circuit is unreachable today on purpose, and says so
+where it is written.
+
+**Two things went wrong on the way in, and both are recorded.** The ordering guard failed its own first
+run by scanning the branch's raw text, where it tripped on *its own explanatory comment* — a comment that
+names `$recorded.PSObject.Properties` while saying why the short-circuit exists (comment-only lines and
+`<# … #>` blocks are now excluded; it is the same "guard reads its own documentation" mistake the column's
+copy guard records in Round 43). And the first sensitivity demonstration proved nothing: it reworded the
+refusal message while leaving the short-circuit in place, so the guard correctly kept passing. Removing the
+block outright is what fails it, and that is the demonstration that was kept.
+
+### Smaller pieces
+
+- **`derive-boot-css.mjs` takes `--package <dir>`**, defaulting to the framework package, so today's
+  `--check` prints exactly what it always printed. The marker, the stylesheet list, the output path and the
+  header moved into the target package's `scripts/boot-css-rules.mjs` — one place per package instead of
+  one copy in the tool and another in `build.mjs`, which is the arrangement that once let three suppression
+  blocks vanish from the first-paint sheet while both copies agreed.
+- **`unregister-profile.mjs` takes `--package` / `--profile` / `--profile-dir`.** It is a Node script, so
+  its flags are `--`-prefixed; its hard-coded `C:/Users/19103/.dsh/profiles/web` is gone, and a flag
+  written without a value is now a usage error rather than a package named `--check`.
+- **`docs/update-and-rollback.md`** documents the scoped directory spelling, one record per package, the
+  `-Package` resolution rule, and the executed parity check — including what the other guards still cannot
+  do.
+
+### What this round did NOT change
+
+The framework still registers Liquid Glass from inside its own client half, still pushes its own
+first-paint rows, and still owns `src/client/projects/liquid-glass/**` and `src/host/boot.css`. No file
+moved, and nothing about the running page changes. 8b creates the skin package and re-fixtures the suite;
+8c is the switch.
+
+---
+
 ## Round 44 — Step 7e: the maintenance workflow is written down, and a stamp a person can read
 
 **Status: done. `suite` 909 assertions / 0 failing (891 → 909), `load` 70 / 0, `host` green,

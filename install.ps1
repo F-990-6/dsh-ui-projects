@@ -1,7 +1,9 @@
 <#
 .SYNOPSIS
-    Install (or remove) dsh-ui-projects in a dsh profile, using dsh's own plugin
-    command rather than hand-editing YAML.
+    Install (or remove) a dsh UI plugin package in a dsh profile, using dsh's own
+    plugin command rather than hand-editing YAML. It was written for
+    dsh-ui-projects, which is still the package it defaults to, and it takes
+    `-Package` so the same script can maintain a UI project package as well.
 
 .DESCRIPTION
     WHY THIS SHAPE
@@ -67,8 +69,14 @@
     Absolute path to the profile directory. Overrides -Profile.
 
 .PARAMETER SourceDir
-    Absolute path to the dsh-ui-projects package. Defaults to the directory this
+    Absolute path to the package to maintain. Defaults to the directory this
     script lives in.
+
+.PARAMETER Package
+    The package this run is about, when it cannot be read from the source
+    directory's own package.json -- or when naming it explicitly is clearer.
+    A UI project package's wrapper passes its own name here. Defaults to the
+    `name` field of <SourceDir>\package.json.
 
 .PARAMETER SkipLinkProbe
     Skip the temporary symbolic-link capability probe.
@@ -104,6 +112,7 @@ param(
     [string]$Profile = 'web',
     [string]$ProfileDir,
     [string]$SourceDir,
+    [string]$Package = '',
     [string]$DshCommand = ''
 )
 
@@ -111,8 +120,10 @@ Set-StrictMode -Version 2.0
 
 $ErrorActionPreference = 'Stop'
 
-$PackageName = 'dsh-ui-projects'
-$StateFileName = '.dsh-ui-projects-install.json'
+# `$PackageName` and `$StateFileName` are NOT set here any more: both depend on WHICH package this run is
+# about, which is resolved below from `-Package` or the source directory's own manifest. They used to be
+# the constants `dsh-ui-projects` and `.dsh-ui-projects-install.json`, which is exactly what made this
+# script a one-package installer.
 $LockFileName = 'pnpm-lock.yaml'
 $PatchFileName = 'cordis.patch.yml'
 
@@ -353,6 +364,26 @@ function Get-ShortSha([string]$Value) {
     return $Value.Substring(0, 16)
 }
 
+# The directory name one package's snapshots live under, inside the version store.
+#
+# THE ONE RULE THAT MAPS A PACKAGE NAME TO A DIRECTORY, and it exists because a scoped name is not a
+# directory name: `@xjl-resources/dsh-plugin-liquid-glass` would become a NESTED directory, and the host
+# half reads the store one level deep -- so the name and the directory have to be two different things,
+# with one agreed translation between them.
+#
+# `+` is the separator because npm forbids it in a package name (so the mapping is injective: a name that
+# contains `+` can only have come from a scoped one) and because pnpm's own lockfile uses the same
+# convention. An unscoped name maps to ITSELF -- that is what keeps every snapshot taken before the split
+# exactly where it is, and what the byte-identity of this mode's behaviour depends on.
+#
+# The host half does NOT reverse this. `readVersions` keys its map by the `package` field each snapshot's
+# manifest already records, so the directory name is never decoded back into a name -- see the comment
+# there for why that is the honest half of the pair.
+function Get-VersionsDirName([string]$PackageName) {
+    if ($PackageName.StartsWith('@')) { return $PackageName.Replace('/', '+') }
+    return $PackageName
+}
+
 # The sha256 of a string, lowercase, the same construction the manual fingerprint command uses.
 #
 # Needed because `Get-Sha256` hashes a FILE, and one of the things recorded here is a value rather than a
@@ -475,11 +506,46 @@ if ([string]::IsNullOrWhiteSpace($SourceDir)) {
 }
 $SourceDir = [System.IO.Path]::GetFullPath($SourceDir)
 
+# ------------------------------------------------------- which package this is
+#
+# FIRST, before any path is derived from it: `$LinkPath`, `$StatePath` and the version store all hang off
+# the package's name, so the name has to be settled before them and not after.
+#
+# The name comes from `-Package` when given, and otherwise from the source directory's own manifest --
+# which is the document the installer already trusts for `dsh.bundle.patch` and `dsh.client.platform`.
+# `-Package` exists for two callers: a UI project package's thin wrapper, whose own `$PSScriptRoot` is
+# the package it is about, and a person maintaining a package whose directory they do not want to name.
+$sourceManifestPath = Join-Path $SourceDir 'package.json'
+if ([string]::IsNullOrWhiteSpace($Package)) {
+    if (-not (Test-Path -LiteralPath $sourceManifestPath -PathType Leaf)) {
+        Stop-With "no package.json in the source directory, so -Package is the only way to say which package this is: $SourceDir"
+    }
+    $Package = [string](Get-JsonProperty (Read-JsonFile $sourceManifestPath) 'name' '')
+    if ([string]::IsNullOrWhiteSpace($Package)) {
+        Stop-With "$sourceManifestPath declares no name, so there is no package to maintain"
+    }
+}
+$PackageName = $Package
+$VersionsDirName = Get-VersionsDirName $PackageName
+
+# One record PER PACKAGE, which is what "the framework's record keeps its historical name" means in
+# practice. The framework has been in a profile for many releases and its record is the baseline every
+# other mode compares against; renaming it would throw that baseline away for the sake of symmetry
+# nobody reads. Every other package gets the name the version store already uses for it.
+$StateFileName = if ($PackageName -eq 'dsh-ui-projects') {
+    '.dsh-ui-projects-install.json'
+}
+else {
+    ".dsh-ui-projects-install.$VersionsDirName.json"
+}
+
 $ManifestPath = Join-Path $ProfileDir 'package.json'
 $PatchPath = Join-Path $ProfileDir $PatchFileName
 $LockPath = Join-Path $ProfileDir $LockFileName
 $NodeModulesDir = Join-Path $ProfileDir 'node_modules'
-$LinkPath = Join-Path $NodeModulesDir $PackageName
+# The real name, with the separator Windows uses: a scoped package lives one level deeper
+# (`node_modules\@scope\name`), which is exactly how pnpm lays it out.
+$LinkPath = Join-Path $NodeModulesDir ($PackageName.Replace('/', '\'))
 $StatePath = Join-Path $ProfileDir $StateFileName
 # The version store, defined HERE rather than inside the mode that uses it.
 #
@@ -487,7 +553,7 @@ $StatePath = Join-Path $ProfileDir $StateFileName
 # a comment saying a branch must define what it reads. A path that several modes need belongs in this
 # list instead, where every mode can see it and none has to guess.
 $VersionsDir = Join-Path $ProfileDir '.dsh-ui-projects-versions'
-$PackageVersionsDir = Join-Path $VersionsDir $PackageName
+$PackageVersionsDir = Join-Path $VersionsDir $VersionsDirName
 
 # `dsh plugin --profile <name>` resolves the profile from DSH_HOME itself and is
 # never told about -ProfileDir. If the two disagree, this script would verify one
@@ -728,8 +794,18 @@ if (-not (Test-Path -LiteralPath $sourceManifest -PathType Leaf)) {
 }
 $sourcePkg = Read-JsonFile $sourceManifest
 $sourceName = Get-JsonProperty $sourcePkg 'name' ''
+# The two names must agree, and this is a USAGE error rather than a broken package: both values are
+# readable and correct on their own, and the run simply cannot tell which one the caller meant. Both are
+# printed, because the common case is a `-SourceDir` aimed one directory too high, and "expected X" alone
+# sends the reader looking at the wrong file.
 if ($sourceName -ne $PackageName) {
-    Stop-With "source package is named $sourceName, expected $PackageName"
+    Write-Host ''
+    Write-Host "   REFUSED  -Package names $PackageName, but"
+    Write-Host "            $sourceManifest declares $sourceName."
+    Write-Host '            Point -SourceDir at the package you mean, or drop -Package.'
+    Write-Host '            Nothing was run and nothing was written.'
+    Write-Host ''
+    exit 2
 }
 
 # Read through the guarded accessors rather than as `$sourcePkg.dsh.bundle.patch`:
@@ -1335,6 +1411,19 @@ if ($Update) {
         exit 1
     }
 
+    # A LOCAL SHORT-CIRCUIT, and it is deliberate that it can never fire today.
+    #
+    # The `Preconditions` block above already counts a missing record as a failure and refuses on it, so
+    # this line is unreachable in the current arrangement. It is here because the protection above is
+    # INDIRECT -- one counter covering three unrelated preconditions -- while the invariant this mode
+    # actually depends on is local and simple: `-Update` extends the record, so there must be a record.
+    # The loop below walks `$recorded.PSObject.Properties`, and a reader (or a future edit that drops the
+    # record from that counter) should not have to reconstruct the connection to see that it is safe.
+    if ($recorded -eq $null) {
+        Write-Warn 'REFUSED  there is no install record to extend; -Update records what is installed, so run -Install first'
+        exit 1
+    }
+
     # ---- the one file this mode writes -----------------------------------------
     #
     # A NEW field beside the record's own `before`. That baseline is what the install wrote and what
@@ -1889,7 +1978,7 @@ if ($DryRun) {
 Write-Head 'Backup'
 
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
-$lockBackupName = "$LockFileName.dsh-ui-projects-$stamp.bak"
+$lockBackupName = "$LockFileName.$VersionsDirName-$stamp.bak"
 $lockBackupPath = Join-Path $ProfileDir $lockBackupName
 
 $before = [pscustomobject]@{

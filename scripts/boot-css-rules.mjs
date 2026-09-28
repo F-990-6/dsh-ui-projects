@@ -18,6 +18,60 @@
 /** The marker the scoper puts on the body element, and the only selector a first-paint rule takes. */
 export const MARKER = 'body[data-ui-project-liquid-glass="on"]'
 
+/*
+ * WHAT THE FIRST-PAINT SHEET IS MADE OF, for the package that owns it.
+ *
+ * These four values used to be hard-coded in `tools/derive-boot-css.mjs` (the paths and the header) and
+ * in `scripts/build.mjs` (the stylesheet list), which was correct while exactly one package had a skin
+ * and wrong the moment a second one could. They belong with the predicate above because they answer the
+ * same question — "which rules are the first paint's" — for one package, and the tool and the build both
+ * read them from here so the two cannot disagree about the answer.
+ *
+ * `SKIN_DIR` and `BOOT_CSS_OUT` are relative to the package root, so a tool that is handed `--package
+ * <dir>` can resolve either one without knowing which package it is looking at.
+ */
+
+/** Where this package's skin stylesheets live, relative to the package root. */
+export const SKIN_DIR = 'src/client/projects/liquid-glass'
+
+/** The stylesheets the first-paint subset may draw from, in `apply` order. */
+export const SKIN_STYLESHEETS = ['tokens.css', 'glass.css']
+
+/** The derived first-paint sheet, relative to the package root. */
+export const BOOT_CSS_OUT = 'src/host/boot.css'
+
+/**
+ * The header `derive-boot-css.mjs` writes above the derived rules.
+ *
+ * Generated rather than hand-maintained, and it is part of the file the build compares: a header that
+ * drifts would make `--check` report the sheet stale for a reason that has nothing to do with CSS.
+ */
+export const BOOT_CSS_HEADER = `/*
+ * The first paint, inlined into <head> before anything else runs.
+ *
+ * WHY THIS FILE EXISTS. The shell paints before the client bundle is loaded, so a skin that only
+ * arrives with that bundle is a skin the first frame does not have. This is the part of Liquid
+ * Glass that a first paint can use, inlined by the host half through \`webserver/index-inject\` —
+ * see \`src/host/index.js\`.
+ *
+ * IT IS A DERIVED SUBSET, NOT A SECOND SOURCE. Every block below also appears, character for
+ * character, in the CSS the skin emits after the runtime scoper has run, and \`scripts/build.mjs\`
+ * fails the build if that stops being true. Regenerate it with \`node tools/derive-boot-css.mjs\`
+ * after changing a body-level rule in \`tokens.css\` or \`glass.css\` — never edit it by hand.
+ *
+ * WHY IT IS ALREADY SCOPED. Project stylesheets are authored plainly and scoped at runtime. This
+ * one is written the way the scoper would emit it (\`body[data-ui-project-liquid-glass="on"]\`),
+ * because the host has no scoper and because it is inlined unconditionally: every selector carries
+ * the marker, so with the skin off the whole sheet is inert and the host needs no branch.
+ *
+ * WHAT IS NOT HERE, ON PURPOSE. The frost. It hangs off \`data-ui-skin-column\`, which the client
+ * runtime stamps once the application's DOM exists, so no first frame can have it. The blur lands
+ * a few milliseconds later; the colours, the background and its ambient gradient — everything the
+ * eye reads as "this is Liquid Glass" — are already correct here.
+ *
+ * Derived from tokens.css and glass.css; body-level rules only.
+ */`
+
 /**
  * Split a prelude on its top-level commas only.
  *

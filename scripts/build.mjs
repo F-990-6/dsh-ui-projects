@@ -33,7 +33,7 @@ import { fileURLToPath } from 'node:url'
  * agreed, and the sheet lost rules that decide the first frame. Two copies of a rule catch only the
  * mistakes one of them does not make.
  */
-import { classifyPrelude, mixedSelectorError, MARKER } from './boot-css-rules.mjs'
+import { classifyPrelude, mixedSelectorError, MARKER, SKIN_DIR, SKIN_STYLESHEETS } from './boot-css-rules.mjs'
 import { listFiles, renderBundle, transform } from './bundle-client.mjs'
 import { scopeCss } from '../src/client/scope-css.js'
 
@@ -61,8 +61,14 @@ const outBootCss = join(packageRoot, 'lib', 'boot-css.js')
 /** The marker the client scoper stamps on every project rule. Must match `runtime.js`. */
 const LIQUID_GLASS_MARKER = MARKER
 
-/** The skin stylesheets the first-paint subset may draw from, in `apply` order. */
-const SKIN_STYLESHEETS = ['tokens.css', 'glass.css']
+/*
+ * The skin directory and its stylesheet list come from `boot-css-rules.mjs`, not from here.
+ *
+ * They used to be a local `['tokens.css', 'glass.css']` plus a hard-coded path, which was one copy of a
+ * rule that `tools/derive-boot-css.mjs` held as well — the exact arrangement that let three suppression
+ * blocks vanish from the first-paint sheet while both copies agreed. A package now describes its own
+ * first paint in one place, and `--package <dir>` is what lets the tool derive any package's sheet.
+ */
 
 /**
  * The module order this bundle is built from (order affects readability only).
@@ -216,7 +222,7 @@ async function writeBootCss() {
    * header is prose for whoever opens the source file. The page gets the declarations only.
    */
   const payload = (await readFile(bootCssSource, 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '').trim()
-  const skinDir = join(clientRoot, 'projects', 'liquid-glass')
+  const skinDir = join(packageRoot, SKIN_DIR)
   /** @type {Set<string>} */
   const emitted = new Set()
   for (const file of SKIN_STYLESHEETS) {
