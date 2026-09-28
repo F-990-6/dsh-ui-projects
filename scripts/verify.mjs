@@ -19,7 +19,7 @@
  * Run: `npm test` (after `npm run build`).
  */
 
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
@@ -4193,6 +4193,52 @@ await test('the version-store layout rule is the same in install.ps1 and in the 
     )
   }
   equal(rows[0].dir, 'dsh-ui-projects', "and the framework's own name still maps to itself, as it did before the split")
+})
+
+/*
+ * EVERY FIRST-CLASS PACKAGE IS IN THE SNAPSHOT ROOTS.
+ *
+ * `tools/snapshot.mjs` protects the trees that are NOT under version control, and its `ROOTS` list is a
+ * description of this workspace that nothing was checking. Two packages were missing from it when this test
+ * was written: `dsh-ui-project-skeleton` (uncovered since it was created) and `dsh-plugin-liquid-glass` (a
+ * package as of step 8b). Both had git, so neither was one edit from being unrecoverable — but a package
+ * with no history and no backup would be, and this project has lost a source tree twice.
+ *
+ * ASSERTED AS A PROPERTY OF THE DIRECTORY, not as a list of three names: every `plugins/dsh-*` directory
+ * must be covered. A package added tomorrow fails this test until its root is added, which is the failure
+ * the skeleton went without for several rounds.
+ *
+ * The tool is a SCRIPT, so it cannot be imported without running it — the roots are read out of its source,
+ * and the same reading is asserted in both directions (a root that points at nothing protects nothing).
+ */
+await test('every package under plugins/ is covered by a snapshot root', async () => {
+  const workspaceRoot = resolve(packageRoot, '..', '..')
+  const toolPath = join(workspaceRoot, 'tools', 'snapshot.mjs')
+  const source = await readFile(toolPath, 'utf8')
+  const roots = [...source.matchAll(/dir:\s*path\.join\(ROOT,\s*'plugins',\s*'([^']+)'\)/g)].map((match) => match[1])
+  truthy(roots.length >= 2, `the snapshot tool lists the plugin packages it protects (${JSON.stringify(roots)})`)
+
+  const packages = (await readdir(join(workspaceRoot, 'plugins'), { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('dsh-'))
+    .map((entry) => entry.name)
+    .sort()
+  truthy(packages.length >= 2, `and there are packages to protect (${JSON.stringify(packages)})`)
+
+  const uncovered = packages.filter((name) => !roots.includes(name))
+  equal(uncovered, [], `every package has a snapshot root (uncovered: ${JSON.stringify(uncovered)})`)
+  const dangling = []
+  for (const name of roots) {
+    try {
+      await stat(join(workspaceRoot, 'plugins', name))
+    } catch {
+      dangling.push(name)
+    }
+  }
+  equal(dangling, [], `and every root points at a directory that exists (dangling: ${JSON.stringify(dangling)})`)
+  truthy(
+    source.includes("path.join(ROOT, 'tools')"),
+    'with tools/ still covered, where the unversioned scripts (this test’s subject among them) live',
+  )
 })
 
 /*
