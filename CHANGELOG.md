@@ -25,6 +25,330 @@ Verification vocabulary used below:
 
 ---
 
+## Round 49 — Step 8e: the wrapper forwards what it was given, and the wait stops reporting a verdict
+
+**Status: done, in three sub-rounds. `suite` 758 assertions / 0 failing (735 → 752 in 8e-1 → 758 in
+8e-2), `host` 41 ok / 0 failing (26 → 41), `load` 85 / 0, `conformance` 67 / 0, `skeleton` 13 / 0, the
+skin's `check` 26 / 0 (23 → 26) and its `suite` 237 / 0, `browser --self-check` green, and — the first
+real-machine run of this round — `browser` under `--no-write`: **184 assertions / 0 failing**, with the
+gate (`--verify-refusal`) **11 / 0**. `lib/client.js` is `sha256:153df2477a82` (was `e792766ad7eb`) and
+`lib/index.js` 13665 bytes (was 11000). `install.ps1` was executed ONCE in this round, by the user, as
+`-Snapshot -DryRun` from the skin package's directory — see 8e-3. Nothing under `$DSH_HOME` was written by
+this round's work.**
+
+Round 49 closes the extraction: 47 moved the last project out, 48 fixed the copy the extraction exposed,
+and this round fixes the two things the extraction left behind in the *tooling and the diagnostics* — a
+wrapper that silently ran the wrong mode, and a host log line that reported a five-second sample as a
+permanent fact.
+
+### 8e-1 — `install.ps1 -Snapshot` used to run an INSTALL
+
+The card prints `install.ps1 -Snapshot`, `-Update`, `-Rollback -To <name>` and says to run them in the
+package's own directory. The skin's wrapper forwarded them through a positional remainder:
+
+```powershell
+[Parameter(ValueFromRemainingArguments = $true)] $Rest
+…
+& (Join-Path $framework 'install.ps1') -SourceDir $PSScriptRoot @Rest
+```
+
+`ValueFromRemainingArguments` collects a SWITCH as the string `'-Snapshot'`, and `@Rest` splats that
+string **positionally**, where it binds to the first positional-capable parameter — `-To`. A stub carrying
+the framework's real parameter block and the wrapper's real forwarding line, run in a real
+`powershell.exe`, printed exactly what the framework received:
+
+| wrapper invoked with | what the framework bound |
+| --- | --- |
+| `-Snapshot` | `{SourceDir: 'SRC', To: '-Snapshot'}` |
+| `-Rollback -To 03-v1.0.0` | `{SourceDir: 'SRC', To: '-Rollback', Name: '-To', Revision: '03-v1.0.0'}` |
+| `-DryRun` | `{SourceDir: 'SRC', To: '-DryRun'}` |
+
+**And the framework's mode selection falls through to INSTALL when no verb is bound**
+(`install.ps1`: `$mode = if ($Uninstall) … elseif ($Rollback) { 'ROLLBACK' } else { 'INSTALL' }`). So the
+maintenance command did not fail — it **ran the install path**. That is a whole severity class worse than
+a dropped argument: a command whose printed promise is "record a version" instead relinked the package
+into the profile. The user's own review of this round's plan named it: "静默错参比参数丢失严重一档".
+
+The fix declares the framework's whole surface (its 19 parameters minus the `SourceDir` this file sets
+from `$PSScriptRoot`, plus its own `FrameworkDir` — 19 again), **with no defaults of its own**, and
+forwards by name:
+
+```powershell
+$forward = @{}
+foreach ($key in $PSBoundParameters.Keys) {
+    if ($key -eq 'FrameworkDir') { continue }
+    $forward[$key] = $PSBoundParameters[$key]
+}
+$forward['SourceDir'] = $PSScriptRoot
+& (Join-Path $framework 'install.ps1') @forward
+```
+
+Omitting the defaults is the other half of the fix and not tidiness: `$PSBoundParameters` holds only what
+the caller passed, so the framework's own `-Profile web` / `-Keep 3` / `-Changes 1` stay the single source.
+A copy of them here would be a second source — the same family of bug, one level down.
+
+### 8e-1 — the guard reads the parser, not a regular expression
+
+`scripts/param-surface.ps1` (new) parses both scripts with
+`[System.Management.Automation.Language.Parser]::ParseFile` and reports
+`Parameters[i].StaticType.Name` per parameter, plus the param block's own text. A text scan was rejected
+for three shapes that are all present in these two files: `[switch]$Snapshot` and `[string]$Snapshot` are
+the same words to a regex and the difference decides whether `-Snapshot $false` is accepted; a parameter's
+attributes may sit on their own line; and a `param(` block nests parentheses. `[CmdletBinding()]` is an
+ATTRIBUTE of the param block and is NOT inside `ParamBlock.Extent.Text` — measured, and the reason the
+tool emits attributes and extent together.
+
+The tests compare names **and types** (a `[switch]` that became a `[string]` would pass a name-only check),
+and the two sides are `(framework − SourceDir) ∪ {FrameworkDir}` versus the wrapper — a set equality, so a
+parameter added to the framework tomorrow fails until the wrapper carries it.
+
+**The red run, before the wrapper was touched:**
+
+```
+FAIL the wrapper accepts the framework’s whole parameter surface, with the same types
+       the wrapper declares every parameter the framework accepts, except the source directory it sets itself:
+       expected [], got ["DryRun", "Uninstall", "Update", "Snapshot", "ListVersions", "Rollback", …12 more]
+framework params : 19      wrapper params : 2
+missing (18): DryRun … DshCommand        spurious (1): Rest
+```
+
+and the behavioural half, against the real wrapper (its own test, because "declared" and "forwarded" are
+different claims):
+
+```
+FAIL every argument the card prints arrives at the framework as the parameter it names
+       the framework receives a snapshot ({"SourceDir":"E:\\dsh\\plugins\\dsh-plugin-liquid-glass","To":"-Snapshot"}):
+       expected {"Snapshot":"True","SourceDir":"…"}   got {"SourceDir":"…","To":"-Snapshot"}
+```
+
+### 8e-1 — running the wrapper against a fake framework, and why that obeys the iron rule
+
+The behavioural test executes the REAL wrapper with `-FrameworkDir` pointing at a temp directory holding a
+FAKE `install.ps1` — whose parameter block is generated from the framework's own AST, and whose entire body
+writes one JSON file beside itself and exits. The framework's `install.ps1` is never run.
+
+**That claim is a guard, not a paragraph.** Two assertions read the generated fake back and refuse it if it
+names `DSH_HOME`, `$HOME`, `profiles`, `settings`, `Remove-Item`, `New-Item`, `Set-Content` or
+`Start-Process`, or if it contains **any** absolute path at all — the one file it writes is built from
+`$PSScriptRoot`, inside the `mkdtemp` this test removes. A future edit that reaches for the environment "to
+make the fake more realistic" fails there. The wrapper's own execution path was audited the same way: read
+`DSH_HOME` into a variable, `Test-Path` a candidate list that short-circuits on the first hit, one
+`Write-Host`, one call, `exit`.
+
+Sensitivity is built in: the old shape is written as an inline stub and asserted to misbind
+(`misbound.To === '-Snapshot'`), because a probe proven only against the fixed file proves that the probe
+runs.
+
+### 8e-1 — `tools` gets a repository
+
+`E:\dsh\tools` held the only copy of `snapshot.mjs` and `derive-boot-css.mjs` and was not under version
+control: a tree the snapshot protected while nothing protected the snapshot, which is exactly the exposure
+CONTRIBUTING rule 6 exists to prevent. It now has a repository (`3c5a623`) with a README that states what
+each of the 17 files is **from its own header**, why there is no `.gitignore` (nothing there is generated),
+and the encoding facts (all valid UTF-8, no BOMs, the three `.ps1` files ASCII-only — PowerShell 5.1 decodes
+a BOM-less script as ANSI). The commit itself was made by the user, deliberately: the iron rule forbids
+this project's tooling from running git, and that rule does not get an exception for a convenient command.
+
+### 8e-1 — the trap that cost the tool its first two runs (→ CONTRIBUTING rule 7)
+
+`param-surface.ps1` failed twice with
+
+```
+The property 'surface' cannot be found on this object. Verify that the property exists.
+```
+
+because the script held the parsed result in a local named `$framework`, spelled like its own parameter
+`[string]$Framework` — and **a typed parameter is a type-constrained variable for the whole life of the
+script**, so the assignment silently coerced the `[pscustomobject]` to a string. The error appears one
+statement LATER than the mistake and points at the wrong place. The fix renames the locals
+(`$frameworkInfo`), with a comment so nobody tidies them back. It is now CONTRIBUTING rule 7.
+
+### 8e-2 — the wait notice: a sample, not a verdict
+
+`src/host/index.js` armed a one-shot `setTimeout(5000)` whose whole body was one line:
+
+```
+[dsh-ui-projects] the connection service has not appeared, so the installed-package endpoint is not mounted; …
+```
+
+Three facts, read rather than assumed. **The timer is a sample**: it prints once, is never re-armed, is
+never retracted, and is cleared only when the row unloads. **The wording is a verdict**: it states a
+permanent fact about a state that can change one millisecond later, and nothing ever follows it. **And the
+service really is late in a real composition** — the row's own comment records why (the connection row's
+`apply` is async and lives in an earlier layer), and the user observed this repository's page print that
+line and then list three packages, which needs a successful authenticated request through that very
+service.
+
+So the line became a state, with its duration derived from the constant that arms the timer:
+
+```
+[dsh-ui-projects] still waiting for the connection service after 5s: the installed-package endpoint mounts when it arrives, and Settings › UI plugins says it cannot read the listing until then
+```
+
+and when the service arrives after that line has been printed, the pair gets its ending:
+
+```
+[dsh-ui-projects] the connection service arrived after N.Ns; the installed-package endpoint is mounted
+```
+
+A log cannot unsay a line, so "retract" is not the shape: the honest shape is **either nothing at all, or
+waiting → arrived**, on the same channel (`console.error`, because a composition without a logger exporter
+swallows `ctx.logger`). The arrival line prints only when the notice actually fired.
+
+### 8e-2 — three compositions, one sentence (and 8e-3 measured the third)
+
+| composition | connection service | what the log says |
+| --- | --- | --- |
+| a test composition (`load-check.mjs`), Electron over `file://`, a headless profile | **never** | the waiting line, once — and it stays true |
+| the profile this was reviewed on | **late** (after 5 s) | the waiting line, then the arrival line |
+| the same profile, freshly restarted in 8e-3 | **fast** (inside 5 s) | nothing at all |
+
+All three are real, and the wording is the only one of the two candidates that is true in all three: a
+"failed to mount after N seconds" sentence would have been **false** in the two compositions where the
+endpoint does mount. 8e-3 is also the correction to this round's own assumption — the plan predicted the
+reviewer's instance was late, and the restart produced **no line at all**, which is the fast case. The
+prediction was right about the code and wrong about the machine, which is why the third row is in this
+table rather than in a footnote.
+
+### 8e-2 — the flag, the failure it hid, and the ending
+
+`endpointMounted = true` was set BEFORE `registerInstalledEndpoint(...)`. That call does not throw for a
+missing service (it logs `logger.warn` and returns a no-op disposer), but `connection.fetch.register`
+itself can throw — and then the flag was already true, so the notice was suppressed, this row said nothing
+at all, and only Cordis reported the failure. The flag moved after the call (with the note that an async
+version must move it after the `await`), and the throw now gets its own line before being rethrown
+unchanged, so Cordis's handling is untouched and the row's pair of facts has an ending either way.
+
+### 8e-2 — three fallbacks to the framework's name become `null`
+
+Three places answered "this project did not say which package it belongs to" with `'dsh-ui-projects'`:
+`store.js` (the snapshot field), `panel.js` (the card's version lookup) and `panel.js` again (the
+maintenance heading). Three derivations of one fact, each free to disagree, each naming THIS package for
+somebody else's project — a card that would print the framework's maintenance commands, look up the
+framework's snapshot list and compare the framework's installed version against it.
+
+Why it is a real bug even though it is unreachable today: `registry.register(definition)` is a public seam
+(`__internals.Registry`, one argument, no manifest), the registry does not require `source`, and that is the
+shape every built-in project used to take. 8c deleted the last caller; nothing stops the next one.
+(`CONTRACT_FIELDS` in `service.js` excludes `package`, so `source.package` is the only carrier of identity —
+checked, not assumed.)
+
+`packageNameOf(project)` in `store.js` is now the single derivation and returns **`null`**, not a
+placeholder string: these values flow into a heading and into the `-SourceDir` argument of a command, and
+something that LOOKS like a package name eventually gets used as one. Without a name the card asks the
+scan nothing at all (the old code would have reported "this profile recorded no snapshot of it" about a
+package it cannot name, and told the reader to run `-Snapshot` for it), and the heading uses a new sentence
+in both languages (`maintenanceTitleUnknown`) rather than teaching the template to format `null` — a
+template that renders "the null package" renders the bug.
+
+**The red run:**
+
+```
+FAIL a project registered without a source does not borrow the framework’s name
+       and the snapshot reports NO package instead of the framework’s name: expected null, got "dsh-ui-projects"
+```
+
+### 8e-2 — the guard is a behaviour test, not a wording lock
+
+The plan originally proposed a wording lock and an explanation of why a behaviour test was impossible. That
+was wrong, and the reviewer changed the ruling after reading the argument: the row arms a bare GLOBAL
+`setTimeout` and `host-check.mjs` runs the real host half in-process, so swapping `setTimeout`,
+`clearTimeout` and `console.error` around `apply` is enough to decide when the sample is taken. A wording
+lock would have proven the string was still there; it could not prove that a late arrival gets its ending,
+that a fast arrival stays silent, or that unloading clears the timer — the three semantics this round
+actually changed.
+
+`host-check.mjs` grew `options.connection` (`'now'` / `'never'` / `'manual'` with `releaseConnection()`),
+`options.registerThrows`, effect disposers kept for `disposeEffects()`, and §7's fifteen assertions over
+five scenarios. The swap is restored in `finally`, because a leaked fake `setTimeout` would hang every
+later assertion in that file rather than fail one. **The red run, before the host half was touched, was
+`ok=34 FAIL=7`:**
+
+```
+FAIL  the line no longer reads as a state: "[dsh-ui-projects] the connection service has not appeared, …"
+FAIL  the line still reports a verdict the page cannot support: ["has not appeared","is not mounted"]
+FAIL  the line lost the duration or the symptom: "[dsh-ui-projects] the connection service has not appeared, …"
+FAIL  expected the waiting line and the arrival line, got ["[dsh-ui-projects] the connection service has not appeared, …"]
+FAIL  the arrival line is not the measured form: "undefined"
+FAIL  the waiting line was replaced or not followed: ["[dsh-ui-projects] the connection service has not appeared, …"]
+FAIL  expected one "could not be mounted" line, got []
+```
+
+### 8e-3 — the wrapper on the real machine
+
+The user ran, in `E:\dsh\plugins\dsh-plugin-liquid-glass`:
+
+```powershell
+powershell -File install.ps1 -Snapshot -DryRun
+```
+
+and the mode line read **`SNAPSHOT (dry run)`** — not `INSTALL (dry run)`, which is what the old forwarding
+produced. The plan predicted that output line by line from the source before the run (six section heads:
+Target → Preflight → Snapshot plan → What this run found → Retention → Dry run; payload `6 files, 82703
+bytes`; `keeping the newest 3; nothing would be pruned`), and the prediction held. The one write this mode
+performs is the script's own link-capability probe inside `%TEMP%` (created and removed by the script,
+documented as intentional in `-DryRun` too); `$DSH_HOME` is not touched, and no snapshot is written.
+
+### 8e-3 — the assertion arithmetic, and why a browser total is not comparable
+
+The plan said the browser total would rise by three; the measurement was 184 against a remembered 182, so
+**+2 for a +3 change**. Chased to the end, because a count that does not add up is how a suite starts
+lying:
+
+- **The last RECORDED browser total is 182 / 0**, from Round 44 (7d-2c) — `CHANGELOG.md` records it twice,
+  with the note that `178 → 182` was that round's new test. So 182 does not include Round 48's test.
+- **The suite's own source grew by exactly three.** Assertion call sites in `scripts/browser-verify.mjs`:
+  **169** at `8207608` (7d-2c), **169** at `bae6ab2` (8c — this round's only earlier change there was a
+  `glass.css` path fix), **172** at `8cd9808` (Round 48). Round 48's new test asserts exactly three things.
+- **So the comparable quantity is the site count (+3) and the measured total moved by +2.** The difference
+  is not a source change: `setSkin()` returns early — and asserts nothing — when the skin is already in the
+  wanted state (`if ((await skinIsOn(session)) === wantOn) return`), and it has **six** call sites. Each one
+  contributes 0 or 1 depending on the live page at that moment, so the suite's total is a function of the
+  page as well as of its source.
+
+That is why this entry records both numbers and compares the right ones. Future rounds should quote the
+site count (or per-test `ok` lines) when they mean "the suite grew", and treat the total as evidence about
+a RUN — which is what it is.
+
+### Smaller pieces
+
+- **The wrapper's two em dashes became ASCII** (`--`). The file has no BOM, so PowerShell 5.1 decodes it as
+  ANSI and any non-ASCII in it is a latent mojibake source — harmless in that comment, not harmless as a
+  pattern.
+- **A sentinel that checked a spelling rather than a property failed on its own correct fix**:
+  `check.mjs` looked for the literal `-SourceDir $PSScriptRoot`, which the new forwarding no longer contains.
+  It now names the property — the wrapper tells the framework which directory to maintain, and does not let
+  a caller name another — with the behavioural version in the framework's suite. This is CONTRIBUTING's
+  "test the path, not the function", one level down.
+- **`check.mjs` strips comments before scanning** (`stripComments`): the wrapper's header explains the
+  `$Rest` bug **by name**, so a raw scan would have failed on its own documentation. Rule 5's fourth outing.
+- **Two stale comments about identity were corrected** (`store.js`, `locale.js`): both still said the
+  framework and the built-in skin ship as one package, which step 8c ended.
+- **A silent fixture fallback became a stated precondition**: `verify.mjs`'s version-state test read the
+  package name as `… ?? 'dsh-ui-projects'` — the exact fallback this round removed from the product — and
+  now asserts the fixture names a package before using it.
+- **CONTRIBUTING's "Five rules" became "Seven rules".** The count in the prose had been wrong since rule 6
+  was added; the file now says seven and has seven.
+
+### What this round did NOT verify
+
+- **This round's tooling never ran `install.ps1` in any mode.** The single execution was the user's
+  `-Snapshot -DryRun`, and it was `-DryRun`: no install, no update, no rollback, no uninstall, no
+  `-ListVersions`. Those four modes' argument handling is covered by the new surface guard and the
+  behavioural test, not by a run.
+- **Nothing under `$DSH_HOME` was written by this round's work.** The reads were: the profile's
+  `settings.yaml` (hashed as evidence, never copied), the version store (listing snapshots for the retention
+  line), and `git status`/`git log` on the two repositories.
+- **The browser run was the user's**, against their own restarted instance: gate 11 / 0 and 184 / 0 under
+  `--no-write`. `--no-write`'s promise is narrower than it reads — the `settings` key only; `enabled`,
+  `initialized`, `touched` and `v` still write, because the suite's own reload assertions need the enabled
+  set to persist (CONTRIBUTING records the counted 42 attempts / 8 refused / 34 through).
+- **The host wording cannot be verified from the browser.** It goes to the host process's stderr at
+  startup; the run that matters is the restart, and it produced no line because the service arrived inside
+  the window.
+
+---
+
 ## Round 48 — Step 8d review: the copied block repeats the row's own command
 
 **Status: done. `suite` 735 assertions / 0 failing (725 → 735, the new test's ten), `host` 26 ok / 0
