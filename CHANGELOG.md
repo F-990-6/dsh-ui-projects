@@ -25,6 +25,90 @@ Verification vocabulary used below:
 
 ---
 
+## Round 51 — Step 8e closed: the wrapper's whole surface is driven, and two of the three sub-rounds were already recorded
+
+**Status: done. `suite` 844 / 0 (840 → 844), `host` 41 ok / 0 failing, `load` 85 / 0, `conformance`
+122 / 0, `browser --self-check` green, and the real-browser half stands at **239 / 0** (Round 50). The
+only code change was in Round 50's successor commit `a3f5c78` — one file, `+76` lines, tests only.
+`lib/client.js` is unchanged at `sha256:b5eccae3678f` and `lib/index.js` at 13665 bytes, because nothing
+under `src/**` was touched. `install.ps1` was not run, and no run in this round wrote `$DSH_HOME`.**
+
+This round closes Step 8e. Its first sub-round needed work; the other two had already shipped, and the
+round's real product is the record of WHICH is which — an audit that says "already done, here is the
+evidence" instead of re-implementing a fix and calling it progress.
+
+### 8e-1 — the wrapper's parameter surface, driven end to end
+
+`@xjl-resources/dsh-plugin-liquid-glass/install.ps1` declares the framework's whole surface one for one
+minus `SourceDir` (which it sets itself) and forwards what was BOUND by name, excluding its own
+`-FrameworkDir` — the fix Round 49 made after `install.ps1 -Snapshot` silently ran an INSTALL. What that
+round left open was the PROOF: the stub-run table drove 9 of the 18 forwarded names. Commit `a3f5c78`
+drives the entire surface in one invocation and asserts the received map name by name, with the sample
+value chosen by the parsed TYPE and a closed sample table — a type the test cannot pass fails instead of
+being skipped — plus a coverage assertion, plus a refusal check that `-SourceDir C:\elsewhere` makes the
+wrapper exit non-zero rather than replacing the package it was pointed at.
+
+Two red evidences, both produced by temporarily breaking the NEW code (never the wrapper):
+
+| red | what was broken | what failed |
+| --- | --- | --- |
+| 1 | `Int32` removed from the sample table | `every declared parameter has a sample value this test knows how to pass: expected [], got ["Keep: Int32", "Changes: Int32"]` |
+| 2 | the drive loop skipped one name | `and no declared parameter was left unexercised: expected [], got ["DryRun"]` |
+
+**Red 2 passed on its first attempt, and that mattered.** The first version of the block asserted
+coverage over the SAME list it had driven, so dropping a name removed it from both sides and the
+assertion could not fail — a guard that cannot fail is the exact thing this test exists to prevent (the
+same family as "the rule refused nothing" in Round 50's gate). The drive loop and the coverage assertion
+now read the parsed surface separately, and the comment says so where the next reader will look.
+
+### 8e-2 — already done in Round 49, and stronger than the wording lock this round asked for
+
+`src/host/index.js` describes the wait as a STATE ("still waiting for the connection service after 5s: the
+installed-package endpoint mounts when it arrives…"), finishes the pair when the service arrives late, and
+names the failure when it arrives but cannot mount; `console.error` is kept for the reason 7e gave (a wait
+that never ends must not be invisible). `scripts/host-check.mjs` section 7 pins all of it with 15
+BEHAVIOURAL assertions — the row is run in-process with `setTimeout`/`clearTimeout`/`console.error`
+swapped, so the channel is part of what is asserted: a line sent through `ctx.logger` would never be
+collected and the assertions would fail. That is why this round added no wording lock: a lock over the
+sentence would have been weaker than what is already there. The three fallbacks this round also carried
+are done too, with the guard `a project registered without a source does not borrow the framework's name`.
+
+### 8e-3 — the browser evidence, and the one piece a suite cannot produce
+
+The real-browser half is Round 50's **239 / 0**, which includes the Round 48 test that started this
+thread (`the block each row offers to copy repeats that row's own removal command`). The VISUAL evidence
+is a screenshot, and it is a person's: `--shot` writes three files (dialog open, dialog closed with
+Escape, dark mode) and **none of them can show the plugins column**, because no capture happens in that
+group. The user took the screenshot by hand, and the check is per row — the command on its own line and
+the block a person copies must name the SAME package:
+
+| row | what the screenshot shows |
+| --- | --- |
+| `@xjl-resources/dsh-plugin-example` | both places: `dsh plugin --profile web remove @xjl-resources/dsh-plugin-example` |
+| `@xjl-resources/dsh-plugin-example-dialog` | both places carry the same package name |
+| `@xjl-resources/dsh-plugin-liquid-glass` | both places carry the same package name |
+| `dsh-cost-meter` | both places: `dsh plugin --profile web remove dsh-cost-meter` |
+| `dsh-ui-projects` | no removal block at all, only the maintenance block — by design |
+
+That closes the last item of the 8d UI review. One documentation nit stays open and was NOT fixed here
+(this round writes documentation, not README repairs): `README.md` says `--shot` writes "`glass.png` and
+`glass-dark.png`", and the code writes three files including `-closed`.
+
+### The deferred items, restated with a disposition each
+
+- **(b) move `derive-boot-css.mjs` into the skin package** — next round. The skin's build already prefers
+  a copy beside itself and falls back to `E:\dsh\tools` (`plugins/dsh-plugin-liquid-glass/scripts/build.mjs`),
+  so the move is a copy, a delete and a path update across five or six files.
+- **(c) `.snapshots/README.md` rows** — this round added the pointer sentence for `46-step8a` / `47-step8b`
+  next to the declared 20–37 gap; no rows are invented from directory names.
+- **(d) `matchesWithAncestors` in `scripts/fake-dom.mjs`** — dead (no caller anywhere); next round,
+  bundled with any other touch to that file.
+- **(e) `install.ps1` decision-tree comments** — deferred again, until a round has another reason to touch
+  that file; the mode order and the `-Rollback -List` branch are documented in
+  `docs/plugin-development.md` and `docs/update-and-rollback.md`, which is where a reader looks first.
+
+---
+
 ## Round 50 — Step 9b: the contract scanner, the badge, the two-sided example, and four assertions that measured the wrong thing
 
 **Status: done. `suite` 840 / 0 (758 → 840), `host` 41 / 0, `load` 85 / 0, `conformance` 122 / 0
