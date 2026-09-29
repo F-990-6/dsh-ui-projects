@@ -132,6 +132,12 @@ project's docs are not allowed to be.
 3. **`.snapshots/README.md` is under no version control at all** — `E:\dsh` is not a repository and
    `.snapshots` is an `EXCLUDE` entry in `tools/snapshot.mjs`, so the file that explains the snapshots is
    itself protected by nothing. Deciding which repository should hold it is open.
+   **Closed in 56i**: `.snapshots` is a repository of its own (root commit `248079b`), tracking exactly three
+   files — `.gitignore`, `README.md` and `pre-build/client.js`; the 47 snapshot directories are IGNORED, not
+   deleted. The alternative (folding it into `E:\dsh\tools`) was rejected by measurement: pointed at a
+   different work tree, that repository's index reports all 17 of its tracked files as deleted, so one
+   `git add -A` would delete the tool tree itself. The one hazard the chosen arrangement adds — `git clean`
+   here would treat the 47 ignored directories as rubbish — is written into `.snapshots/README.md`.
 4. **`docs/`-adjacent wording:** the snapshot index's heading says "20 – 38" while its prose says "20 through
    37"; the rows for 20–37 are deliberately **not** backfilled (the file states why), and 46–47 now carry a
    pointer to Rounds 45–46.

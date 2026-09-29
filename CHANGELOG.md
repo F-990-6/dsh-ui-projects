@@ -25,6 +25,81 @@ Verification vocabulary used below:
 
 ---
 
+## Round 56i — the snapshot index comes under version control, and the listing learns to skip dot-directories
+
+**Status: done — two commits by the agent, one by the user, red-then-green end to end, and no self-injury to
+disclose. Offline at the end, all exit 0: `suite` 1134 / 0 (1131 → 1134), `conformance` 130 / 0, `load` 91 / 0,
+`host` loadable, `browser --self-check` green. `lib/client.js` is `a524d5921ef0` throughout, because this
+round changed one guard in `scripts/verify.mjs`, one line in `tools/snapshot.mjs`, and two files that live
+outside every repository. No browser run for that reason: nothing that ships changed.**
+
+| step | commit | what it did | evidence |
+| --- | --- | --- | --- |
+| 56i-0 | `07fc82b` (framework), `63a5c79` (tools) | the snapshot listing skips dotted directories, with a guard that says so | `suite` red 1133 / 1 → green 1134 / 0 (+3) |
+| 56i-1 | — (files outside every repository) | `.snapshots/.gitignore` (193 B) and two paragraphs in its `README.md` | pure append: 870 bytes, 10 lines, pre-change file an exact byte prefix |
+| 56i-2 | `248079b` (`.snapshots`, by the user) | `git init` and the root commit | 3 files changed, 5456 insertions; `ls-files` exactly three |
+| 56i-3 | this entry | B.3 closed in `docs/phase2-scope.md` | — |
+
+### The decision, and the option that was measured out
+
+`docs/phase2-scope.md`'s B.3 had been open since Round 53: `.snapshots/README.md` — the file that explains
+the snapshots — was itself under no version control, because `.snapshots` is an `EXCLUDE` entry in
+`tools/snapshot.mjs` and `E:\dsh` is not a repository. Two ways to close it were scouted before either was
+chosen.
+
+- **Folding it into `E:\dsh\tools` was rejected by measurement, not by taste.** With
+  `git --git-dir=E:\dsh\tools\.git --work-tree=E:\dsh`, the index's paths are repo-root-relative and now
+  resolve where nothing exists: `git status --porcelain` reported **all 17 tracked files as deleted** (46
+  entries in total, 3441 with `--untracked-files=all`), which one `git add -A` in that state would have turned
+  into a real deletion of the whole tools repository. Keeping a second copy of the file inside `tools/` was
+  rejected as well: 56h-3 had just edited the original by one byte, and a copy would not have followed.
+- **A repository of its own was chosen.** `.snapshots` got a `.gitignore` with one general pattern (`/*` plus
+  three negations) instead of an enumeration that would need an edit for every future snapshot, and a root
+  commit holding exactly the three things that have no other history: `.gitignore`, `README.md`, and
+  `pre-build/client.js` (the one hand-recovered bundle, 262 KB, included on purpose for that reason).
+
+### The interaction that would not have shown up until it bit
+
+`tools/snapshot.mjs`'s `snapshots()` enumerates every DIRECTORY under `.snapshots` and asks each one to
+describe itself, excluding only `pre-build`. A `.git` directory there would have been read as a
+**legacy-layout snapshot** — it holds no root subdirectories, so `readSnapshot` maps its whole contents onto
+the `plugin` root — and `--list` would have reported it as a snapshot while `--diff .git` compared git's own
+internals against the plugin tree. **That was an inference read from the source, never an observation**
+(observing it would have required the `.git` to exist). The fix therefore landed before the repository did:
+the filter is now `!e.name.startsWith('.') && e.name !== 'pre-build'`, and the new guard in `verify.mjs`
+asserts that filter LINE rather than the file's text, with `pre-build` as the control — so rewriting the
+listing fails the guard instead of sliding past it.
+
+Measured afterwards, which is the part that matters: `node tools/snapshot.mjs --list` still reports
+**47 snapshot(s)**, and `--diff 47-step8b` prints exactly what the pre-change tool printed (80 / 80 lines,
+`Compare-Object` differences 0).
+
+### Verification of the new repository
+
+- `git ls-files` → exactly `.gitignore`, `README.md`, `pre-build/client.js`; `git status --short` clean;
+  `git status --ignored` lists exactly **47** entries. Ignored is not the same as absent, and both facts are
+  now written into `.snapshots/README.md`'s known-defects list, together with the warning that `git clean`
+  there would treat the archive itself as disposable (2519 files, 31.6 MiB).
+- The `.gitignore` semantics were the one thing the agent could not test — testing them needs `git init`,
+  which it does not run — so they were handed to the first `git status --short` after the init: it listed the
+  three files and nothing else.
+- `README.md`'s edit is proved to be a **pure append**: the pre-change file is an exact byte prefix of the
+  post-change one (870 bytes and 10 lines added; sha256 `91b1cb4f5be9…` → `aaf2d96d4255…`), and both files
+  decode as strict UTF-8 with zero U+FFFD and no BOM.
+
+### Recorded observations
+
+- **CRLF.** Git prints "LF will be replaced by CRLF the next time Git touches it" for files written by the
+  file tools. It performs that conversion itself; recorded as an observation, not as a defect.
+- **No self-injury this round, stated rather than assumed**: the tools change is `+1 / −1`, the guard is
+  `+23 / −0`, the `.snapshots` README edit is a byte-prefix append, and all four other repositories were clean
+  at every checkpoint.
+- **One method correction, disclosed for completeness.** The first comparison of `--diff` output against the
+  pre-change tool ran it as `git show … | node --input-type=module -- --diff …`, and Node read `--diff` as a
+  script path (`Cannot find module '--diff'`): that comparison was void, not evidence. The working method was
+  a temporary copy of the old tool inside `E:\dsh\tools\` — its `ROOT` is derived from its own location, so it
+  has to sit there — which was deleted immediately afterwards.
+
 ## Round 56h — six small items, one tool moved out of the workspace's `tools/`, and the rule that keeps a heading from being eaten
 
 **Status: done — five commits, one per framework item, and NO browser run: this round changed no product
