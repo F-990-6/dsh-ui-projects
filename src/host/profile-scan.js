@@ -226,6 +226,88 @@ async function readInstalledPackage({ profileDir, name }) {
 }
 
 /**
+ * One `author` field, as a person reads it.
+ *
+ * npm allows two shapes — a free string, and `{ name, email, url }` — and only the string is already
+ * display-shaped, so it is passed through UNPARSED rather than taken apart and put back together.
+ * The object is assembled the way npm itself writes it. Anything else (`null`, a number, a list, an
+ * empty object) is `null`, because an author the manifest does not declare is a fact about the
+ * package and the row has a sentence for it: answering with an empty or invented string would replace
+ * a readable "not declared" with a plausible-looking nothing.
+ * @param {unknown} raw
+ * @returns {string | null}
+ */
+export function displayAuthor(raw) {
+  if (typeof raw === 'string') return raw.trim().length > 0 ? raw.trim() : null
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const parts = []
+  if (typeof raw.name === 'string' && raw.name.trim().length > 0) parts.push(raw.name.trim())
+  if (typeof raw.email === 'string' && raw.email.trim().length > 0) parts.push(`<${raw.email.trim()}>`)
+  if (typeof raw.url === 'string' && raw.url.trim().length > 0) parts.push(`(${raw.url.trim()})`)
+  return parts.length === 0 ? null : parts.join(' ')
+}
+
+/**
+ * The `dsh.uiProject` fields the package row shows, or `null` when the package declares no project.
+ *
+ * A SUBSET, and deliberately not the manifest: the endpoint's whole doctrine is that what crosses the
+ * wire is a projection (`installed-endpoint.js` says so in its header), so the fields a row does not
+ * read — `id`, `name`, `description`, `scope`, `supports`, `testItems`, `controls`, the two version
+ * numbers — are dropped HERE, at the one place that knows what a declaration means.
+ *
+ * `null` rather than `undefined` for every absent field, for the reason the contract scan already
+ * records: `JSON.stringify` drops an undefined property, and the row would then have to guess whether
+ * the package declared nothing or the host is older than the page.
+ *
+ * The two spellings of "none" are collapsed into one: an empty `modifies`/`requires` list means the
+ * same thing to a reader as no list at all, and two spellings would need two sentences.
+ * @param {{ uiProject?: any }} dsh the declarations `readDeclarations` produced
+ * @returns {{ type: string | null, preview: string | null, previewLabel: string | null, perfLevel: string | null, priority: number | null, modifies: string[] | null, requires: string[] | null } | null}
+ */
+export function uiProjectSubset(dsh) {
+  const declared = dsh?.uiProject
+  if (declared === null || typeof declared !== 'object' || Array.isArray(declared)) return null
+  /** @param {unknown} value */
+  const text = (value) => (typeof value === 'string' && value.trim().length > 0 ? value : null)
+  /** @param {unknown} value */
+  const list = (value) => {
+    if (!Array.isArray(value)) return null
+    const entries = value.filter((entry) => typeof entry === 'string' && entry.length > 0)
+    return entries.length > 0 ? entries : null
+  }
+  return {
+    type: text(declared.type),
+    preview: text(declared.preview),
+    previewLabel: text(declared.previewLabel),
+    perfLevel: text(declared.perfLevel),
+    // An integer, because that is what the registry accepts: a fractional priority is refused at
+    // registration (`registry.js`, "the sort is the contract"), so a row must not advertise one.
+    priority: Number.isInteger(declared.priority) ? declared.priority : null,
+    modifies: list(declared.modifies),
+    requires: list(declared.requires),
+  }
+}
+
+/**
+ * The three facts §五 asks a package row for, read off the package's OWN manifest.
+ *
+ * The description comes from `package.json`'s top level, not from `dsh.uiProject.description` — the
+ * two are different sentences about different things (the package vs the project it contributes), and
+ * only the first is the package's own description.
+ * @param {any} manifest the package's parsed `package.json`
+ * @param {{ uiProject?: any } | undefined} dsh `readDeclarations(manifest.dsh)`
+ * @returns {{ description: string | null, author: string | null, uiProject: ReturnType<typeof uiProjectSubset> }}
+ */
+export function packageFacts(manifest, dsh) {
+  const raw = manifest?.description
+  return {
+    description: typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null,
+    author: displayAuthor(manifest?.author),
+    uiProject: uiProjectSubset(dsh),
+  }
+}
+
+/**
  * Scan one profile.
  *
  * Throws when the profile's own `package.json` does not exist: that is not a package problem but a
@@ -291,6 +373,12 @@ export async function scanProfile({ profileDir }) {
   for (const [name, spec] of dependencyEntries) {
     const installed = await readInstalledPackage({ profileDir: dir, name })
     const dsh = readDeclarations(installed.manifest?.dsh)
+    /*
+     * §五's row facts, read here rather than in the endpoint: what a manifest MEANS is this file's
+     * business, and what crosses the wire is the endpoint's. `packageFacts` is the one place that
+     * decides both the description's source and the author's shape.
+     */
+    const facts = packageFacts(installed.manifest, dsh)
     const bundled = installed.resolved && declaresBundle(installed.manifest) && bundles.includes(name)
 
     /*
@@ -355,6 +443,9 @@ export async function scanProfile({ profileDir }) {
       kind,
       bundled,
       projectId: typeof dsh.uiProject?.id === 'string' ? dsh.uiProject.id : undefined,
+      description: facts.description,
+      author: facts.author,
+      uiProject: facts.uiProject,
       problems,
       contract,
     })
@@ -590,7 +681,7 @@ export function previewCommand({ action, profileName, packageName, spec, version
  * @property {string} profileDir
  * @property {string} profileName
  * @property {string} readAt
- * @property {Array<{ name: string, spec: string, resolved: boolean, version?: string, dir?: string, realDir?: string, via?: string, kind: string, bundled: boolean, projectId?: string, problems: Problem[] }>} dependencies
+ * @property {Array<{ name: string, spec: string, resolved: boolean, version?: string, dir?: string, realDir?: string, via?: string, kind: string, bundled: boolean, projectId?: string, description: string | null, author: string | null, uiProject: { type: string | null, preview: string | null, previewLabel: string | null, perfLevel: string | null, priority: number | null, modifies: string[] | null, requires: string[] | null } | null, problems: Problem[] }>} dependencies
  * @property {{ all: string[], inBox: string[], fromDependencies: string[] }} bundles
  * @property {Array<{ name: string, version: string, projectId?: string }>} uiProjectPackages
  * @property {string[]} orphanedBindings

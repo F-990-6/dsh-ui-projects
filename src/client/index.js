@@ -359,7 +359,12 @@ function apply(ctx) {
           // a page most sessions never open.
           if (installedStore.state().status === 'idle') void installedStore.refresh()
           const { UiPluginsSection } = require('./panel-plugins.js')
-          return UiPluginsSection({ store: installedStore, t: strings(detectLocale(ctx)), React: require('react') })
+          /*
+           * The PROJECTS store goes along for the ride, read-only: §五's 启用开关 is a MIRROR here, not a
+           * second switch. The projects page receives the installed store the same way, so this is one
+           * page reading the other's snapshot rather than a new source of truth.
+           */
+          return UiPluginsSection({ store: installedStore, projects: store, t: strings(detectLocale(ctx)), React: require('react') })
         },
       )
       return typeof registered === 'function' ? registered : () => {}

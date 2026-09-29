@@ -572,6 +572,80 @@
   }
 }
 
+/* ── installed package row (Settings › UI plugins) ────────────────────────── */
+
+/*
+ * The row had NO rules of its own until step 56a: the classes were rendered and nothing styled them,
+ * which is most of why the column read as unfinished. It is a grid for the same reason the project
+ * card is one — a preview beside a text column, where the TEXT column is the one that shrinks
+ * (`minmax(0, 1fr)`, or a long package name pushes the row wider than the dialog).
+ *
+ * `data-uip-preview` carries three states and the layout keys off them: a row with nothing to show
+ * gets a single column, so there is no 116px gutter standing where a preview would have been.
+ *
+ * Every rule here is scoped to `.uip-plugin`, INCLUDING the ones that size a preview. `.uip-preview`
+ * is shared with the projects page and its own rules above own the default size; a bare selector here
+ * would resize that page's cards from this column's stylesheet.
+ */
+.uip-plugin {
+  container-type: inline-size;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-1);
+  transition: border-color 120ms ease;
+}
+
+.uip-plugin:hover {
+  border-color: var(--dsw-alias-border-l2);
+}
+
+.uip-plugin[data-uip-preview='gradient'],
+.uip-plugin[data-uip-preview='image'] {
+  grid-template-columns: 116px minmax(0, 1fr);
+}
+
+.uip-plugin-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.uip-plugin-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.uip-plugin-name {
+  font-weight: 600;
+}
+
+/* §五's four project chips: the same `.uip-badge` vocabulary the cards use, laid out in a row. */
+.uip-plugin-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+@container (max-width: 420px) {
+  .uip-plugin[data-uip-preview='gradient'],
+  .uip-plugin[data-uip-preview='image'] {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px;
+  }
+
+  .uip-plugin .uip-preview {
+    width: 100%;
+    height: 64px;
+  }
+}
+
 /* ── the settings shell on a narrow window ────────────────────────────────── */
 
 /*

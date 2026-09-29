@@ -33,6 +33,50 @@ export function formatStamp(value) {
   return match === null ? text : `${match[1]} ${match[2]} UTC`
 }
 
+/**
+ * The four vocabularies BOTH settings pages read: the effect tiers, the priority sentence, the eight
+ * region names, and a preview's alt text.
+ *
+ * ONE OBJECT, REACHED TWO WAYS. The projects page reads them at the dictionary's top level. The
+ * installed-package column may only read through `plugins` — a source guard in `scripts/verify.mjs`
+ * enforces that, because a read one level too high was a shipped bug — so each vocabulary is
+ * published under both paths. Publishing a COPY under `plugins` would be two sources for one
+ * vocabulary, which is the defect this project keeps paying for, so `plugins.perf` and `perf` are the
+ * SAME object and the suite asserts that identity rather than mere equality.
+ */
+const SHARED = {
+  en: {
+    perf: { low: 'Performance: reduced', medium: 'Performance: balanced', high: 'Performance: full' },
+    priority: (value) => `Priority ${value}`,
+    regions: {
+      sidebar: 'sidebar',
+      center: 'center column',
+      rightbar: 'right panel',
+      overlay: 'overlay layer',
+      composer: 'composer',
+      dialogs: 'dialogs',
+      tokens: 'design tokens',
+      background: 'background',
+    },
+    previewAlt: (name) => `${name} preview`,
+  },
+  zh: {
+    perf: { low: '性能：已降低', medium: '性能：均衡', high: '性能：完整' },
+    priority: (value) => `优先级 ${value}`,
+    regions: {
+      sidebar: '侧边栏',
+      center: '中区',
+      rightbar: '右栏',
+      overlay: '浮层',
+      composer: '输入区',
+      dialogs: '对话框',
+      tokens: '设计令牌',
+      background: '背景',
+    },
+    previewAlt: (name) => `${name} 预览`,
+  },
+}
+
 export const STRINGS = {
   en: {
     sectionLabel: 'UI',
@@ -51,7 +95,7 @@ export const STRINGS = {
      * read as a bug. `perfLevel` on the project is what the panel compares against, so the badge
      * can say which of the two it is showing.
      */
-    perf: { low: 'Performance: reduced', medium: 'Performance: balanced', high: 'Performance: full' },
+    perf: SHARED.en.perf,
     perfDemoted: (names, tier) => `${names} is running at "${tier}" because this device reported less capacity.`,
     persistError: (message) => `Your last change could not be saved: ${message}`,
     /*
@@ -177,19 +221,39 @@ export const STRINGS = {
       snapshotNames: (count) => `${count} recorded version(s)`,
       restartReminder: 'All of these need dsh web stopped first (Ctrl+C), and started again afterwards.',
       kinds: { 'ui-project': 'UI project', bundle: 'bundle', library: 'library', 'plugin-with-client': 'plugin', unresolved: 'not installed' },
+      /*
+       * ── step 56a: the row's own facts ────────────────────────────────────────
+       *
+       * The four names at the bottom are published as the SAME objects the projects page reads (see
+       * `SHARED`), not as copies. The rest is this column's own copy, and each field has ONE sentence
+       * for "the package declares nothing" — the "this dsh is older than this page" case is a single
+       * shared sentence (`hostFieldMissing`), because it is a fact about the host, not about a field.
+       */
+      descriptionNotDeclared: 'no description in package.json',
+      authorNotDeclared:
+        'no author in package.json — this workspace installs from local link: paths, so no package here has ever needed publishing metadata',
+      author: (value) => `by ${value}`,
+      hostFieldMissing: (field) => `the running dsh is older than this page: it does not report ${field}`,
+      previewNotDeclared: 'this package declares no preview',
+      perfNotDeclared: 'effects: not declared',
+      priorityNotDeclared: 'priority: not declared',
+      priorityNotApplicable: 'priority: enhancements only',
+      modifies: (regions) => `changes: ${regions.join(', ')}`,
+      modifiesNotDeclared: 'changes: not declared',
+      requires: (ids) => `requires: ${ids.join(' → ')}`,
+      requiresNotDeclared: 'requires: not declared',
+      projectOn: (name) => `${name} is on`,
+      projectOff: (name) => `${name} is off`,
+      projectNotRegistered: (id) => `project ${id} is not registered in this session`,
+      changeInUiPage: 'change it in Settings › UI',
+      regions: SHARED.en.regions,
+      perf: SHARED.en.perf,
+      priority: SHARED.en.priority,
+      previewAlt: SHARED.en.previewAlt,
     },
-    priority: (value) => `Priority ${value}`,
+    priority: SHARED.en.priority,
     orderHint: (name) => `${name} is running ahead of a higher-priority project; the order is restored on the next load.`,
-    regions: {
-      sidebar: 'sidebar',
-      center: 'center column',
-      rightbar: 'right panel',
-      overlay: 'overlay layer',
-      composer: 'composer',
-      dialogs: 'dialogs',
-      tokens: 'design tokens',
-      background: 'background',
-    },
+    regions: SHARED.en.regions,
     regionShared: (names, regions) => `${names.join(' and ')} both declare the ${regions.join(', ')}; they may conflict.`,
     regionNested: (names, regions) =>
       `${names.join(' and ')} both apply blur to the ${regions.join(', ')}, so one layer may end up inside the other.`,
@@ -212,7 +276,7 @@ export const STRINGS = {
     replacedBy: (names) => `Replaces ${names}`,
     errorLabel: 'Last error',
     versionLabel: 'Version',
-    previewAlt: (name) => `${name} preview`,
+    previewAlt: SHARED.en.previewAlt,
     /** Control copy, keyed by a project's `labelKey`. The page renders whatever keys a
      * project declares, so a new control is a key here plus a declaration there. */
     controls: {
@@ -235,7 +299,7 @@ export const STRINGS = {
     badges: { skin: '皮肤', enhancement: '增强' },
     scopes: { global: '全局', layout: '布局', component: '组件' },
     supports: { light: '浅色', dark: '深色', mobile: '移动端' },
-    perf: { low: '性能：已降低', medium: '性能：均衡', high: '性能：完整' },
+    perf: SHARED.zh.perf,
     perfDemoted: (names, tier) => `${names} 正以“${tier}”运行——此设备报告的能力较低。`,
     persistError: (message) => `最后一次修改没能保存：${message}`,
     /*
@@ -340,19 +404,31 @@ export const STRINGS = {
       noSnapshots: '还没有记录任何快照；跑一次 -Snapshot 才能回滚。',
       snapshotNames: (count) => `已记录 ${count} 个版本`,
       restartReminder: '以上命令都需要先停掉 dsh web（Ctrl+C），跑完再启动。',
+      /* ── step 56a：行自己的事实（与 en 同构） ─────────────────────────────── */
+      descriptionNotDeclared: 'package.json 里没有 description',
+      authorNotDeclared: 'package.json 里没有 author——本工作区用本地 link: 安装，从未需要发布元数据',
+      author: (value) => `作者：${value}`,
+      hostFieldMissing: (field) => `运行中的 dsh 比本页旧：它不上报 ${field}`,
+      previewNotDeclared: '这个包没有声明预览',
+      perfNotDeclared: '效果档：未声明',
+      priorityNotDeclared: '优先级：未声明',
+      priorityNotApplicable: '优先级：仅增强项适用',
+      modifies: (regions) => `修改：${regions.join('、')}`,
+      modifiesNotDeclared: '修改：未声明',
+      requires: (ids) => `依赖：${ids.join(' → ')}`,
+      requiresNotDeclared: '依赖：未声明',
+      projectOn: (name) => `${name}：已开启`,
+      projectOff: (name) => `${name}：已关闭`,
+      projectNotRegistered: (id) => `项目 ${id} 在本会话中未注册`,
+      changeInUiPage: '在 设置 › 界面 里修改',
+      regions: SHARED.zh.regions,
+      perf: SHARED.zh.perf,
+      priority: SHARED.zh.priority,
+      previewAlt: SHARED.zh.previewAlt,
     },
-    priority: (value) => `优先级 ${value}`,
+    priority: SHARED.zh.priority,
     orderHint: (name) => `${name} 目前运行在更高优先级的项目之前；下次加载时顺序会恢复。`,
-    regions: {
-      sidebar: '侧边栏',
-      center: '中区',
-      rightbar: '右栏',
-      overlay: '浮层',
-      composer: '输入区',
-      dialogs: '对话框',
-      tokens: '设计令牌',
-      background: '背景',
-    },
+    regions: SHARED.zh.regions,
     regionShared: (names, regions) => `${names.join('、')}都声明修改${regions.join('、')}，可能互相影响。`,
     regionNested: (names, regions) => `${names.join('、')}都对${regions.join('、')}应用了模糊，图层可能发生嵌套。`,
     regionSharedHere: (other, regions) => `与${other}共享${regions}。`,
@@ -374,7 +450,7 @@ export const STRINGS = {
     replacedBy: (names) => `将替换 ${names}`,
     errorLabel: '最近错误',
     versionLabel: '版本',
-    previewAlt: (name) => `${name} 预览`,
+    previewAlt: SHARED.zh.previewAlt,
     controls: {
       opacity: '透明度',
       unit: '%',

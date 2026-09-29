@@ -29,8 +29,12 @@
  * fixture. A fixture is a dictionary that does not exist, and this file was tested against one.
  */
 
+const { createPreview, previewKindOf } = require('./preview.js')
+
 /**
- * @param {{ store: any, t: any, React: any }} props
+ * @param {{ store: any, projects?: any, t: any, React: any }} props
+ * @param {any} [props.projects] the PROJECTS store, for the read-only switch mirror. Optional: an
+ *   older wiring passes none, and the row then renders no mirror rather than a state it cannot know.
  * @returns {any} a React element
  */
 export function UiPluginsSection(props) {
@@ -62,11 +66,26 @@ export function UiPluginsSection(props) {
    * already holds a snapshot, the same `useEffect` + `store.subscribe`.
    */
   const [live, setLive] = React_.useState(() => props.state ?? store.state())
+  /*
+   * §五's 启用开关, as a MIRROR: the projects page owns the switches, this column owns packages, and a
+   * second switch here would be a second writer for one state. So it reads the projects store and says
+   * where the switch actually lives. No store means no mirror (an older wiring), never a guessed state.
+   */
+  const projects = props.projects
+  const [projectsLive, setProjectsLive] = React_.useState(() =>
+    typeof projects?.state === 'function' ? projects.state() : undefined,
+  )
   React_.useEffect(() => {
     if (props.state !== undefined) return undefined
     setLive(store.state())
-    return store.subscribe(() => setLive(store.state()))
-  }, [store, props.state])
+    const offLive = store.subscribe(() => setLive(store.state()))
+    const offProjects =
+      typeof projects?.subscribe === 'function' ? projects.subscribe(() => setProjectsLive(projects.state())) : undefined
+    return () => {
+      offLive()
+      offProjects?.()
+    }
+  }, [store, props.state, projects])
 
   const header = React_.createElement(
     'header',
@@ -132,48 +151,77 @@ export function UiPluginsSection(props) {
       },
       contractBadgeText(copy, contractState, dependency.contract),
     )
+    /*
+     * §五's row facts, and the three states each of them can be in. `hasProject` is "the package
+     * declares a project", which decides whether the four project metadata chips exist at all; a
+     * package that declares none gets no meta row rather than four "not declared" chips, because
+     * "this package has no project" and "its project declares nothing" are different sentences.
+     */
+    const hasProject = dependency.uiProject !== null && dependency.uiProject !== undefined
+    const project = projectStateOf(projectsLive, dependency.projectId)
+    const previewKind = previewKindOf(dependency.uiProject?.preview)
     return React_.createElement(
       'li',
-      { className: 'uip-plugin', key: dependency.name, 'data-uip-plugin': dependency.name },
+      {
+        className: 'uip-plugin',
+        key: dependency.name,
+        'data-uip-plugin': dependency.name,
+        // Three states, not two: "a URL to fetch", "a CSS material to paint", "declares none". The
+        // stylesheet keys the preview column off this, so a row without one has no empty gutter.
+        'data-uip-preview': previewKind,
+      },
+      previewKind === 'none'
+        ? null
+        : createPreview({
+            R: React_,
+            project: {
+              preview: dependency.uiProject?.preview,
+              previewLabel: dependency.uiProject?.previewLabel,
+              name: dependency.name,
+            },
+            t: copy,
+          }),
       React_.createElement(
         'div',
-        { className: 'uip-plugin-head' },
-        React_.createElement('span', { className: 'uip-plugin-name' }, dependency.name + '@' + (dependency.version ?? '?')),
-        React_.createElement('span', { className: 'uip-badge' }, kinds[dependency.kind] ?? dependency.kind),
-        dependency.bundled
-          ? React_.createElement('span', { className: 'uip-badge' }, copy.composed)
-          : React_.createElement('span', { className: 'uip-badge uip-badge-warn' }, copy.notComposed),
+        { className: 'uip-plugin-body' },
+        React_.createElement(
+          'div',
+          { className: 'uip-plugin-head' },
+          React_.createElement('span', { className: 'uip-plugin-name' }, dependency.name + '@' + (dependency.version ?? '?')),
+          React_.createElement('span', { className: 'uip-badge' }, kinds[dependency.kind] ?? dependency.kind),
+          dependency.bundled
+            ? React_.createElement('span', { className: 'uip-badge' }, copy.composed)
+            : React_.createElement('span', { className: 'uip-badge uip-badge-warn' }, copy.notComposed),
+          dependency.name === 'dsh-ui-projects'
+            ? React_.createElement('span', { className: 'uip-badge' }, copy.framework)
+            : null,
+          contractBadge,
+        ),
+        ...FactsBlock({ copy, React: React_, dependency, hasProject, project, mirrorAvailable: projectsLive !== undefined }),
+        /*
+         * THE FRAMEWORK'S ROW OPENS TOO (9b review). Its badge stays `na` — the contract is not a rule the
+         * instrument is measured by — but declining to render the panel hid two findings that ARE in the
+         * payload, and a reader who never runs the CLI could not see them. So the row explains itself:
+         * the summary says the contract does not apply, the findings are listed, and a note says they are
+         * recorded rather than fixed. `na` is a judgement about the BADGE; silence was a different claim.
+         */
+        ContractPanel({ copy, React: React_, name: dependency.name, state: contractState, contract: dependency.contract }),
+        ...(dependency.problems ?? []).map((problem, index) =>
+          React_.createElement('p', { className: 'uip-error', key: 'problem-' + index }, problem.code + ': ' + problem.message),
+        ),
+        /*
+         * THE MAINTENANCE BLOCK IS FOR EVERY ROW, the framework's included.
+         *
+         * 7d-1 put it inside `CommandBlock`, which this row skips for the framework — so the package that
+         * most needs `-Snapshot`/`-Update`/`-Rollback` (updating and rolling back the framework is the
+         * ordinary case) was the one row without them. What the framework must not carry is a REMOVAL
+         * command, because it is the thing rendering this list; maintenance is not removal.
+         */
+        MaintenanceBlock({ copy, React: React_, name: dependency.name }),
         dependency.name === 'dsh-ui-projects'
-          ? React_.createElement('span', { className: 'uip-badge' }, copy.framework)
-          : null,
-        contractBadge,
+          ? null
+          : CommandBlock({ copy, React: React_, name: dependency.name, profileName: scan.profileName }),
       ),
-      /*
-       * THE FRAMEWORK'S ROW OPENS TOO (9b review). Its badge stays `na` — the contract is not a rule the
-       * instrument is measured by — but declining to render the panel hid two findings that ARE in the
-       * payload, and a reader who never runs the CLI could not see them. So the row explains itself:
-       * the summary says the contract does not apply, the findings are listed, and a note says they are
-       * recorded rather than fixed. `na` is a judgement about the BADGE; silence was a different claim.
-       */
-      ContractPanel({ copy, React: React_, name: dependency.name, state: contractState, contract: dependency.contract }),
-      dependency.projectId === undefined
-        ? null
-        : React_.createElement('p', { className: 'uip-hint' }, copy.project(dependency.projectId)),
-      ...(dependency.problems ?? []).map((problem, index) =>
-        React_.createElement('p', { className: 'uip-error', key: 'problem-' + index }, problem.code + ': ' + problem.message),
-      ),
-      /*
-       * THE MAINTENANCE BLOCK IS FOR EVERY ROW, the framework's included.
-       *
-       * 7d-1 put it inside `CommandBlock`, which this row skips for the framework — so the package that
-       * most needs `-Snapshot`/`-Update`/`-Rollback` (updating and rolling back the framework is the
-       * ordinary case) was the one row without them. What the framework must not carry is a REMOVAL
-       * command, because it is the thing rendering this list; maintenance is not removal.
-       */
-      MaintenanceBlock({ copy, React: React_, name: dependency.name }),
-      dependency.name === 'dsh-ui-projects'
-        ? null
-        : CommandBlock({ copy, React: React_, name: dependency.name, profileName: scan.profileName }),
     )
   })
 
@@ -189,6 +237,136 @@ export function UiPluginsSection(props) {
       ? React_.createElement('p', { className: 'uip-hint', key: 'empty' }, copy.empty)
       : React_.createElement('ul', { className: 'uip-list', key: 'list' }, rows),
   )
+}
+
+/**
+ * §五's facts for one row, as the elements the row splices in.
+ *
+ * THREE FALLBACKS, and keeping them apart is the whole point of this function:
+ *
+ *   not declared      the package (or its project) says nothing → "not declared", in the dictionary's
+ *                     own words, so a reader sees a fact rather than a gap
+ *   not applicable    the field exists but not for this kind — priority is an enhancement's, and a skin
+ *                     says so instead of claiming it declared none
+ *   host too old      the KEY is absent from the payload, which is a fact about the running dsh and
+ *                     must not be reported as a fact about the package
+ *
+ * The four project chips render only for a package that declares a project at all: for every other
+ * package they would be four identical "not declared" badges about a project that does not exist.
+ */
+function FactsBlock({ copy, React, dependency, hasProject, project, mirrorAvailable }) {
+  const olderHost = dependency.uiProject === undefined
+  const fields = [
+    React.createElement(
+      'p',
+      { className: 'uip-description', key: 'description', 'data-uip-field': 'description' },
+      typeof dependency.description === 'string'
+        ? dependency.description
+        : olderHost
+          ? copy.hostFieldMissing('description')
+          : copy.descriptionNotDeclared,
+    ),
+    React.createElement(
+      'p',
+      { className: 'uip-hint', key: 'author', 'data-uip-field': 'author' },
+      typeof dependency.author === 'string'
+        ? copy.author(dependency.author)
+        : olderHost
+          ? copy.hostFieldMissing('author')
+          : copy.authorNotDeclared,
+    ),
+  ]
+
+  if (hasProject) {
+    const declared = dependency.uiProject
+    fields.push(
+      React.createElement(
+        'div',
+        { className: 'uip-plugin-meta', key: 'meta', 'data-uip-meta-row': '' },
+        metaChip(React, 'perfLevel', declared.perfLevel, declared.perfLevel === null ? copy.perfNotDeclared : copy.perf?.[declared.perfLevel] ?? declared.perfLevel),
+        metaChip(React, 'priority', declared.priority, priorityTextOf(copy, declared)),
+        metaChip(
+          React,
+          'modifies',
+          declared.modifies,
+          declared.modifies === null ? copy.modifiesNotDeclared : copy.modifies(declared.modifies.map((region) => copy.regions?.[region] ?? region)),
+        ),
+        metaChip(React, 'requires', declared.requires, declared.requires === null ? copy.requiresNotDeclared : copy.requires(declared.requires)),
+      ),
+    )
+  }
+
+  if (dependency.projectId !== undefined) {
+    fields.push(
+      React.createElement(
+        'p',
+        { className: 'uip-hint', key: 'project', 'data-uip-project-id': dependency.projectId },
+        copy.project(dependency.projectId),
+      ),
+    )
+    /*
+     * THE MIRROR, and the one thing it must never do is invent a state. `absent` is a real answer —
+     * installed, but this session never registered its client half — and it is not "off".
+     */
+    if (mirrorAvailable) {
+      const name = project?.name ?? dependency.projectId
+      const state = project?.state ?? 'absent'
+      fields.push(
+        React.createElement(
+          'p',
+          {
+            className: 'uip-hint',
+            key: 'mirror',
+            'data-uip-project-mirror': dependency.projectId,
+            'data-uip-project-state': state,
+          },
+          state === 'absent'
+            ? copy.projectNotRegistered(dependency.projectId)
+            : (state === 'on' ? copy.projectOn(name) : copy.projectOff(name)) + ' · ' + copy.changeInUiPage,
+        ),
+      )
+    }
+  }
+
+  return fields
+}
+
+/**
+ * One project-metadata chip: the state in a `data-uip-value` hook, the sentence from the dictionary.
+ *
+ * The hook carries the RAW value — the declared tier, the number, the region ids — rather than what
+ * the row painted, so a test can assert the state without asserting the current spelling of a
+ * sentence.
+ */
+function metaChip(React, kind, value, text) {
+  const declared =
+    value === null || value === undefined ? {} : { 'data-uip-value': Array.isArray(value) ? value.join(',') : String(value) }
+  return React.createElement('span', { className: 'uip-badge', key: kind, 'data-uip-meta': kind, ...declared }, text)
+}
+
+/**
+ * Priority, as the sentence its kind deserves.
+ *
+ * A number means something only among composable projects; a skin is alone by policy and never sorted
+ * (`panel.js` states the rule and hides the badge there). §五 asks this column to show the field, so
+ * the row shows the REASON it does not apply instead of nothing at all.
+ */
+function priorityTextOf(copy, declared) {
+  if (declared.type !== 'enhancement') return copy.priorityNotApplicable
+  return declared.priority === null ? copy.priorityNotDeclared : copy.priority(declared.priority)
+}
+
+/**
+ * The project's live state, for the read-only mirror: on, off, or absent from this session.
+ *
+ * Read from the projects store's snapshot, which is the registry — so "on" here means the same thing
+ * the projects page's switch shows, because it is the same fact rather than a copy of it.
+ */
+function projectStateOf(snapshot, projectId) {
+  if (projectId === undefined) return undefined
+  const found = (snapshot?.projects ?? []).find((entry) => entry.id === projectId)
+  if (found === undefined) return { id: projectId, state: 'absent' }
+  return { id: projectId, state: found.enabled === true ? 'on' : 'off', name: found.name }
 }
 
 /**

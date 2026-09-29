@@ -38,6 +38,17 @@ function projectDependency(dependency) {
     kind: dependency.kind,
     bundled: dependency.bundled,
     projectId: dependency.projectId,
+    /*
+     * §五's row facts, added in step 56a: the package's own description and author, and the seven
+     * `dsh.uiProject` fields a row renders.
+     *
+     * `null` is "the package declares nothing"; a MISSING key is "the host that answered is older
+     * than this page". The two must not collapse — the row says different sentences for them — which
+     * is why these are always present, exactly like `contract.reason`.
+     */
+    description: dependency.description ?? null,
+    author: dependency.author ?? null,
+    uiProject: dependency.uiProject ?? null,
     problems: dependency.problems,
     /*
      * The UI Contract scan (step 9a), projected as-is.

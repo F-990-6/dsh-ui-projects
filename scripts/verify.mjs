@@ -139,6 +139,22 @@ import { createElement, createFakeDom, createStorage, FakeMutationObserver, wrap
  */
 import { __contract as bootPresence } from '../src/client/boot-presence.js'
 
+/*
+ * The HOST half's pure mappings, imported for the tests that pin §五's row facts.
+ *
+ * `displayAuthor` and `uiProjectSubset` are the only places that decide what a `package.json` MEANS,
+ * and the endpoint is the only place that decides what CROSSES the wire — so all three are asserted
+ * here rather than inferred from a live page.
+ *
+ * A NAMESPACE import, deliberately: a named import of an export that does not exist yet is a
+ * module-load SyntaxError, which kills the whole suite before a single test runs — and a red run is
+ * supposed to show the new assertions failing while the existing ones stay green. Through the
+ * namespace, a missing export is `undefined`, the call is a TypeError inside its own test, and the
+ * failure is named.
+ */
+import * as profileScan from '../src/host/profile-scan.js'
+import * as installedEndpoint from '../src/host/installed-endpoint.js'
+
 
 
 
@@ -3588,7 +3604,13 @@ await test('the column reads the dictionary it is actually given', async () => {
     'contractOk', 'contractWarn', 'contractNotScanned', 'contractNotApplicable', 'contractCoverage',
     'contractFindingsTitle', 'contractLimitsTitle', 'contractNotScannedWhy',
     // And the framework's own row, which says why the contract does not apply to it.
-    'contractFramework', 'contractFrameworkNote']
+    'contractFramework', 'contractFrameworkNote',
+    // Step 56a: the row's own facts, and the vocabularies it shares with the projects page rather than
+    // copying (the four names below are asserted to be the SAME objects, not equal ones).
+    'descriptionNotDeclared', 'authorNotDeclared', 'author', 'hostFieldMissing', 'previewNotDeclared',
+    'perfNotDeclared', 'priorityNotDeclared', 'priorityNotApplicable', 'modifies', 'modifiesNotDeclared',
+    'requires', 'requiresNotDeclared', 'projectOn', 'projectOff', 'projectNotRegistered', 'changeInUiPage',
+    'regions', 'perf', 'priority', 'previewAlt']
   const readyScan = {
     profileName: 'web',
     dependencies: [{ name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] }],
@@ -3609,12 +3631,296 @@ await test('the column reads the dictionary it is actually given', async () => {
     equal(missing, [], 'every key the column reads exists in the ' + locale + ' dictionary')
     const unread = Object.keys(page).filter((key) => !READ_KEYS.includes(key))
     if (unread.length > 0) process.stdout.write('         note  ' + locale + ': keys nothing reads yet: ' + unread.join(', ') + '\n')
+    /*
+     * ONE OBJECT, TWO PATHS. The source guard below forbids `panel-plugins.js` from reading `t.perf`,
+     * `t.regions` and friends, so those vocabularies have to be reachable through `plugins` — and a
+     * COPY there would be a second source for one vocabulary, which is the defect this project keeps
+     * paying for. Reference identity, not deep equality: "equal today" is exactly what drifts.
+     */
+    for (const shared of ['regions', 'perf', 'priority', 'previewAlt']) {
+      equal(
+        dictionary.plugins[shared],
+        dictionary[shared],
+        'the ' + shared + ' vocabulary is the same object the projects page reads (' + locale + ')',
+      )
+    }
   }
 
   /* A dictionary older than a project kind shows the raw kind instead of a blank badge. */
   const withoutKinds = { plugins: { ...strings('en').plugins, kinds: undefined } }
   const fallback = renderSection({ store: { state: () => ({ status: 'ready', scan: readyScan }), refresh: async () => {} }, t: withoutKinds, React: react })
   contains(fallback, 'bundle', 'a missing kinds table falls back to the raw kind instead of throwing')
+})
+
+/*
+ * ── the row's own facts (step 56a) ─────────────────────────────────────────
+ *
+ * §五 asks the column for 作者 / 描述 / 预览 / perfLevel / priority / modifies / requires. The thing
+ * these tests are arranged around is that none of it may come from two places: the HOST decides what a
+ * `package.json` means, the ENDPOINT decides what crosses the wire, and the ROW renders what it is
+ * given. Each of the three is asserted where it is decided, so a mistake in one cannot hide behind the
+ * other two being right.
+ */
+await test('displayAuthor renders every npm author shape, and refuses to invent one', () => {
+  const line = 'Ada Lovelace <ada@example.com> (https://example.com)'
+  equal(profileScan.displayAuthor(line), line, 'a string is already display-shaped and is passed through, not parsed')
+  equal(profileScan.displayAuthor({ name: 'Ada' }), 'Ada', 'the object form keeps the name')
+  equal(profileScan.displayAuthor({ name: 'Ada', email: 'ada@example.com' }), 'Ada <ada@example.com>', 'and adds the email the way npm writes it')
+  equal(profileScan.displayAuthor({ email: 'ada@example.com' }), '<ada@example.com>', 'an email with no name still says something')
+  equal(profileScan.displayAuthor({ url: 'https://example.com' }), '(https://example.com)', 'and so does a url on its own')
+  equal(profileScan.displayAuthor({}), null, 'an empty object declares nothing')
+  equal(profileScan.displayAuthor(null), null, 'null declares nothing')
+  equal(profileScan.displayAuthor(42), null, 'a number is not an author')
+  equal(profileScan.displayAuthor(['Ada']), null, 'and neither is a list')
+})
+
+await test('the uiProject subset carries exactly the seven fields the row reads', () => {
+  const subset = profileScan.uiProjectSubset({
+    uiProject: {
+      schemaVersion: 1, pluginApiVersion: 1, id: 'x', name: 'X', description: 'the project description',
+      type: 'enhancement', scope: 'global', defaultEnabled: false, supports: ['light'],
+      testItems: [{ id: 'a', label: 'b' }], controls: [], preview: 'linear-gradient(#fff, #000)',
+      previewLabel: 'X preview', perfLevel: 'medium', priority: 3, modifies: ['center', 'overlay'], requires: ['y'],
+    },
+  })
+  equal(
+    Object.keys(subset).sort(),
+    ['modifies', 'perfLevel', 'preview', 'previewLabel', 'priority', 'requires', 'type'],
+    'exactly seven keys cross: the projection does not leak the manifest it read',
+  )
+  equal(subset.type, 'enhancement', 'the type travels, because it decides whether priority applies')
+  equal(subset.priority, 3, 'priority as a number')
+  equal(subset.previewLabel, 'X preview', 'the preview label, which the alt text prefers')
+  equal(subset.modifies, ['center', 'overlay'], 'the declared regions')
+  equal(subset.requires, ['y'], 'and the declared dependency chain')
+
+  const sparse = profileScan.uiProjectSubset({ uiProject: { id: 's', name: 'S', type: 'skin' } })
+  equal(sparse.preview, null, 'a package that declares no preview says null')
+  equal(sparse.perfLevel, null, 'no effects tier: null')
+  equal(sparse.priority, null, 'no priority: null')
+  equal(sparse.modifies, null, 'no regions: null')
+  equal(sparse.requires, null, 'no chain: null')
+  equal(
+    Object.values(sparse).filter((value) => value === undefined).length,
+    0,
+    'every field is null rather than undefined, so JSON.stringify cannot drop one and leave the row guessing',
+  )
+  equal(profileScan.uiProjectSubset({}), null, 'a package with no dsh.uiProject at all is null — a different fact from "declared nothing"')
+  equal(
+    profileScan.uiProjectSubset({ uiProject: { id: 'e', modifies: [], requires: [] } }).modifies,
+    null,
+    'an empty list is one spelling of "declared nothing", and it is normalised to that one spelling',
+  )
+})
+
+await test('packageFacts reads the package manifest, and never invents an author', () => {
+  const declared = profileScan.packageFacts(
+    { name: 'p', description: 'A client plugin.', author: { name: 'Ada', email: 'ada@example.com' }, dsh: { client: { platform: 'web' } } },
+    { client: { platform: 'web' } },
+  )
+  equal(declared.description, 'A client plugin.', 'the description comes from package.json itself')
+  equal(declared.author, 'Ada <ada@example.com>', 'and the author is normalised on the host, where the object form is readable')
+  equal(declared.uiProject, null, 'a package that declares no project contributes none')
+
+  const bare = profileScan.packageFacts({ name: 'p' }, undefined)
+  equal(bare.description, null, 'a package with no description says null')
+  equal(bare.author, null, 'and a package with no author says null rather than an empty string')
+  equal(bare.uiProject, null, 'with no declarations at all')
+})
+
+await test('the wire projection carries the row facts, and null is not the same as a missing key', () => {
+  const wire = installedEndpoint.projectScan({
+    profileName: 'web',
+    readAt: 'then',
+    dependencies: [
+      {
+        name: 'with-facts', spec: 'link:./x', resolved: true, version: '1.0.0', kind: 'ui-project', bundled: true,
+        projectId: 'the-skin', problems: [], contract: null,
+        description: 'A translucent skin.', author: 'Ada <ada@example.com>',
+        uiProject: { type: 'skin', preview: 'linear-gradient(#fff, #000)', previewLabel: 'P', perfLevel: 'high', priority: null, modifies: ['center'], requires: null },
+      },
+      {
+        name: 'without-facts', spec: '^1', resolved: true, version: '1.0.0', kind: 'library', bundled: false,
+        problems: [], contract: null, description: null, author: null, uiProject: null,
+      },
+    ],
+    bundles: { all: [], inBox: [], fromDependencies: [] },
+    uiProjectPackages: [],
+    orphanedBindings: [],
+    unresolved: [],
+    problems: [],
+    versions: {},
+  })
+  const [first, second] = wire.dependencies
+  equal('description' in first, true, 'the key is PRESENT even when the answer is null: "declared nothing" and "this host is older" must not collapse')
+  equal('author' in first, true, 'and so is the author')
+  equal('uiProject' in second, true, 'and the project subset')
+  equal(first.description, 'A translucent skin.', 'the description crosses as declared')
+  equal(first.author, 'Ada <ada@example.com>', 'the normalised author crosses as a string')
+  equal(
+    Object.keys(first.uiProject).sort(),
+    ['modifies', 'perfLevel', 'preview', 'previewLabel', 'priority', 'requires', 'type'],
+    'and the subset crosses with exactly seven keys',
+  )
+  equal(second.description, null, 'a package with no description crosses as null')
+  equal(second.author, null, 'with no author')
+  equal(second.uiProject, null, 'and no project subset')
+})
+
+/** A projects-store stand-in: the mirror only ever asks it for a snapshot. */
+const projectsStoreOf = (projects) => ({ state: () => ({ projects }), subscribe: () => () => {} })
+
+/**
+ * The wire payload these row tests render: one package that declares every fact, one that declares
+ * none of them, and one whose project is not registered in this session.
+ *
+ * Three rows rather than one, because §五's fields have three DIFFERENT fallbacks — "declared
+ * nothing", "not applicable to this kind", and "this session never mounted it" — and a single fixture
+ * cannot tell them apart.
+ */
+const factsScan = () => ({
+  profileName: 'web',
+  dependencies: [
+    {
+      name: 'skin-pkg', version: '2.0.0', kind: 'ui-project', bundled: true, projectId: 'the-skin', problems: [],
+      description: 'A translucent skin.', author: 'Ada <ada@example.com>',
+      uiProject: { type: 'skin', preview: 'linear-gradient(#fff, #000)', previewLabel: 'Skin preview', perfLevel: 'high', priority: null, modifies: ['center', 'overlay'], requires: null },
+    },
+    {
+      name: 'plain-pkg', version: '1.0.0', kind: 'plugin-with-client', bundled: true, problems: [],
+      description: null, author: null, uiProject: null,
+    },
+    {
+      name: 'late-pkg', version: '0.3.0', kind: 'ui-project', bundled: true, projectId: 'not-mounted', problems: [],
+      description: 'An enhancement.', author: null,
+      uiProject: { type: 'enhancement', preview: null, previewLabel: null, perfLevel: null, priority: 7, modifies: null, requires: ['skin-pkg'] },
+    },
+    {
+      name: 'image-pkg', version: '4.0.0', kind: 'ui-project', bundled: true, projectId: 'image-project', problems: [],
+      description: 'A package whose preview is a URL.', author: null,
+      uiProject: { type: 'skin', preview: './shot.png', previewLabel: 'Shot', perfLevel: null, priority: null, modifies: null, requires: null },
+    },
+  ],
+  orphanedBindings: [],
+})
+
+await test('the row shows its own facts, and a package without a uiProject gets none of the project ones', () => {
+  const copy = columnCopy()
+  const missingKeys = ['descriptionNotDeclared', 'authorNotDeclared', 'author', 'previewNotDeclared', 'perfNotDeclared',
+    'priorityNotApplicable', 'modifiesNotDeclared', 'requires', 'projectOn', 'changeInUiPage'].filter((key) => copy[key] === undefined)
+  equal(missingKeys, [], 'the dictionary carries the sentences this row is about to render')
+
+  const markup = renderSection({
+    store: { state: () => ({ status: 'ready', scan: factsScan() }), refresh: async () => {} },
+    projects: projectsStoreOf([{ id: 'the-skin', name: 'The Skin', enabled: true }]),
+    t: { plugins: copy },
+    state: { status: 'ready', scan: factsScan() },
+    React: react,
+  })
+  const skin = rowOf(markup, 'skin-pkg')
+  const plain = rowOf(markup, 'plain-pkg')
+  const late = rowOf(markup, 'late-pkg')
+
+  contains(skin, 'A translucent skin.', 'the description is rendered in its own row')
+  contains(skin, 'data-uip-field="description"', 'with a hook on the description line')
+  contains(skin, 'Ada', 'and the author, through the dictionary sentence')
+  /*
+   * The angle brackets in an author string are TEXT, not markup — a package must not be able to inject
+   * HTML through its own `package.json` — so the assertion is about the escaped form. Asserting the
+   * raw `Ada <ada@example.com>` here would have failed on correct behaviour and invited a fix to the
+   * renderer instead of to the test.
+   */
+  contains(skin, '&lt;ada@example.com&gt;', 'with the brackets escaped rather than turned into markup')
+  contains(skin, copy.perf.high, 'the effects tier uses the vocabulary the projects page uses')
+  contains(skin, 'data-uip-meta="perfLevel"', 'and carries the tier as state')
+  contains(skin, copy.priorityNotApplicable, 'a skin says priority does not apply to it rather than claiming it declared none')
+  contains(skin, copy.regions.center, 'the regions are translated through the shared vocabulary')
+  contains(skin, 'data-uip-meta="modifies"', 'and the row carries which regions it declares')
+  contains(skin, copy.requiresNotDeclared, 'a package that declares no chain says so instead of showing nothing')
+  contains(skin, 'data-uip-preview="gradient"', 'a declared preview renders as a swatch')
+  contains(skin, 'role="img"', 'which is an image to a screen reader')
+  contains(skin, 'Skin preview', 'labelled by the package own preview label')
+  equal(skin.includes(copy.previewNotDeclared), false, 'and it does not also say it has no preview')
+
+  const image = rowOf(markup, 'image-pkg')
+  contains(image, 'data-uip-preview="image"', 'a preview that is a URL is marked as one, so the layout and the renderer agree')
+  contains(image, 'class="uip-previewImage"', 'and renders as an <img>')
+  contains(image, 'src="./shot.png"', 'pointing at the declared path')
+
+  contains(late, copy.requires(['skin-pkg']), 'a declared chain renders, so the fallback above is not the only path')
+
+  contains(plain, copy.descriptionNotDeclared, 'a package with no description gets a sentence, not a gap')
+  contains(plain, copy.authorNotDeclared, 'and one for the missing author')
+  equal(plain.includes('data-uip-meta-row'), false, 'a package with no dsh.uiProject gets no project metadata row')
+  equal(plain.includes('data-uip-project-mirror'), false, 'and no switch mirror')
+  contains(plain, 'data-uip-preview="none"', 'while saying outright that it has no preview')
+})
+
+await test('the switch mirror reports the project state, and degrades when there is no project store', () => {
+  const copy = columnCopy()
+  const render = (props) => renderSection({
+    store: { state: () => ({ status: 'ready', scan: factsScan() }), refresh: async () => {} },
+    t: { plugins: copy },
+    state: { status: 'ready', scan: factsScan() },
+    React: react,
+    ...props,
+  })
+
+  const withProjects = render({
+    projects: projectsStoreOf([
+      { id: 'the-skin', name: 'The Skin', enabled: true },
+      { id: 'not-mounted', name: 'Not mounted', enabled: false },
+    ]),
+  })
+  contains(rowOf(withProjects, 'skin-pkg'), 'data-uip-project-state="on"', 'a running project reads as on')
+  contains(rowOf(withProjects, 'skin-pkg'), copy.changeInUiPage, 'and the row says where the switch actually lives')
+  contains(rowOf(withProjects, 'late-pkg'), 'data-uip-project-state="off"', 'a registered project that is off reads as off')
+  equal(rowOf(withProjects, 'late-pkg').includes(copy.projectNotRegistered('not-mounted')), false, 'and is not reported as missing')
+
+  const absent = rowOf(render({ projects: projectsStoreOf([{ id: 'the-skin', name: 'The Skin', enabled: true }]) }), 'late-pkg')
+  contains(absent, 'data-uip-project-state="absent"', 'a project this session never registered says so, rather than reading as off')
+
+  /*
+   * The degradation that matters: an older wiring passes no project store. The column must render
+   * without the mirror instead of throwing inside a panel render — and it must not invent a state
+   * either, which is why "no mirror at all" is asserted rather than "some mirror".
+   */
+  const without = render({})
+  truthy(without.length > 0, 'the column still renders when no project store is passed')
+  equal(without.includes('data-uip-project-mirror'), false, 'with no mirror at all')
+  contains(rowOf(without, 'skin-pkg'), 'data-uip-field="description"', 'while the facts that need no store are still there')
+})
+
+await test('the card renders the same preview the move left behind, branch for branch', async () => {
+  /*
+   * `createPreview` moved out of `panel.js` into `preview.js` in this round, because the two columns
+   * render the same declared string and "is this an image path or a CSS material" may only have one
+   * answer. A move is safe only if the OLD caller still renders what it rendered before: the
+   * stylesheet's `.uip-preview*` rules and every screenshot of the projects page were written for that
+   * markup. So this pins the three branches on the CARD itself rather than on the helper.
+   *
+   * The three projects are registered directly and unregistered at the end, and that is not tidiness:
+   * the registry is ONE object for this whole process, and a definition registered without a fiber
+   * outlives the test that made it — Round 55 paid for that lesson with seven unrelated failures.
+   */
+  const harness = await boot({ withTestSkin: false })
+  const ids = ['gradient-card', 'image-card', 'bare-card']
+  harness.registry.register({ id: 'gradient-card', name: 'Gradient card', defaultEnabled: false, preview: 'linear-gradient(#fff, #000)', previewLabel: 'Gradient preview' })
+  harness.registry.register({ id: 'image-card', name: 'Image card', defaultEnabled: false, preview: './shot.png' })
+  harness.registry.register({ id: 'bare-card', name: 'Bare card', defaultEnabled: false })
+
+  const card = harness.render()
+  contains(card, 'class="uip-preview"', 'a card with a CSS preview renders the swatch element')
+  contains(card, 'linear-gradient(#fff, #000)', 'painted with the declared string')
+  contains(card, 'role="img"', 'as an image to a screen reader')
+  contains(card, 'aria-label="Gradient preview"', 'named by the project own previewLabel')
+  contains(card, 'uip-previewGlass', 'and it still carries the glass layer the card was designed around')
+  contains(card, 'class="uip-previewImage"', 'an image path still becomes an <img>')
+  contains(card, 'src="./shot.png"', 'with the declared source')
+  contains(card, 'loading="lazy"', 'and still loads lazily')
+  contains(card, 'Bare card', 'a project with no preview at all still renders its card')
+
+  for (const id of ids) harness.registry.unregister(id)
 })
 
 /* ── the UI Contract badge (step 9b, module 3) ─────────────────────────────── */

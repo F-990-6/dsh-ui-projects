@@ -12,6 +12,12 @@
 
 const React = require('react')
 const { rankOf } = require('./project-constants.js')
+/*
+ * The preview moved to its own module in step 56a: the installed-package column draws the same
+ * picture from the same declared string, and two columns rendering one manifest field is exactly the
+ * kind of duplicated decision this package keeps paying for.
+ */
+const { createPreview } = require('./preview.js')
 
 /**
  * @param {object} props
@@ -687,34 +693,6 @@ function createSwitch(input) {
       disabled: pending || project.status === 'unavailable',
     },
     R.createElement('span', { className: 'uip-knob', 'aria-hidden': 'true' }),
-  )
-}
-
-/**
- * Preview thumbnail. A project may ship an image path; otherwise its `preview`
- * string is used as a CSS background and a labelled swatch is generated, so
- * every project gets a visual without shipping binary assets.
- * @param {object} input
- * @returns {any}
- */
-function createPreview(input) {
-  const { R, project, t } = input
-  const alt = project.previewLabel ?? t.previewAlt(project.name)
-  const isImage = typeof project.preview === 'string' && /^(https?:|\.|\/)/.test(project.preview)
-
-  if (isImage) {
-    return R.createElement(
-      'div',
-      { className: 'uip-preview', key: 'preview' },
-      R.createElement('img', { className: 'uip-previewImage', src: project.preview, alt, loading: 'lazy' }),
-    )
-  }
-
-  const style = typeof project.preview === 'string' ? { background: project.preview } : undefined
-  return R.createElement(
-    'div',
-    { className: 'uip-preview', key: 'preview', style, role: 'img', 'aria-label': alt },
-    R.createElement('span', { className: 'uip-previewGlass', 'aria-hidden': 'true' }),
   )
 }
 

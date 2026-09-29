@@ -63,6 +63,7 @@ const MODULE_ORDER = [
   'store.js',
   'diagnostics.js',
   'locale.js',
+  'preview.js',
   'panel.js',
   'panel-plugins.js',
   'styles/core.css',
