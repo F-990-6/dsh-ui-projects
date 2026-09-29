@@ -25,6 +25,132 @@ Verification vocabulary used below:
 
 ---
 
+## Round 56h — six small items, one tool moved out of the workspace's `tools/`, and the rule that keeps a heading from being eaten
+
+**Status: done — five commits, one per framework item, and NO browser run: this round changed no product
+code, so `lib/client.js` is `a524d5921ef0` (375108 bytes) and `lib/index.js` `426313c951a1` before and
+after, and Round 56d's browser numbers (239 / 0) still describe what ships. Offline at the end, run by the
+agent, all exit 0: `suite` 1131 / 0, `conformance` 130 / 0, `load` 91 / 0, `host` loadable,
+`browser --self-check` green.**
+
+| item | commit | what it did | evidence |
+| --- | --- | --- | --- |
+| 56h-1 | `048b996` | the CLI's name column is derived per section instead of a written-down 34 | `conformance` red 128 / 2 → green 130 / 0 |
+| 56h-2 | `a9225eb` | the README names all three files `--shot` writes | one hunk, `+2 / −1` |
+| 56h-4 | `9700299` | the dead `matchesWithAncestors` deleted, and the scope document's group B closed | `fake-dom.mjs` `+0 / −29`; `suite` 1122 → 1124 |
+| 56h-6 | `ee44c50` | `CONTRIBUTING.md`'s ninth rule, and a guard that counts the rules | `suite` 1124 → 1131 |
+| 56h-5b | `0469d87` | seven framework documents stop pointing at `tools/derive-boot-css.mjs` | 7 files, `+35 / −29` |
+
+The other half of 56h-5 is the tool move itself, recorded where it happened: `dsh-plugin-liquid-glass`
+(56h-5a `b4a215e`, the follow-up 56h-5c `f82452b`), `tools` (56h-5d `d770a66`) and `dsh-plugin-example`
+(56h-5e `f475fe3`) — nine commits across four repositories.
+
+### 56h-1 — the name column is as wide as the names in it
+
+`scripts/check-installed.mjs` padded its name column to a written-down `34`, and `padEnd` pads without
+truncating, so a scoped name longer than the column ran straight into the field after it. Both symptoms were
+on a real profile and both were already recorded in `docs/phase2-scope.md` (group B, first item):
+`@xjl-resources/dsh-plugin-example-dialog` (40 characters) printed as `…-dialog1.0.0`, and
+`@xjl-resources/dsh-plugin-liquid-glass` (38) printed as `…liquid-glassno findings`.
+
+- **`scripts/installed-columns.mjs` (new)**: `NAME_COLUMN_FLOOR` (34), `nameColumnWidth(cells)` =
+  `max(34, longest + 1)` — one space of separation, so a cell as wide as the column still cannot touch the
+  field after it — and the `pad` the CLI used to keep privately. It is a module of its own because the CLI
+  can be neither imported (it scans a profile at the top level and calls `process.exit`) nor spawned with a
+  captured pipe where this tooling runs; the width rule has to live where a suite can call it.
+- **Six call sites, one width each**: `DEPENDENCIES`, `BUNDLES`, `UI PROJECT PACKAGES`, `UI CONTRACT`,
+  `NOT SCANNED`, `UNATTRIBUTED VERSION DIRECTORIES`. A section of short names is still exactly 34 wide —
+  that is what the floor is for — and a 40-character name widens only the section it appears in.
+- **Names are never truncated.** A shortened package name is a wrong identity, which is worse than a wide
+  column. **Known residual, recorded rather than fixed:** the `version` column is still a fixed `10`, so a
+  version like `1.0.0-beta.1` (12 characters) can still reach the field after it.
+- **Red, then green.** The red was taken with today's behaviour extracted and unchanged (`nameColumnWidth`
+  returning the floor, the six sites calling it): `128 assertions, 2 failing` —
+  `a section holding a 40-character name is wider than that name` (got `false`) and
+  `the version column starts at the same offset whether the name is 40 characters or 14` (got `40`, expected
+  `34`). With the rule in place: `130 assertions, 0 failing`. Worth reading carefully: that summary line
+  prints the PASSING count beside the failing count rather than their sum, so `128 assertions, 2 failing` was
+  130 assertions in total — and `conformance` went 122 / 0 → 130 / 0 across this round (eight new: seven
+  assertions, plus one more file in the write-API guard's list).
+- **A source guard, because behaviour here is unreachable**: `check-installed.test.mjs` reads the CLI and
+  asserts that no name column is padded to the written-down `34` any more and that exactly six sites ask for
+  a width — its label enumerates the six sections, so a seventh has to be a decision rather than a silent
+  addition.
+- **Real profile, before and after** (`node scripts/check-installed.mjs`, profile `web`, read-only): the two
+  recorded strings are now `@xjl-resources/dsh-plugin-example-dialog 1 finding(s)` and
+  `@xjl-resources/dsh-plugin-liquid-glass   no findings`, and the version column starts at the same offset
+  in every row of each section. The cost is disclosed where it is paid: inside a section that holds the
+  40-character name, short rows are padded to 41 (the `dsh-cost-meter` row gains seven spaces).
+
+### 56h-2 — the README says how many files `--shot` writes
+
+`README.md` said "`--shot` writes `glass.png` and `glass-dark.png`". The flag writes three files, and the
+moments are all in `scripts/browser-verify.mjs`: the dialog open (`:2147-2150`), the dialog closed with
+Escape (`:2168-2170`, the key itself sent at `:2161-2162`), and dark mode (`:2414-2417`). The sentence now
+names all three — `glass.png` / `glass-closed.png` / `glass-dark.png` — with the wording taken from the note
+that had recorded the discrepancy since Round 51. **No assertion was added**: locking one sentence would pin
+a spelling, and the file's own documentation-guard rule says what that costs.
+
+### 56h-4 — the dead matcher, and closing what had already shipped
+
+`scripts/fake-dom.mjs` `+0 / −29` (393 → 364 lines): `matchesWithAncestors` had no caller anywhere in the
+tree. `parseCompound` stayed — it is still used inside `matches`, and it is what the new guard's control
+assertion reads — and neither consumer's import line moved (`load-check.mjs:40`, `verify.mjs:130`).
+
+- **The guard is two-way.** `verify.mjs` reads the export list, first asserts that a live export
+  (`parseCompound`) was FOUND — a guard over an export list can otherwise pass by reading nothing at all —
+  and then that `matchesWithAncestors` is absent. The name coming back fails it; so does a reformatting that
+  stops the list being read.
+- **`docs/phase2-scope.md` closes what shipped** (`+7 / −1`): B.1 (this round's CLI column), B.2 (the
+  `--shot` sentence) and B.4 (the snapshot index's heading said "20 – 38" while its prose said 20 through 37)
+  each carry a `**Closed in 56h-N**` line with the original record left intact, and the group C row now reads
+  "`matchesWithAncestors` is deleted (56h-4) and the derivation tool has moved into the skin package
+  (56h-5); the other two still stand."
+- **B.3 stays open on purpose.** `.snapshots/README.md` is under no version control at all — `.snapshots` is
+  an `EXCLUDE` entry in `tools/snapshot.mjs` and `E:\dsh` is not a repository — so which repository should
+  hold it is a decision nobody has made yet. Its heading was corrected on disk in 56h-3 (`.snapshots` is not
+  in git, so the change exists on this machine only), and the correction was proved byte-wise: one byte, one
+  line, sha256 `edc565235e16…` → `91b1cb4f5be9`.
+
+### 56h-6 — the ninth rule, and a guard that counts the rules
+
+Three times an insertion into this file consumed the heading of the round it was placed before: Round 50 ate
+Round 49's heading, Round 55's heading went the same way, and Round 56a's was eaten by the entry inserted
+above it. So `CONTRIBUTING.md` gained a ninth verification rule — **an insertion is proven by what it did not
+delete**: the anchor is the boundary **together with the whole line that follows it**, that line comes back
+verbatim in the replacement, a pure insertion is one whose `git diff --numstat` deletion column is `0`, and
+the `## Round` heading count moves by exactly one.
+
+- `Eight rules` → `Nine rules`, and the kinship paragraph gained the sentence that says rule 9 is the same
+  discipline applied to the edit itself.
+- **The guard**: `verify.mjs` reads `## Verification discipline`, asserts the numbered items are exactly
+  `[1..9]` — no gap, no duplicate, no tenth — that the introduction's own word is `Nine rules`, and that the
+  ninth rule names `anchor`, `## Round` and `numstat`. It does not lock the sentences, for the same reason
+  56h-2 added no assertion.
+- **The round used the rule on itself**: every insertion in it was anchored with the following line, and
+  `git diff | grep '^[+-]## '` was empty in all nine commits.
+
+### 56h-5b — the documents follow the tool out of `tools/`
+
+Seven files, `+35 / −29`: `README.md` (four places), `docs/plugin-development.md`, `docs/phase2-scope.md`
+(two), `src/host/service.js`, `scripts/build.mjs`, `scripts/verify.mjs` and `CONTRIBUTING.md` — whose rule 6
+said "`E:\dsh\tools` … holds the only copy of `snapshot.mjs` and `derive-boot-css.mjs`", which stopped being
+true the moment the tool moved. The framework's `README.md` no longer claims a move that had not happened
+either: it said the derivation tool "moved to the package that owns the CSS" from step 8c on, and this round
+is what made that sentence true.
+
+### Process deviations, disclosed
+
+- **56h-4's guard first failed for the wrong reason.** The first red read `check is not defined`: this suite
+  has `equal`, `truthy` and `contains`, and no `check`. The assertion never ran (the count stayed at 1122,
+  which is what said so), the helper was corrected, and the red was taken again — `expected false, got true`,
+  1124 / 1.
+- **One change landed outside the item list, deliberately and after asking.** `README.md:399-403` carried the
+  same stale `tools/` path as the three places that were listed; leaving it would have been the exact defect
+  the item exists to remove.
+- **No browser run, and that is a decision rather than an omission**: this round touched `scripts/**` and
+  documents, `lib/` is byte-identical, and the browser suite asserts a running interface.
+
 ## Round 56b–56d — the CHANGELOG arrives on demand, and the row folds down to what a reader needs
 
 **Status: done — four sub-rounds, one commit each, and one of them a repair of the one before it:**
