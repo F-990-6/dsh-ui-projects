@@ -25,6 +25,62 @@ Verification vocabulary used below:
 
 ---
 
+## Round 52 — Step 11: the self-test closes, and the gate fails on a state nobody had told it about
+
+**Status: done, and this round changed no code — the self-test is a record of what the previous rounds
+produced. Offline (run by the agent, all exit 0): `suite` 844 / 0, `conformance` 122 / 0, `load` 85 / 0,
+`host` 41 ok / 0 failing with `host half is loadable`, `browser --self-check` green (nine page expressions
+parsed, the refusal rule agreeing with real payload shapes), `example` check 16 / 0, `example-dialog` check
+14 / 0, the skin's `check` 26 / 0 and its `suite` 237 / 0, the skeleton's check 13 / 0, and the read-only
+report: `DEPENDENCIES (5)`, `UI CONTRACT (5 client bundle(s) scanned, 3 with findings)` — skin 0, example
+0, example-dialog 1, `dsh-cost-meter` 18, the framework's own 2 accepted — `PROBLEMS (0)`. Baseline: all six
+repositories clean, `lib/client.js` `sha256:b5eccae3678f` (315101 bytes) and `lib/index.js`
+`sha256:426313c951a1` (13665 bytes), both unchanged from Round 50/51. Run by the user in a normal
+PowerShell, because this machine's sandbox cannot launch Chrome: the gate `--verify-refusal` **11 / 0**,
+the full `--no-write` run **239 / 0**, `install.ps1 -Uninstall -DryRun` **exit 0 with the six fingerprints
+identical (zero writes)**, and `install.ps1 -Update -DryRun` **exit 0**, naming the build as different from
+the record and writing nothing. `install.ps1` was therefore run twice in this round, and **both times with
+`-DryRun`**.**
+
+### The gate failed first, and the reason is a state, not a rule
+
+The first `--verify-refusal` failed with `the interceptor saw and refused at least one write (0)` and
+**`mutate ×0`** in the pause summary — the page READ the settings document (that is how `example` came to
+be the active skin at all) and never wrote one. The cause: the profile's `settings.yaml` had
+`ui-projects.enabled` naming BOTH `example` and `liquid-glass`, and under the one-skin policy only `example`
+was active — while the gate drives a FIXED project id and clicked Liquid Glass, whose write context does
+not exist, so `store.confirmChecks` returned silently and nothing was ever sent. That is the known gap
+recorded here as **B.2: the gate does not check that the project it drives is active**, and it stays
+unfixed — its own round. Converging `enabled` to `liquid-glass` alone made the gate pass with **11 / 0**
+(`describe ×9, mutate ×5, other ×0`) and the full run follow at **239 / 0**, which is the proof that the
+failing run was a precondition rather than a broken rule.
+
+The state that produced it is Round 50's open question (9b-5): `#remember` computes the enabled list from
+the RECORD rather than from the runtime's active set, so the file can name two skins while only one runs.
+B.2 and that question are two ends of the same thing, and both are open.
+
+### What the four spec items mean now
+
+`UI第二阶段.txt`'s step 11 is the four-line 【测试】 block, and each line has an automated counterpart:
+`role="dialog"` covered and `role="custom-dialog"` not (browser tests A and B), both surfaces returning to
+their own look when the skin is switched off (C), the contract badge in the plugins column (D), and a
+violating package showing the warning badge with its reasons (D/E). The 239 / 0 run is that evidence, and
+the VISUAL half — the two-command-per-row check that closed the 8d review — is the user's screenshot
+recorded in Round 51.
+
+### Open, and deliberately not closed here
+
+- **B.2** — the gate drives a fixed project id and does not check that the project is active; a state that
+  makes the click a no-op reads exactly like a broken refusal rule. The pause summary is the diagnostic
+  that separates them in the meantime.
+- **A hard refresh (`Ctrl+Shift+R`) can come back with the skin off.** The client's settings read has a
+  two-second budget (`src/client/persist.js`, `READY_TIMEOUT_MS`); when it settles as a timeout the runtime
+  proceeds with the EMPTY record, so nothing is enabled client-side while the host's first paint still marks
+  the body from the document it read — the page looks skinned and the client has nothing applied. Recorded,
+  not diagnosed to a fix, and separate from B.2 even though both are "the client's record was empty".
+
+---
+
 ## Round 51 — Step 8e closed: the wrapper's whole surface is driven, and two of the three sub-rounds were already recorded
 
 **Status: done. `suite` 844 / 0 (840 → 844), `host` 41 ok / 0 failing, `load` 85 / 0, `conformance`

@@ -364,6 +364,15 @@ node scripts/browser-verify.mjs "http://127.0.0.1:3081/?token=…" --verify-refu
 node scripts/browser-verify.mjs "http://127.0.0.1:3081/?token=…" --no-write         # the full run
 ```
 
+**Before any of the three, read the profile's `settings.yaml`: `ui-projects.enabled` must name only the
+skin you are testing.** Skins are exclusive — `registry.conflictIds` hands the runtime the other ACTIVE
+skins and `runtime.#enable` disables them first — so a file that names two of them leaves exactly one
+active, and the gate drives a FIXED project id: its click then lands on a card whose write context does not
+exist, produces no write at all, and the gate fails with `the interceptor saw and refused at least one
+write (0)` — the same line a broken refusal rule produces. The pause summary is what tells the two apart
+(`describe ×N, mutate ×0` means the page read the document but nothing wrote), and this precondition is
+not yet checked by the gate itself.
+
 `--no-write` installs the interceptor that refuses writes to the `settings` key and runs the refusal gate
 first; the gate passes only after it has seen a real write and refused it. Two habits from
 `CONTRIBUTING.md` apply to everything above: **rebuild before verifying** (the suites and the browser load
