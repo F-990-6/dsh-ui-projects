@@ -109,6 +109,17 @@ export function collectDiagnostics(projects, runtime) {
     persistKind: runtime?.persist?.kind ?? 'no runtime',
     persistReady: runtime?.persist?.readiness ?? 'no runtime',
     persistDiverged: runtime?.persist?.diverged === true,
+    /**
+     * Which projects this page was told about by the FIRST FRAME rather than by the document.
+     *
+     * Non-empty only on a degraded load: the settings transport had not answered when the boot
+     * finished, so the host's own markers — written from the same document at emit time — were what
+     * the runtime went on, and the record corrects it when it lands. `persistReady: 'timeout'` next
+     * to a non-empty list is the whole story of "my skin came back on a slow load"; an EMPTY list
+     * with a timeout means the host plane said nothing and the shipped defaults were used instead.
+     * Without this field the two are the same picture, and they need different fixes.
+     */
+    persistAdopted: runtime?.diagnostics?.().adoptedFromFrame ?? 'no runtime',
     persistError: runtime?.diagnostics?.().persistError,
     /**
      * Which surfaces two active projects both claim, and whether either claim is a blur.

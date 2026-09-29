@@ -92,6 +92,16 @@ const BOOT_RETRY_INTERVAL_MS = 500
  * @property {(ownerId: string, css: string) => () => void} insertCss
  *   Inserts one owned `<style>` element for a project and returns its disposer.
  *   The runtime scopes the CSS to the project's marker before handing it over.
+ * @property {{ announced: readonly string[] | null, markerPresent: (id: string) => boolean }} bootEvidence
+ *   What the HOST plane said before this bundle existed, read once at boot and passed in rather than
+ *   queried here (`boot-presence.js` is the reader; `index.js` is the one place that reads it):
+ *   `announced` is the frozen list of project ids the host mounted on this page load, `null` when no
+ *   host half ran at all, and `markerPresent` answers what the first frame PAINTED for one project —
+ *   the body marker the host stamped after reading the settings document at emit time.
+ *
+ *   It exists for the one case the record cannot answer: `persist.read()` returns undefined while the
+ *   settings transport is still in flight, and the empty record means "the user never chose" while
+ *   "not told yet" means nothing of the sort. See `#wantedIds()`.
  */
 
 export class UiProjectRuntime {
@@ -103,6 +113,17 @@ export class UiProjectRuntime {
     this.persist = deps.persist
     this.ctx = deps.ctx
     this.insertCss = deps.insertCss
+    this.bootEvidence = deps.bootEvidence
+    /**
+     * Which projects this load was told about by the FIRST FRAME rather than by the document.
+     *
+     * Empty on a healthy load, and a diagnostic rather than state: it says the record had not arrived
+     * when the boot finished, so `#wantedIds()` answered from the host's markers. The overlay prints
+     * it next to `persistReady`, and the pair is the whole story of a degraded first frame — a
+     * `'timeout'` with a non-empty list means the skin stayed on and the document will correct it.
+     * @type {string[]}
+     */
+    this.frameAdopted = []
     /** @type {Map<string, Array<() => void>>} owned disposers, per active project */
     this.disposers = new Map()
     /**
@@ -127,6 +148,14 @@ export class UiProjectRuntime {
     this.deviceClass = deviceLevel(readSignals())
     /** @type {(() => void) | undefined} */
     this.stopFrameProbe = undefined
+    /**
+     * The record subscription, present exactly when this load had to start from the first frame.
+     *
+     * Undefined on a healthy boot: the document was read before anything was applied, so there is
+     * nothing to reconcile. See `start()` and `#reconcile()`.
+     * @type {(() => void) | undefined}
+     */
+    this.stopRecordWatch = undefined
     /**
      * The last failure to write the record, or undefined.
      *
@@ -218,27 +247,89 @@ export class UiProjectRuntime {
      *
      * The settings adapter's snapshot starts as `idle` and only becomes `ready` after the first
      * `settings.describe` read settles — a wire round-trip the provider starts without awaiting.
-     * Reading before that yields the EMPTY record, which means "the user has never chosen
-     * anything", so the fallback below would restore the shipped defaults and quietly ignore the
-     * user's set — for the shipped skin, the skin would not come back on a reload that the
-     * settings document says it should.
+     * Reading before that yields UNDEFINED now. It used to yield the EMPTY record, whose meaning is
+     * "the user has never chosen anything" — so a two-second transport delay was answered with the
+     * shipped defaults, and a skin the document said was on came back off while the host's first
+     * frame had already painted it on. "Not told yet" is not "chose nothing"; `#wantedIds()` answers
+     * the first from the frame and the second from the record.
      *
-     * `start()` reads once and there is no second chance, so the wait belongs here rather than in
-     * a retry. `?.()` because only the settings adapter has anything to wait for: the local one
-     * resolves immediately, and an adapter that omits the method is treated the same way.
+     * `start()` reads once and there is no second chance IN THIS METHOD, so the wait belongs here
+     * rather than in a retry — and when the wait ends without an answer, the subscription at the
+     * bottom of this method is what makes a second chance exist. `?.()` because only the settings
+     * adapter has anything to wait for: the local one resolves immediately, and an adapter that
+     * omits the method is treated the same way.
      */
     await this.persist.ready?.()
     const record = this.persist.read()
-    this.settings = new Map(Object.entries(record.settings ?? {}))
+    this.settings = new Map(Object.entries(record?.settings ?? {}))
     this.#markRoot()
-    // An untouched record means each project follows its own default; an
-    // initialized one means the user's set is authoritative, empty included.
-    const wanted = this.#wantedIds()
+    this.frameAdopted = record === undefined ? this.#frameWantedIds() : []
+    await this.#applyWanted()
+    /*
+     * AN UNKNOWN RECORD GETS A SECOND CHANCE, and it is the only case that needs one: the wait above
+     * ends either with a record or with a dead transport, and `persist.read()` starts answering the
+     * moment the document does. Without this the boot keeps the frame's answer for the life of the
+     * page — the page looks like the skin is on while the record says otherwise, which is exactly
+     * the divergence this subscription exists to end.
+     *
+     * Kept for the life of the runtime rather than until the first answer: a record that moves later
+     * (another window, the host writing settings) is the same question, and `#reconcile()` is
+     * idempotent and writes nothing, so listening costs a comparison and cannot fight the user.
+     */
+    if (record === undefined && this.stopRecordWatch === undefined) {
+      this.stopRecordWatch = this.persist.subscribe?.(() => {
+        void this.#reconcile()
+      })
+    }
+  }
+
+  /**
+   * Bring the page in line with the wanted set: enable what is wanted, in the composition's order.
+   *
+   * ONE place, because `start()` and `#reconcile()` must not be able to disagree about what "wanted"
+   * means or about the order it is applied in — the same reason `#wantedIds()` is one place.
+   *
+   * Persists nothing, and disables nothing: `start()` runs before the user has done anything, and
+   * `#reconcile()` owns the disabling because only it knows what the document said.
+   * @returns {Promise<void>}
+   */
+  async #applyWanted() {
     // Sorted: the order projects run in is a request the composition makes, not the order an
     // object's keys happen to come back in. See `canonicalOrder`.
-    for (const id of this.registry.canonicalOrder(wanted)) await this.#enable(id, { persist: false })
+    for (const id of this.registry.canonicalOrder(this.#wantedIds())) await this.#enable(id, { persist: false })
     this.#syncPerfAttribute()
     if (this.registry.activeIds().length > 0) this.#startFrameProbe()
+  }
+
+  /**
+   * The document has answered — or moved. Make the page match it.
+   *
+   * The counterpart to the first-frame adoption in `start()`: what the frame was trusted for is
+   * replaced by what the record says, in BOTH directions. A project the frame turned on and the
+   * record does not want is disabled here. That is the visible cost of a degraded window, and the
+   * correct outcome: the document is newer than the frame it painted.
+   *
+   * WRITES NOTHING. It is derived from the document, so writing it back would be redundant — and it
+   * is triggered BY the document changing, so a write here would be a feedback loop with the
+   * transport. `#serialize` keeps it from interleaving with the user's own toggle.
+   * @returns {Promise<void>}
+   */
+  async #reconcile() {
+    return this.#serialize(async () => {
+      const record = this.persist.read()
+      if (record === undefined || this.disposed) return
+      this.settings = new Map(Object.entries(record.settings ?? {}))
+      const wanted = this.#wantedIds()
+      await this.#applyWanted()
+      for (const id of this.registry.activeIds()) {
+        if (!wanted.includes(id)) await this.#disable(id, { persist: false })
+      }
+      // Again, and not redundantly: a disable can drop the heaviest applied project, and the tier
+      // has to drop with it (`retire()` states the same rule).
+      this.#syncPerfAttribute()
+      this.frameAdopted = []
+      this.registry.notify()
+    })
   }
 
   /**
@@ -338,10 +429,21 @@ export class UiProjectRuntime {
    *
    * Read-only and cheap: it reports what the runtime already knows rather than re-measuring
    * anything, which is what lets a test ask "did the write fail?" without a browser.
-   * @returns {{ persistError: { at: string, message: string } | undefined }}
+   * @returns {{ persistError: { at: string, message: string } | undefined, adoptedFromFrame: string[] }}
    */
   diagnostics() {
-    return { persistError: this.persistError }
+    return {
+      persistError: this.persistError,
+      /**
+       * The ids this load took from the first frame rather than from the document.
+       *
+       * Non-empty only on a degraded boot, and paired with `persistReady: 'timeout'` in the overlay
+       * it is the whole story: the transport had not answered when the boot finished, so the host's
+       * own markers were the answer, and the record corrects it when it lands. An EMPTY list next to
+       * a timeout means the host plane said nothing and the shipped defaults were used instead.
+       */
+      adoptedFromFrame: this.frameAdopted.slice(),
+    }
   }
 
   /**
@@ -402,7 +504,15 @@ export class UiProjectRuntime {
       if (project.defaultEnabled) await this.#enable(id, { persist: false })
       else await this.#disable(id, { persist: false })
       const record = this.persist.read()
-      const enabled = record.enabled.filter((entry) => entry !== id)
+      /*
+       * `?? this.registry.activeIds()`: while the settings read has not answered, the record is
+       * unknown, and dereferencing it here was a TypeError inside a button handler — which reads as a
+       * broken panel rather than as a record that could not be written. The write below still fails
+       * on its own terms (`persist.write()` refuses a scope that is not ready) and `#write` reports
+       * it; what must not happen is the crash on the way there. Same seed as `#remember()`, for the
+       * same reason.
+       */
+      const enabled = (record?.enabled ?? this.registry.activeIds()).filter((entry) => entry !== id)
       if (project.defaultEnabled && !enabled.includes(id)) enabled.push(id)
       /*
        * The project's own options go too, which includes any recorded verification.
@@ -446,6 +556,10 @@ export class UiProjectRuntime {
   dispose() {
     if (this.disposed) return
     this.disposed = true
+    // Before anything else: a subscription that outlives the runtime would call `#reconcile()` on a
+    // disposed object the moment the document moved.
+    this.stopRecordWatch?.()
+    this.stopRecordWatch = undefined
     for (const id of Array.from(this.disposers.keys())) {
       this.#release(id)
       this.registry.markInactive(id)
@@ -842,15 +956,60 @@ export class UiProjectRuntime {
   }
 
   /**
-   * The ids the document asks for: the user's set once initialized, otherwise each project's own
-   * default. One place, because `start()` and `adopt()` must not be able to disagree about it.
+   * The ids that should be on: the user's set once the document is initialized, each project's own
+   * default when the document says nobody has ever chosen, and — while the document has not been
+   * READ yet — whatever the host's first frame already painted.
+   *
+   * One place, because `start()` and `adopt()` must not be able to disagree about it, and now also
+   * because three different answers live here and a second copy of this decision is a second place
+   * for "unknown" to decay into "empty".
    * @returns {string[]}
    */
   #wantedIds() {
     const record = this.persist.read()
-    return record.initialized
-      ? record.enabled.slice()
-      : this.registry.list().filter((project) => project.defaultEnabled).map((project) => project.id)
+    if (record === undefined) {
+      /*
+       * UNKNOWN, which is not the same as empty, and this branch is the difference.
+       *
+       * Nothing has been read, so nothing can be inferred about the user — and the one thing that IS
+       * known about this page load is the frame already on screen: the host read the same document at
+       * emit time and stamped `data-ui-project-<id>="on"` for everything it decided was on.
+       * Adopting that set makes the registry agree with what the reader can see, instead of leaving
+       * the page skinned while the panel says the skin is off.
+       *
+       * With NO host plane at all (`announced === null`) there is no frame to trust and nothing to
+       * contradict either, so the shipped defaults answer — the pre-existing behaviour, kept for the
+       * composition where the client half is the only half.
+       */
+      if (this.bootEvidence === undefined || this.bootEvidence.announced === null) return this.#defaultWantedIds()
+      return this.#frameWantedIds()
+    }
+    return record.initialized ? record.enabled.slice() : this.#defaultWantedIds()
+  }
+
+  /**
+   * What the first frame says is on: every REGISTERED project the host marked on the body.
+   *
+   * Registered rather than marked-only, because the registry is what the runtime can apply and
+   * `#enable` ignores an id it does not have — a marker for a package whose client half is missing
+   * is the host plane's business, and `service.js`'s three-state diagnosis reports it.
+   *
+   * Empty when no host half announced itself: `markerPresent` would answer false for everything
+   * anyway, but saying so here keeps the absent-host case from looking like a page that painted
+   * nothing on purpose.
+   * @returns {string[]}
+   */
+  #frameWantedIds() {
+    if (this.bootEvidence === undefined || this.bootEvidence.announced === null) return []
+    return this.registry
+      .list()
+      .filter((project) => this.bootEvidence.markerPresent(project.id))
+      .map((project) => project.id)
+  }
+
+  /** Every project that ships ON: the answer for a document nobody has chosen in. @returns {string[]} */
+  #defaultWantedIds() {
+    return this.registry.list().filter((project) => project.defaultEnabled).map((project) => project.id)
   }
 
   /**
@@ -878,7 +1037,16 @@ export class UiProjectRuntime {
    */
   async #remember(mutation) {
     const record = this.persist.read()
-    const base = record.initialized ? record.enabled : this.registry.activeIds()
+    /*
+     * The seed for the first write of a document nobody has chosen in — and the same seed while the
+     * document has not been READ yet, which is the only honest base there is: what is applied is what
+     * the user is looking at, and under an unknown record `#wantedIds()` has just made that set agree
+     * with the first frame.
+     *
+     * `record === undefined` must not take the `record.enabled` branch: that would write the empty
+     * set and turn "the transport was slow for two seconds" into "the user turned everything off".
+     */
+    const base = record?.initialized === true ? record.enabled : this.registry.activeIds()
     const enabled = base.filter((id) => id !== mutation.add && id !== mutation.remove)
     if (mutation.add !== undefined) enabled.push(mutation.add)
     await this.#write({

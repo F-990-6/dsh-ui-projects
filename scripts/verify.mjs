@@ -129,6 +129,16 @@ function excludes(haystack, needle) {
 
 import { createElement, createFakeDom, createStorage, FakeMutationObserver, wrapGetComputedStyle, setSandbox } from './fake-dom.mjs'
 
+/*
+ * The client half's own literals for the presence global and the marker attribute, IMPORTED rather
+ * than typed out here.
+ *
+ * A test that spelled `data-ui-project-…` itself would keep passing after the two planes renamed the
+ * attribute, and the whole point of these tests is which elements the runtime consults. `load-check`
+ * guards the same contract from the other side (it compares the host copy against this one).
+ */
+import { __contract as bootPresence } from '../src/client/boot-presence.js'
+
 
 
 
@@ -154,6 +164,7 @@ const SETTINGS_SCOPE_NS = 'ui-projects'
  *   and the whole readiness path is untestable.
  * @param {string} [input.scopeError] Make the read fail: the status stays `idle` and `error` is
  *   set, which is the terminal state a broken transport leaves behind.
+ * @param {FakeTimers} [input.timers] The clock the FAKE HOST keeps, for a test that steers one.
  * @param {boolean} [input.withTheme]
  */
 function createCtx(input) {
@@ -164,7 +175,21 @@ function createCtx(input) {
     scopeDelayMs = 0,
     scopeError,
     withTheme = false,
+    timers,
   } = input
+  /*
+   * The clock the fake HOST keeps — which has to be the same one the bundle keeps.
+   *
+   * `sandbox.setTimeout` is what the bundle calls; this function runs in the suite's own realm, so
+   * its `setTimeout` is Node's real one. Without this, a test that steers a fake clock would leave
+   * the scope's delayed release as the one thing on the fake page still running on wall-clock time,
+   * and `fireDeadline` would fire the bundle's deadline instead (or nothing at all) while the release
+   * it meant to trigger sat there for five real seconds.
+   */
+  const schedule =
+    timers === undefined
+      ? (/** @type {() => void} */ callback, /** @type {number} */ ms) => setTimeout(callback, ms)
+      : (/** @type {() => void} */ callback, /** @type {number} */ ms) => timers.setTimeout(callback, ms)
   /** @type {Map<string, any>} */
   const services = new Map()
   /** @type {Array<() => void>} */
@@ -174,6 +199,15 @@ function createCtx(input) {
   /** @type {Map<string, any>} */
   const namespaces = new Map()
   let themeLayers = 0
+  /**
+   * How many field writes the settings document has taken.
+   *
+   * Counted because "the reconcile must not write" is a property of the design — it derives the
+   * wanted set from the document and writing that back would be redundant at best and a race with
+   * the user at worst — and a property nobody counts is a property nobody checks. It also gives the
+   * degraded window a number: a load that could not read the record must leave it alone.
+   */
+  let settingsWrites = 0
 
   if (withSettingsScope) {
     // Seeded before anything binds, the way `settings.yaml` already holds a record by the time a
@@ -208,7 +242,7 @@ function createCtx(input) {
           error: scopeError ?? null,
         }
         if (delayed && !failed) {
-          setTimeout(() => {
+          schedule(() => {
             snapshot.status = 'ready'
             snapshot.value = namespaces.get(spec.namespace)
             snapshot.user = snapshot.value
@@ -226,6 +260,7 @@ function createCtx(input) {
             const section = namespaces.get(spec.namespace) ?? {}
             section[field] = value
             namespaces.set(spec.namespace, section)
+            settingsWrites += 1
             revision += 1
             snapshot.value = section
             snapshot.user = section
@@ -452,6 +487,8 @@ function createCtx(input) {
     /** Every `$on` the bundle registered, so a test can prove the wiring happened. */
     remoteSubscriptions,
     themeLayers: () => themeLayers,
+    /** Field writes the fake document has taken, for the "nothing was written" assertions. */
+    settingsWrites: () => settingsWrites,
   }
 }
 
@@ -535,6 +572,31 @@ class FakeTimers {
     const pending = [...this.timeouts.values()]
     this.timeouts.clear()
     for (const entry of pending) entry.callback()
+  }
+
+  /**
+   * Fire the FIRST armed deadline whose period is exactly `ms`, and report whether there was one.
+   *
+   * `fireTimeouts()` cannot ask the question a readiness test asks. The fake scope schedules its own
+   * delayed release from `bind()` — which happens before the plugin's readiness wait arms anything —
+   * so firing everything settles the scope first and the wait then settles as `ready`. The timeout
+   * branch would be unreachable, and a test that meant to exercise it would quietly exercise its
+   * opposite. Firing by period is what lets a test say "the deadline passed while the document is
+   * still silent".
+   *
+   * The boolean is the premise check, not decoration: with no matching deadline this fires nothing,
+   * and a test that read that as a pass would be asserting about a clock that never moved.
+   * @param {number} ms
+   * @returns {boolean}
+   */
+  fireDeadline(ms) {
+    for (const [id, entry] of this.timeouts) {
+      if (entry.ms !== ms) continue
+      this.timeouts.delete(id)
+      entry.callback()
+      return true
+    }
+    return false
   }
 }
 
@@ -712,7 +774,7 @@ function mountTestSkin(harness, overrides = {}) {
  *
  * Each boot tears down the previous one first, so tests neither leak effects into
  * one another nor double-dispose them.
- * @param {{ withStorage?: boolean | ReturnType<typeof createStorage>, withSettingsScope?: boolean, scopeRecord?: Record<string, unknown>, scopeDelayMs?: number, scopeError?: string, withTheme?: boolean, detachedFrame?: boolean, viewportWidth?: number, viewportHeight?: number, fakeTimers?: boolean, device?: { cores?: number, saveData?: boolean }, withTestSkin?: boolean }} [options]
+ * @param {{ withStorage?: boolean | ReturnType<typeof createStorage>, withSettingsScope?: boolean, scopeRecord?: Record<string, unknown>, scopeDelayMs?: number, scopeError?: string, withTheme?: boolean, detachedFrame?: boolean, viewportWidth?: number, viewportHeight?: number, fakeTimers?: boolean, timers?: FakeTimers, hostRows?: readonly string[], hostMarkers?: readonly string[], device?: { cores?: number, saveData?: boolean }, withTestSkin?: boolean }} [options]
  */
 async function boot(options = {}) {
   // Tear down BEFORE the sandbox globals move: a previous instance's disposers
@@ -782,7 +844,12 @@ async function boot(options = {}) {
   // retry impossible to exercise — and would licence a plugin that hangs on a real page.
   // With `fakeTimers` the same retry becomes observable instead of merely assumed: the test
   // decides when the interval ticks and when the deadline passes.
-  const timers = options.fakeTimers === true ? new FakeTimers() : undefined
+  //
+  // `timers` accepts a clock the TEST created, which is the only way to exercise a boot that is
+  // WAITING on a deadline: `boot()` awaits the plugin's readiness (`plugin.ready()` below), and with
+  // an internal clock nothing would ever fire it, so the call would never return. Owning the clock
+  // lets a test start the boot, fire the deadline it means to fire, and then await the result.
+  const timers = options.timers ?? (options.fakeTimers === true ? new FakeTimers() : undefined)
   if (timers === undefined) {
     sandbox.setInterval = setInterval
     sandbox.clearInterval = clearInterval
@@ -802,6 +869,34 @@ async function boot(options = {}) {
   sandbox.MutationObserver = FakeMutationObserver
   void fakeColumns
 
+  /*
+   * THE HOST PLANE'S FIRST FRAME, reproduced in the order the real page produces it.
+   *
+   * The server renders both of these as BODY rows — immediately after `<body>` opens, strictly
+   * before the boot tail that loads this bundle — so the client finds the presence global already
+   * complete (`readHostRowsAtBoot`) and the marker attribute already set (`bodyMarkerPresent`).
+   * Setting them after `apply` would describe a page that cannot exist.
+   *
+   * `hostRows` defaults to UNDEFINED, i.e. the global is never created, which is the composition
+   * where the host plane contributed nothing to the page. Every test written before this option
+   * existed boots that way, and it is load-bearing that they keep doing so: the runtime's answer for
+   * an unknown record with no host plane is the shipped defaults, exactly the behaviour those tests
+   * were written against.
+   *
+   * `data-ui-skin` is deliberately NOT set here even though `markerRow` sets it too: that attribute
+   * is the runtime's own live state (it maintains it as projects come and go), while the body marker
+   * is the evidence of what the FIRST FRAME painted. A fixture that set both would be asserting
+   * about the runtime's own output.
+   *
+   * The global is ASSIGNED rather than set-if-given, and that is not tidiness: `sandbox.window` is
+   * one object shared by every boot in this process (only `localStorage` is cleared by the teardown),
+   * so a test that announced a host plane would otherwise leave the next test — the one asserting
+   * what happens with NO host plane — booting into a page that has one.
+   */
+  sandbox.window[bootPresence.PRESENCE_GLOBAL] =
+    options.hostRows === undefined ? undefined : [...options.hostRows]
+  for (const id of options.hostMarkers ?? []) dom.body.setAttribute(bootPresence.markerAttribute(id), 'on')
+
   const host = createCtx({
     dom,
     withSettingsScope: options.withSettingsScope,
@@ -809,6 +904,8 @@ async function boot(options = {}) {
     scopeDelayMs: options.scopeDelayMs,
     scopeError: options.scopeError,
     withTheme: options.withTheme,
+    // The fake host keeps the same clock the bundle does, so a test that steers one steers both.
+    timers,
   })
   await plugin.apply(host.ctx)
   // The initial state application settles asynchronously, and the settings section
@@ -854,6 +951,12 @@ async function boot(options = {}) {
     persistKind: runtime.persist.kind,
     /** The settings namespace this plugin wrote, as the fake host sees it. */
     settingsSection: () => host.namespaces.get(SETTINGS_SCOPE_NS),
+    /**
+     * Field writes the fake settings document has taken, for "nothing was written" assertions.
+     *
+     * This is what makes "the reconcile derives, it does not write" checkable rather than stated.
+     */
+    settingsWrites: () => host.settingsWrites(),
     /**
      * The project's marker, which the runtime sets on the BODY: project styles are
      * scoped there because that is where the shipped client declares its tokens.
@@ -1292,6 +1395,196 @@ await test('a failed read settles instead of waiting out the deadline', async ()
   equal(harness.runtime.persist.readiness, 'error', 'a snapshot carrying an error is terminal')
   equal(harness.persistKind, 'settings', 'the backend is still the settings document')
   equal(harness.registry.isEnabled('test-skin'), false, 'and the defaults apply rather than a hang')
+})
+
+/*
+ * ── "UNKNOWN" IS NOT "THE USER CHOSE NOTHING" ──────────────────────────────
+ *
+ * The cold-load window the tests above cover has a second half, and it was broken. When the settings
+ * read did not answer inside `READY_TIMEOUT_MS`, `persist.read()` returned the EMPTY record — whose
+ * only meaning is "the user has never chosen anything" — so `#wantedIds()` fell back to each project's
+ * shipped default and a skin the document said was ON came back OFF.
+ *
+ * Meanwhile the HOST half had already painted it on: the host reads the same document at emit time
+ * and stamps `data-ui-project-<id>="on"` on `<body>` before this bundle exists. The page therefore
+ * ran in two minds — the frame showed the skin, the registry said it was off, the panel's switch read
+ * `false` — and the next toggle recomputed `enabled` from an empty active set, which turns "the
+ * transport was slow for two seconds" into "the user turned it off".
+ *
+ * These two tests pin both halves of the fix: an unknown record ADOPTS what the first frame painted
+ * instead of inventing a choice from ignorance, and the document, once it answers, wins. The first
+ * uses a FAILED read rather than a slow one — the same class of unknown with no clock involved — and
+ * the second steers a fake clock so the timeout branch itself is the thing under test.
+ *
+ * The test above keeps asserting `false` for its fixture, and that is not an oversight: it boots with
+ * no host plane at all, where the fallback is still the shipped defaults. That boundary has its own
+ * test below.
+ */
+await test('an unknown record adopts the host first frame instead of the empty record', async () => {
+  const harness = await boot({
+    withSettingsScope: true,
+    scopeError: 'transport down',
+    hostRows: ['test-skin'],
+    hostMarkers: ['test-skin'],
+  })
+
+  equal(harness.runtime.persist.readiness, 'error', 'the premise: the document was never read')
+  equal(harness.runtime.persist.read(), undefined, 'and "never read" is not "the user chose nothing"')
+  equal(harness.projectMarker('test-skin'), 'on', 'the host painted this project on before the bundle ran')
+  equal(harness.registry.isEnabled('test-skin'), true, 'so the client agrees with the frame it inherited')
+  equal(
+    harness.runtime.diagnostics().adoptedFromFrame,
+    ['test-skin'],
+    'and the overlay can say which project came from the frame rather than from the document',
+  )
+})
+
+await test('a readiness timeout adopts the frame, and the late record corrects it', async () => {
+  const timers = new FakeTimers()
+  const booting = boot({
+    withSettingsScope: true,
+    timers,
+    scopeDelayMs: 5000,
+    // The document's real answer, arriving 5 s in: the user has everything OFF.
+    scopeRecord: { v: 1, initialized: true, enabled: [], settings: {}, touched: true },
+    hostRows: ['test-skin'],
+    hostMarkers: ['test-skin'],
+  })
+
+  /*
+   * `booting` cannot be awaited yet — it is waiting for the readiness deadline, which is the state
+   * under test. One macrotask is enough for the deadline to exist: `ctx.effect` runs its callback
+   * synchronously during `apply`, so `start()` has already called `persist.ready()`.
+   */
+  await new Promise((resolve) => setImmediate(resolve))
+  equal(timers.fireDeadline(2000), true, 'the readiness deadline is armed, and it is the 2000 ms one')
+  const harness = await booting
+
+  equal(harness.runtime.persist.readiness, 'timeout', 'the premise: the wait gave up rather than answered')
+  equal(harness.registry.isEnabled('test-skin'), true, 'the frame is adopted instead of the empty record')
+  equal(harness.runtime.diagnostics().adoptedFromFrame, ['test-skin'], 'and the overlay names what was adopted')
+  equal(harness.settingsWrites(), 0, 'and the degraded window wrote nothing to the document')
+
+  // The document finally answers, and it says the user turned everything off: it wins over the frame.
+  equal(timers.fireDeadline(5000), true, 'the scope release is still the 5000 ms deadline it was given')
+  await new Promise((resolve) => setImmediate(resolve))
+
+  /*
+   * `readiness` stays `'timeout'`, and that is the contract rather than an oversight: it records how
+   * the WAIT ended, once, and `persist.ready()` is answered by the first terminal state. What the
+   * late answer changes is `read()`, which is what every reader actually acts on.
+   */
+  equal(harness.runtime.persist.readiness, 'timeout', 'the wait still ended in a timeout — it is not rewritten')
+  truthy(harness.runtime.persist.read() !== undefined, 'but the record did arrive')
+  equal(harness.registry.isEnabled('test-skin'), false, 'and the document wins over the frame')
+  equal(harness.projectMarker('test-skin'), null, 'the marker goes with it')
+  equal(harness.runtime.diagnostics().adoptedFromFrame, [], 'and the frame is no longer what the runtime is going on')
+  equal(harness.settingsWrites(), 0, 'and the reconcile derived rather than wrote')
+})
+
+await test('an unknown record with no host plane still falls back to the shipped defaults', async () => {
+  const timers = new FakeTimers()
+  const booting = boot({ withSettingsScope: true, timers, scopeDelayMs: 5000, withTestSkin: false })
+  await new Promise((resolve) => setImmediate(resolve))
+  equal(timers.fireDeadline(2000), true, 'the readiness deadline fires')
+  const harness = await booting
+
+  equal(harness.runtime.persist.readiness, 'timeout', 'the premise: the record is still unknown')
+  /*
+   * The fixture is mounted HERE, with `defaultEnabled: true`, instead of being registered directly on
+   * the registry, and the difference is not style: the registry is ONE object for the whole process,
+   * shared by every boot, so a definition registered without a fiber outlives its test and lands in
+   * the next test's inventory. Mounting through a fiber is what makes the cleanup automatic.
+   *
+   * It also puts the question where it belongs: "should this be on?" is answered by `adopt()`, which
+   * consults the same `#wantedIds()` the boot walk does.
+   */
+  mountTestSkin(harness, { manifest: { defaultEnabled: true } })
+  await new Promise((resolve) => setImmediate(resolve))
+
+  equal(
+    harness.registry.isEnabled('test-skin'),
+    true,
+    'a project that ships ON still comes on with no host plane to say otherwise',
+  )
+  equal(harness.settingsWrites(), 0, 'and adopting it wrote nothing')
+})
+
+await test('the record subscription cannot loop: one toggle writes once, and nothing follows it', async () => {
+  const timers = new FakeTimers()
+  const booting = boot({
+    withSettingsScope: true,
+    timers,
+    scopeDelayMs: 5000,
+    scopeRecord: { v: 1, initialized: true, enabled: [], settings: {}, touched: true },
+    hostRows: ['test-skin'],
+    hostMarkers: ['test-skin'],
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  equal(timers.fireDeadline(2000), true, 'the boot gave up waiting for the record')
+  const harness = await booting
+  equal(timers.fireDeadline(5000), true, 'and then the document answered')
+  await new Promise((resolve) => setImmediate(resolve))
+  equal(harness.registry.isEnabled('test-skin'), false, 'so the frame was corrected, and the runtime is subscribed')
+
+  /*
+   * THE LOOP QUESTION, asked with a counter instead of an argument. The runtime listens to the record
+   * for the life of the load, and a reconcile that wrote would be called back by its own write —
+   * forever. So: a real user action, then a tick, then the same count. The second reading is what
+   * makes this falsifiable; the first alone would pass for a loop that had not come round yet.
+   */
+  await harness.runtime.enable('test-skin')
+  const afterToggle = harness.settingsWrites()
+  truthy(afterToggle > 0, `the toggle reached the document (${afterToggle} field writes)`)
+  await new Promise((resolve) => setImmediate(resolve))
+  equal(harness.settingsWrites(), afterToggle, 'and the reconcile that write triggered added none of its own')
+  equal(harness.registry.isEnabled('test-skin'), true, 'the project stays on: the reconcile does not undo the user')
+})
+
+await test('a user action while the record is unknown reports its failure instead of crashing', async () => {
+  const harness = await boot({
+    withSettingsScope: true,
+    scopeError: 'transport down',
+    hostRows: ['test-skin'],
+    hostMarkers: ['test-skin'],
+  })
+
+  /*
+   * `resetOne` reads the record to seed the write it is about to make, and it used to dereference it
+   * unguarded. With an unknown record that is a TypeError inside a button handler — the panel looks
+   * broken rather than the record unreadable, and the two need different fixes.
+   *
+   * The write itself still fails here, and that is the contract this pins rather than an accident of
+   * the fixture: the scope is not `ready`, so `persist.write()` refuses, and `#write` records the
+   * refusal as a `persistError` the panel can show. A write QUEUE — holding the choice until the
+   * document answers — is the next round's question, and this is the test that should change when it
+   * lands; until then, "reported" is the honest answer and "silently lost" is not.
+   */
+  await harness.runtime.resetOne('test-skin')
+
+  const { persistError } = harness.runtime.diagnostics()
+  truthy(persistError !== undefined, 'the refusal is recorded rather than thrown at the click')
+  equal(typeof persistError.message, 'string', "with the transport's own words")
+  equal(harness.settingsWrites(), 0, 'and nothing reached the document')
+})
+
+await test('the panel renders while the record is unknown, and the switch reads its real state', async () => {
+  const harness = await boot({ withSettingsScope: true, scopeError: 'transport down' })
+
+  /*
+   * Every reader of `persist.read()` had to be told that "unknown" exists, and the service's
+   * `enabledIds` is the one that would have thrown (`Cannot read properties of undefined` inside a
+   * panel render) rather than degrading. So this asserts the two consumers directly: the service's
+   * diagnostics, and the section's own render.
+   */
+  const service = harness.ctx.uiProjects
+  truthy(service !== undefined, 'the registration service is published')
+  const diagnostics = service.diagnostics()
+  equal(diagnostics.hostPlane, 'absent', 'the fixture has no host plane')
+  equal(Array.isArray(diagnostics.projects), true, 'and the inventory still computes')
+
+  const markup = harness.render()
+  contains(markup, 'aria-checked="false"', 'the switch reports the state the runtime is actually in')
 })
 
 await test('resetAll returns to the shipped default in one step', async () => {

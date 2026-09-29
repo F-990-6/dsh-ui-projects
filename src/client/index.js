@@ -137,7 +137,14 @@ function apply(ctx) {
     'uiProjects',
     createUiProjectsService({
       registry: target,
-      enabledIds: () => persist.read().enabled,
+      /*
+       * `?? []` because the record is UNDEFINED while the settings transport is still in flight, and
+       * this reader feeds the panel's three-state diagnosis. Empty means "nothing is known to be on",
+       * which is the honest answer at that moment; the alternative — letting it throw inside a panel
+       * render — was the cost of teaching `persist.read()` to distinguish "not told yet" from "the
+       * user chose nothing".
+       */
+      enabledIds: () => persist.read()?.enabled ?? [],
       hostRowsAtBoot: presenceAtBoot,
       bootFragmentPresent,
       bodyMarkerPresent,
@@ -155,6 +162,17 @@ function apply(ctx) {
     persist,
     ctx,
     insertCss: (id, css) => insertStyle(`dsh-ui-projects-${id}`, css),
+    /*
+     * What the HOST plane said, handed over rather than re-read: `presenceAtBoot` was frozen at the
+     * top of this apply for the reason recorded there, and this is the second reader of it. The
+     * marker probe is the live half of the pair — "did the host paint this project on?" is a question
+     * about the document as SERVED, while the runtime's own markers change as the user does things.
+     *
+     * The runtime needs both for one case: `persist.read()` returns undefined while the settings
+     * transport is still in flight, and the answer to "what should be on?" is then the frame that is
+     * already on screen rather than the shipped defaults.
+     */
+    bootEvidence: { announced: presenceAtBoot, markerPresent: bodyMarkerPresent },
   })
 
   /*

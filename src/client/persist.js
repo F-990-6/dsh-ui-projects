@@ -93,21 +93,24 @@ function emptyRecord() {
 /**
  * How long `ready()` waits for the settings document before giving up.
  *
- * WHAT A TIMEOUT LOOKS LIKE — recorded here so the next reader does not file it as a bug. The
- * record cannot be read yet, so `read()` returns the empty record, `runtime.start()` sees
- * `initialized: false` and falls back to each project's `defaultEnabled`. For the shipped skin
- * that means Liquid Glass does NOT come back on that load, and the user sees "my skin was on and
- * now it is off".
+ * WHAT A TIMEOUT LOOKS LIKE NOW — recorded here because this is the one place the decision is
+ * visible, and because the previous version of this comment described the OPPOSITE behaviour as
+ * intended. The record cannot be read yet, so `read()` returns `undefined`, which means UNKNOWN:
+ * not "the user has never chosen anything", which is what the empty record means and what it used
+ * to be confused with. The runtime answers an unknown record from the HOST's first frame — the
+ * marker the host stamped on `<body>` after reading the same document at emit time — and reconciles
+ * against the real record the moment it arrives (`runtime.js`, `#reconcile`).
  *
  * That is a DEGRADATION, NOT A FAILURE, and the window closes by itself: `write()` still goes
- * through the settings document as soon as the scope reports ready, so flipping the switch by
- * hand persists correctly to `settings.yaml`. Nothing is lost and nothing is corrupted — one
- * load simply starts from the defaults. The alternative is worse in every way: waiting forever
- * would let a settings transport that never answers keep the skin off permanently, instead of
- * for a single page load.
+ * through the settings document as soon as the scope reports ready, so flipping the switch by hand
+ * persists correctly to `settings.yaml`. Nothing is lost and nothing is corrupted — one load simply
+ * starts from what the first frame already painted, and is corrected if the document disagrees. The
+ * alternative is worse in every way: waiting forever would let a settings transport that never
+ * answers hold a page's boot open, instead of costing it one degraded first frame.
  *
- * `persistReady` in the diagnostics overlay reports `'timeout'` when this fires, so the reason
- * is readable off a screen rather than inferred.
+ * `persistReady` in the diagnostics overlay reports `'timeout'` when this fires, and `persistAdopted`
+ * names what the first frame was trusted for, so the reason is readable off a screen rather than
+ * inferred.
  */
 const READY_TIMEOUT_MS = 2000
 
@@ -122,7 +125,19 @@ const READY_TIMEOUT_MS = 2000
  *   How far `ready()` got. Read by the diagnostics overlay; `'timeout'` is the one worth seeing.
  * @property {() => Promise<void>} ready
  *   Resolves once the record can be trusted. Never hangs — see `READY_TIMEOUT_MS`.
- * @property {() => UiProjectRecord} read
+ * @property {() => UiProjectRecord | undefined} read
+ *   The record, or UNDEFINED WHILE IT IS UNKNOWN. `undefined` is not the empty record: the empty
+ *   record says "the user has never chosen anything", which is a fact about the user, while
+ *   `undefined` says "this page has not been told yet", which is a fact about the transport. Only
+ *   the settings backend can be in that state — the `localStorage` one reads synchronously and
+ *   therefore always answers, so a fallback record either exists or means what the empty record
+ *   means. A reader that treats the two alike reintroduces the bug this field exists to end: a slow
+ *   read becoming "the user turned it off".
+ * @property {(listener: () => void) => () => void} subscribe
+ *   Called when the underlying record may have changed: the settings document answering for the
+ *   first time, or a write landing. NOT called with the record — a listener re-reads through
+ *   `read()`, so there is one way to see state and no stale copy can be handed out by accident. The
+ *   returned function unsubscribes.
  * @property {(next: UiProjectRecord) => Promise<void>} write
  * @property {() => void} dispose
  */
@@ -207,11 +222,28 @@ function createSettingsPersist(ctx) {
     let deadline
     /** @type {Set<() => void>} */
     const waiting = new Set()
+    /**
+     * Whoever asked to be told that the record may have moved.
+     *
+     * Held here rather than taken from `scope.subscribe`'s return value on purpose: this adapter
+     * already subscribes to the scope for its own bookkeeping, and the disposer that matters is the
+     * one `dispose()` below owns. One subscription to the scope, any number of listeners to them.
+     * @type {Set<() => void>}
+     */
+    const listeners = new Set()
 
+    /**
+     * The record, or undefined while the read is still in flight.
+     *
+     * THE ONE MEANING THIS FILE MUST NOT BLUR: `cached === undefined` is "not told yet", and only
+     * `coerce()` (a real snapshot, or a `write`) ever produces the empty record that means "the user
+     * has never chosen anything". Returning `?? emptyRecord()` here is what made a two-second
+     * transport delay indistinguishable from a deliberate choice — see `READY_TIMEOUT_MS`.
+     */
     const current = () => {
       const snapshot = scope.getSnapshot()
       if (snapshot.status === 'ready') cached = coerce(snapshot.value)
-      return cached ?? emptyRecord()
+      return cached
     }
 
     /**
@@ -268,6 +300,7 @@ function createSettingsPersist(ctx) {
       cached = undefined
       observe()
       current()
+      for (const listener of listeners) listener()
     })
 
     /**
@@ -310,6 +343,10 @@ function createSettingsPersist(ctx) {
       },
       ready,
       read: current,
+      subscribe: (/** @type {() => void} */ listener) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
       write: async (next) => {
         const snapshot = scope.getSnapshot()
         if (snapshot.status !== 'ready') throw new Error(`settings namespace ${SETTINGS_NS} is ${snapshot.status}`)
@@ -344,6 +381,9 @@ function createSettingsPersist(ctx) {
         const pending = [...waiting]
         waiting.clear()
         for (const resolve of pending) resolve()
+        // Listeners go with the adapter: a fiber that has been disposed must not be called back
+        // through a closure it can no longer guard.
+        listeners.clear()
         scope.dispose?.()
       },
     }
@@ -422,10 +462,21 @@ function withLocalStorage(run, fallback) {
   }
 }
 
-/** @returns {PersistAdapter} */
+/**
+ * The `localStorage` fallback: synchronous, final, and never unknown.
+ *
+ * There is no "not told yet" here, and that is a property of the backend rather than a coincidence:
+ * the record is in this browser, so reading it either finds one or finds none, and "none" genuinely
+ * means "the user has never chosen anything". `read()` therefore always answers, which is why the
+ * runtime's unknown-record path cannot be reached through this adapter — the whole reason it needs
+ * one is a WIRE that has not come back yet.
+ * @returns {PersistAdapter}
+ */
 export function createLocalPersist() {
   /** @type {UiProjectRecord | undefined} */
   let cached
+  /** @type {Set<() => void>} */
+  const listeners = new Set()
   const available = hasLocalStorage()
   const read = () => {
     if (cached !== undefined) return cached
@@ -453,17 +504,29 @@ export function createLocalPersist() {
     readiness: 'n/a',
     ready: () => Promise.resolve(),
     read,
+    subscribe: (/** @type {() => void} */ listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
     write: async (next) => {
       cached = { ...next, initialized: true }
-      if (!available) return
-      try {
-        window.localStorage.setItem(LOCAL_KEY, JSON.stringify(cached))
-      } catch (err) {
-        console.error('[dsh-ui-projects] cannot persist UI project state', err)
+      if (available) {
+        try {
+          window.localStorage.setItem(LOCAL_KEY, JSON.stringify(cached))
+        } catch (err) {
+          console.error('[dsh-ui-projects] cannot persist UI project state', err)
+        }
       }
+      /*
+       * Notified even when storage refused the write: the IN-MEMORY record moved, which is what a
+       * listener re-reads, and a listener that only heard about durable writes would be told about
+       * a state this session does not have.
+       */
+      for (const listener of listeners) listener()
     },
     dispose: () => {
       cached = undefined
+      listeners.clear()
     },
   }
 }
