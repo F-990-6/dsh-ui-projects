@@ -25,6 +25,66 @@ Verification vocabulary used below:
 
 ---
 
+## Round 53 — Phase 2 closes: the scope document, and three items descoped on purpose
+
+**Status: done, documentation only — no code changed, and the offline suites are unchanged at `suite`
+844 / 0, `conformance` 122 / 0, `load` 85 / 0, `host` 41 ok / 0 failing, `browser --self-check` green.
+`lib/client.js` stays `sha256:b5eccae3678f` (315101 bytes) and `lib/index.js`
+`sha256:426313c951a1` (13665 bytes), because nothing under `src/**` was touched.**
+
+Phase 2 is closed by `docs/phase2-scope.md`, which is the audit's result written down where a later reader
+finds it rather than in a conversation: what shipped with evidence per spec step, what was **descoped on
+purpose** with the reason and the re-entry condition, what was implemented differently from the spec's
+proposal and what measurement decided each difference, what is recorded but not blocking, and what is
+already itemised for later rounds. A phase that reports only what it built is a phase whose gaps are
+rediscovered later as bugs; that sentence is the document's whole justification.
+
+### The descope ruling, and what stands in for each item
+
+The user ruled that group A is **descoped, not deferred into a "补做" round**, and the reasons are facts
+about this workspace rather than preferences:
+
+- **A1, the registry/tarball install flow** (spec §四 items 1–10, plus item 14's `ui-projects.installed`
+  field): every package here is a local `link:` dependency, so there is no registry entry, tarball or
+  `dist.integrity` to inspect — the update plan prints exactly that (`link:*`, "no registry version to
+  query"). Registry packages are installed through `dsh plugin add`, a pnpm forwarder: pnpm fetches,
+  downloads, verifies integrity against the lockfile, and blocks `prepare` builds until allowed. Standing
+  in today: `dsh plugin` for fetch and integrity, `conformance.js` + `manifest-schema.js` at activation (a
+  package this build cannot run says so with a code and an action before doing anything),
+  `check-installed.mjs` for the human verdict, and the profile's own `dependencies` as the installed
+  record — which is why no `installed` copy is written into `settings.yaml`: a second source that can
+  drift from the first is the failure family this project has paid for repeatedly. Re-entry: a package
+  arriving from a registry without pnpm doing the work.
+- **A2, display items** (spec §五): the author and the CHANGELOG are publishing metadata and this phase
+  installs from local directories that have neither; the "copy diagnostics" control is not built while
+  `src/client/diagnostics.js` already collects the data (`persistKind`, `persistReady`, `persistDiverged`,
+  `persistError`, `regionConflicts`, `layers`); `modifies` / `perfLevel` / `priority` / `requires` are
+  shown on the UI page's project cards, which is the spec's own §二.2 division of labour.
+- **A3, the publish flow** (spec §六.2): all six packages are `private: true` and installed by `link:`, so
+  a publish document would be unverified prose — the one thing this project's documentation is not
+  allowed to be. Re-entry: a registry-facing package.
+
+### The repositories, and the tag phase 2 should carry
+
+All six are clean at the time of writing:
+
+| repository | HEAD |
+| --- | --- |
+| `E:\dsh\plugins\dsh-ui-projects` | `8d06f34 Step 11 docs: Round 52 closes the self-test, and the gate's precondition is written down` |
+| `E:\dsh\plugins\dsh-plugin-liquid-glass` | `a19e82b Step 8e-1: forward named parameters, not a positional remainder` |
+| `E:\dsh\plugins\dsh-plugin-example` | `6c78817 Step 9b: the smallest compliant UI skin (example package)` |
+| `E:\dsh\plugins\dsh-plugin-example-dialog` | `2201f8b Step 9b: a third-party client plugin with one compliant and one non-compliant overlay` |
+| `E:\dsh\plugins\dsh-ui-project-skeleton` | `42bc7ea initial: minimal UI project package (reference + loader fixture)` |
+| `E:\dsh\tools` | `a607110 Step 9b: snapshot covers the two example packages` |
+
+Phase 1 ended in tags (`step1-complete`, `step1-cleanup-complete`, `step1-persist-complete`,
+`step5-first-paint`, `step1-final` in the framework; `step7c-complete` on the skin), and the spec's iron
+rule 4 asks for that reminder at every phase boundary: **tag `step2-complete`** — framework and tools at
+least, the three package repositories too if the tag is meant to describe the workspace. Tagging is the
+user's step, as every write to their environment is.
+
+---
+
 ## Round 52 — Step 11: the self-test closes, and the gate fails on a state nobody had told it about
 
 **Status: done, and this round changed no code — the self-test is a record of what the previous rounds
