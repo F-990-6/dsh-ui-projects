@@ -25,6 +25,160 @@ Verification vocabulary used below:
 
 ---
 
+## Round 55 — T3: an unknown record is not an empty one, and the first frame answers while it lasts
+
+**Status: done — five files changed: `src/client/persist.js` (+83 / −20), `src/client/runtime.js`
+(+189 / −21), `src/client/index.js` (+19 / −1), `src/client/diagnostics.js` (+11 / −0), and
+`scripts/verify.mjs` (+296 / −3). Offline, run by the agent, all exit 0: `suite` **878 / 0** (844 before,
+six tests added), `conformance` 122 / 0, `load` 85 / 0, `host` 41 ok / 0 failing, `browser --self-check`
+green (eleven cases). `lib/client.js` moves from `sha256:b5eccae3678f` (315101 bytes) to
+`sha256:6185ed77fe76` (330400 bytes) — the first change under `src/**` since the step-9b work
+(`f82ee85`, `9820a38`; `git log -- src` reproduces that), so the hash moving IS this
+round rather than a regression — and `lib/index.js` stays `sha256:426313c951a1` (13665 bytes)
+because the host half was not touched. The browser half of `browser-verify.mjs` was not run; see the last
+section.**
+
+### The goal: stop answering "I do not know" with "you chose nothing"
+
+`persist.read()` had one answer for two different situations. While the settings document was still in
+flight it returned the EMPTY record, whose only meaning is "the user has never chosen anything" — so
+`#wantedIds()` fell back to each project's shipped default, and a skin the document said was ON came back
+OFF. Meanwhile the HOST half had already painted it on: the host reads the same document at emit time and
+stamps `data-ui-project-<id>="on"` on `<body>` before this bundle exists. The page then ran in two minds —
+the frame showed the skin, the registry said it was off, the panel's switch read `false` — and the next
+toggle recomputed `enabled` from an empty active set, which turns "the transport was slow for two seconds"
+into "the user turned it off". That is **B.2's twin**: same window, one plane over.
+
+T3 separates the two. `read()` returns `undefined` while the record is unknown, and the wanted set now has
+three honest answers instead of two: the record when it has been read, the shipped defaults when the
+document says nobody has ever chosen, and **what the first frame already painted** while the record has not
+arrived. When the document finally answers, `#reconcile()` replaces the frame's answer with the record's,
+in both directions.
+
+### What changed
+
+- `persist.js`: `current()` returns `cached` instead of `cached ?? emptyRecord()`; the typedef says
+  `read(): UiProjectRecord | undefined` and spells out that `undefined` is a fact about the TRANSPORT while
+  the empty record is a fact about the USER; `subscribe(listener)` is added to both backends (the settings
+  one notifies from the scope callback it already had, the local one after a write) and `dispose()` clears
+  the set. The long `READY_TIMEOUT_MS` comment — which had described the old behaviour as intended — now
+  describes this one, keeping "never hangs" and dropping "falls back to the defaults".
+- `runtime.js`: `start()` tolerates an undefined record, seeds `frameAdopted`, splits the walk into
+  `#applyWanted()`, and subscribes to the record when it never arrived; `#reconcile()` (serialized, and
+  writing nothing) applies the record, disables what it does not want, clears `frameAdopted` and notifies
+  the panel; `#wantedIds()` grew the unknown branch plus `#frameWantedIds()`/`#defaultWantedIds()`;
+  `#remember()`'s seed is `record?.initialized === true`; `resetOne()` no longer dereferences an unknown
+  record; `dispose()` unsubscribes; `diagnostics()` reports `adoptedFromFrame`.
+- `index.js`: `enabledIds: () => persist.read()?.enabled ?? []`, and `bootEvidence: { announced:
+  presenceAtBoot, markerPresent: bodyMarkerPresent }` handed to the runtime — the presence snapshot was
+  already read here for the service, so this is one reader with two consumers rather than a second reader.
+- `diagnostics.js`: `persistAdopted`, next to `persistReady`. A non-empty list with `'timeout'` is "the skin
+  survived a slow load because the frame said so"; an EMPTY list with `'timeout'` is "the host plane said
+  nothing and the shipped defaults were used". Without the field those are the same picture and they need
+  different fixes.
+
+### The red, before any product change
+
+```
+857 assertions, 2 failing
+
+  FAIL an unknown record adopts the host first frame instead of the empty record
+         and "never read" is not "the user chose nothing": expected undefined, got {"v":1,"initialized":false,"enabled":[],"settings":{},"touched":false}
+  FAIL a readiness timeout adopts the frame, and the late record corrects it
+         the frame is adopted instead of the empty record: expected true, got false
+```
+
+Four reds were designed and two appear, because `equal` throws and ends its test at the first failure: the
+masked pair are "the client agrees with the frame" in the first test (the assertion after the record one)
+and "the marker goes with it" in the second (nothing had ever unmarked it). All four pass after the change,
+which is what the green run proves. This round could be red-first — unlike Round 54 — because the red is
+offline: no Chrome and no `settings.yaml` edit are involved.
+
+### The green
+
+`suite` 878 / 0, with six new tests: the failed-read adoption, the timeout-then-reconcile, the no-host-plane
+fallback to defaults, the subscription's loop check, a user action during the unknown window, and the panel
+rendering with an unknown record. `conformance` 122 / 0, `load` 85 / 0, `host` 41 ok / 0 failing, and
+`browser --self-check` are unchanged, which is the point of the harness options defaulting to "no host
+plane": every test written before this round keeps booting the composition it was written against.
+
+### Self-inflicted, four of them, all found and fixed
+
+1. **A registry leak of my own making.** The first red run reported 9 failures instead of 2: the new
+   "no host plane" test had registered a `defaultOn` project straight onto the registry, and the registry
+   is ONE object for the whole process, shared by every boot in the file — so the definition outlived its
+   test and landed in the inventory of the seven tests that followed. Mounting it through a fiber
+   (`mountTestSkin(harness, { manifest: { defaultEnabled: true } })`) makes the cleanup automatic. The same
+   hazard exists in this file's `default-on-a/b` test, which survives only because it sits near the end;
+   recorded, not fixed.
+2. **`resetOne()` dereferenced an unknown record.** Found by a grep AUDIT after the implementation, not by
+   a test: with an unknown record it read `record.enabled` on `undefined`, which inside a button handler
+   reads as a broken panel rather than an unwritten record. Fixed with the same seed `#remember()` uses, and
+   pinned by a test so the audit is not the only thing standing between this and a regression.
+3. **A wrong expectation of mine, not wrong code.** The timeout test asserted that the late record would
+   turn `readiness` into `'ready'`. It does not: `settle()` is once-only by design, and `readiness` records
+   how the WAIT ended. What the late answer changes is `read()`. The assertion now pins the real contract.
+4. **The fake host was not on the fake clock.** `createCtx` runs in the suite's own realm, so its
+   `setTimeout` is Node's real one while the injected clock only replaces what the bundle sees — the scope's
+   delayed release sat on wall-clock time and `fireDeadline(5000)` fired the runtime's own deadline instead.
+   The harness now hands the same clock to both.
+   (One edit accident is worth a line for completeness: an insertion deleted a `const harness = await boot(…)`
+   line, noticed and restored in the next edit, never present in any run.)
+
+### The call sites, the write count, and the subscription
+
+- **Nine `persist.read()` call sites, all handled**: eight in `runtime.js` — `start()` :263, `#reconcile()`
+  :319, `resetAll()` :467, `resetOne()` :506, `clearChecks()` :550, the settings write :913,
+  `#wantedIds()` :969, `#remember()` :1039 — and one in `index.js` :147. (An earlier count of "eight" in
+  this round's own review had folded two of them together; the grep is the authority.) A bare `read().`
+  dereference matches **nowhere** any more; the spread sites are legal on `undefined` and their writes are
+  refused by the adapter and reported.
+- **The reconcile writes nothing**, by code and by count: `#reconcile()` contains no `#write`/`#remember`
+  call, and two tests read the fake document's write counter — the timeout test after the reconcile, and
+  the loop test after a user toggle — and both demand the number not move.
+- **The long-lived subscription cannot loop.** A loop needs the reconcile to write, because the write is
+  what would call it back. The loop test asks the question with a counter: a real `enable()` on a
+  subscribed runtime, the write count recorded, one tick, the same number — and the project still on, so
+  the reconcile also demonstrably does not undo the user.
+
+### Recorded, not fixed
+
+- **The write path in the degraded window** (this round's risk 4, and T4's candidate). A user toggle before
+  the document answers still fails to persist: `persist.write()` refuses a scope that is not `ready`. The
+  choice takes effect in the page, the refusal is recorded as a `persistError` that both the card
+  (`store.js:306`) and the overlay show, and a reload loses it. The new test that pins this is the one to
+  change when a write QUEUE (hold the choice until the document answers) lands.
+- **The fourth diagnostic state** (risk 5). `service.js`'s three-state diagnosis reads `enabledIds()`, which
+  is `[]` while the record is unknown, so a project adopted from the frame reports `state: 'off'` on a
+  surface that `load-check.mjs:394` and the suite both assert — while the card's switch, which reads the
+  registry, says on. It resolves when the record lands (`registry.notify()` re-renders with a real
+  `enabledIds()`); if the record never arrives it lasts for the session. An `unknown` state is not
+  implemented.
+
+### Two behaviours a reader has to know
+
+- **`readiness` stays `'timeout'` after the record arrives, and that is the contract.** It records how the
+  WAIT ended, once. Anything that wants to know whether the record is known NOW must read `persist.read()`;
+  `persistAdopted` emptying is the visible half of the same fact.
+- **`#reconcile()` replaces the in-memory settings with the record's, so a choice made during the degraded
+  window is reverted when the document answers.** The window needs the transport to exceed two seconds AND
+  the user to act before it lands, and the write had already been reported as unpersisted — but pre-T3 such
+  a choice stayed in memory until the reload, so this is a behaviour change and it is the price of "the
+  document wins". A write queue changes the calculus and must re-rule it. Read off the code rather than
+  pinned by a test: the loop test asserts the OPPOSITE direction (a toggle after the record has arrived must
+  survive), and this direction is one for the write queue's round to pin.
+
+### What was not run
+
+The browser half of `browser-verify.mjs`. Its offline guard (`--self-check`, eleven cases) is green and the
+suite's browser expressions were not touched this round, but the live run is the user's, as every browser
+run in this project is. The interesting observation is `Ctrl+Shift+R` on a load slow enough to exceed the
+deadline: the skin should now stay on, with `persistAdopted` naming it and the panel agreeing. Staging that
+in a real browser is a matter of luck rather than a test, so the six offline tests are this round's primary
+evidence and a browser run is a regression check rather than a reproduction.
+
+---
+
 ## Round 54 — B.2 fixed: the gate resolves the project it drives, and fails by name when it cannot
 
 **Status: done — one code file changed, `scripts/browser-verify.mjs` (`+157 / −27`), plus this entry.
