@@ -25,6 +25,75 @@ Verification vocabulary used below:
 
 ---
 
+## Round 54 — B.2 fixed: the gate resolves the project it drives, and fails by name when it cannot
+
+**Status: done — one code file changed, `scripts/browser-verify.mjs` (`+157 / −27`), plus this entry.
+Nothing under `src/**` was touched, so `lib/client.js` stays `sha256:b5eccae3678f` (315101 bytes) and
+`lib/index.js` `sha256:426313c951a1` (13665 bytes). Offline, run by the agent, all exit 0: `suite`
+844 / 0, `conformance` 122 / 0, `load` 85 / 0, `host` 41 ok / 0 failing, `browser --self-check` green
+(eleven cases, nine registered page expressions). Live, run by the user — `browser (user)`: the red below
+at exit 1, then the gate 11 / 0 and the full `--no-write` run 239 / 0.**
+
+B.2 was a defect in the gate itself, and the worst kind for one: it NAMED the project it drove
+(`details.uip-tests[data-project="liquid-glass"]`, written out at four places), so on a machine whose
+`enabled` list left another skin active the click was dropped in silence and the run reported
+`the interceptor saw and refused at least one write (0)` — a sentence about the refusal rule, issued by a
+run where the rule never got to speak. Round 52's first gate run failed exactly this way, and its own
+conclusion was that the reason was a state rather than a rule.
+
+### What changed
+
+- `resolveChecklistTarget(session)` (`scripts/browser-verify.mjs:394`) resolves the target from the page:
+  the FIRST project that is BOTH carrying a checklist (`details.uip-tests[data-project=…]` with at least
+  one checkbox) and on (its card's `[role=switch]` reads `aria-checked="true"`). No project id appears in
+  the gate's path any more; `enabled` in somebody's document decides.
+- The precondition is asserted before anything is clicked, and it fails by name: `PRECONDITION NOT MET`,
+  with the switch state of every project and the `ui-projects.enabled` line read out of `settings.yaml`
+  — read-only, through the same block rule the gate already used for `settings:`, now
+  `readUiProjectsBlock(key)`, one reader for both keys.
+- `driveChecklistConfirm(session, id)` and `driveChecklistWithdraw(session, id)` take the id, so the
+  confirmation and the withdrawal come from the same card: the withdrawal is the write shape WITHOUT a
+  record, and it is only offered where the confirmation just created one.
+- The successful path says what it drove — `note  the gate drives liquid-glass: switch on, checklist
+  present` — because which project a run drove is part of its evidence.
+
+### The evidence
+
+The red, `browser (user)`, with `enabled: []` in the profile's `settings.yaml`:
+
+```
+PRECONDITION NOT MET — no project is both ON and carrying a checklist, …
+  switch states: liquid-glass: switch=false, boxes=3; example: switch=false, boxes=1
+  ui-projects.enabled: enabled: []
+```
+
+(The `…` truncates the sentence; the log indents these lines under the `FAIL` block rather than to the left
+margin. The three facts and exit 1 are as reported.)
+
+exit 1. Green after restoring `enabled` to `liquid-glass`: the gate **11 / 0**
+(`describe ×9, mutate ×5, other ×0`) with the new note naming `liquid-glass`, then the full `--no-write`
+run **239 / 0**.
+
+### The process deviation, stated plainly
+
+**This round was implemented before the red was observed**, so it is not a "red first" round in the sense
+the rest of this file uses. The reason is not a preference: the agent's sandbox cannot launch Chrome
+(`the browser exited early with code 4294930433` at `launchChrome`), and the red requires editing
+`C:\Users\19103\.dsh\settings.yaml`, which belongs to the user and which the agent does not write. The red
+above was therefore produced by the user, by hand, after the change was written and the offline suites
+were green.
+
+Two facts belong with that. The scenario first proposed for the red — `enabled: [example]` — cannot
+produce one: `example` ships a checklist (`package.json:36-41`), so the fixed gate correctly resolves
+`example` and passes, which is the fix working rather than a red; the state that fires the assertion is
+one where no active project has a checklist, and `enabled: []` is the smallest such state. And a probe
+written for this round (`node_modules/.probe-54/`, gitignored, not part of the suite) parses all 64
+page-code-shaped template literals in the file under both interpolation substitutions, because the
+id-taking expressions live inside functions and the file's own registered guard says it does not cover
+those.
+
+---
+
 ## Round 53 — Phase 2 closes: the scope document, and three items descoped on purpose
 
 **Status: done, documentation only — no code changed, and the offline suites are unchanged at `suite`

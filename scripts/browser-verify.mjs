@@ -298,9 +298,15 @@ function runSelfCheck() {
 }
 
 /**
- * The `settings:` BLOCK of the plugin's record in the settings document, read-only.
+ * ONE TOP-LEVEL KEY'S BLOCK under `ui-projects:` in the settings document, read-only.
  *
- * NOT one line. `settings:` holds a nested object and a writer is free to render it either way:
+ * The key is a parameter because two of this run's readings are the same reading: the gate protects
+ * `settings:`, and its own precondition quotes `enabled:` when it cannot find a project to drive. Both
+ * are "the block under one key of `ui-projects`", and two readers of one file are two readers that can
+ * disagree about where a block ends — so there is one, and this is it.
+ *
+ * NOT one line. A key holds a nested object or a list, and a writer is free to render it either way —
+ * for `settings:`, the key the gate exists to protect:
  *
  *     settings: {}                                     ← no record
  *     settings: { liquid-glass: { checks: { … } } }     ← a record, inline
@@ -309,18 +315,23 @@ function runSelfCheck() {
  *         checks:
  *           version: '3.0.0'
  *
- * A single-line read cannot tell the first from the second, which is exactly the difference this gate
- * exists to detect. THE BLOCK RULE: start at the line whose indentation is `settingsIndent` and whose
- * key is `settings:`, and end before the next non-blank line with indentation less than or equal to
- * that — i.e. the next sibling key of `ui-projects`, or the end of the file. Blank lines inside are
- * kept; trailing whitespace is trimmed and runs of whitespace collapsed, because a writer may re-indent
- * without changing what it wrote, and a gate that reports that as data loss would be crying wolf.
+ * A single-line read cannot tell the first from the second, which is exactly the difference the gate
+ * exists to detect. THE BLOCK RULE: start at the line whose key is `<key>:` and whose indentation is
+ * that of a `ui-projects` child, and end before the next non-blank line with indentation less than or
+ * equal to that — i.e. the next sibling key of `ui-projects`, or the end of the file. Blank lines inside
+ * are kept; trailing whitespace is trimmed and runs of whitespace collapsed, because a writer may
+ * re-indent without changing what it wrote, and a gate that reports that as data loss would be crying
+ * wolf. A one-line value (`settings: {}`) comes out of the same rule as a one-line block.
  *
  * READ-ONLY, and it has to be: this file belongs to whoever is running the harness. The gate compares
- * two readings; it never writes one.
+ * two readings and its precondition quotes a third; none of them writes one.
+ *
+ * `key` is one of this file's own literals — `settings` for the record, `enabled` for the precondition's
+ * quote — so it goes into the pattern as written.
+ * @param {string} key
  * @returns {Promise<{ ok: true, text: string, path: string } | { ok: false, why: string }>}
  */
-async function readSettingsSubtree() {
+async function readUiProjectsBlock(key) {
   const { readFile } = await import('node:fs/promises')
   const { homedir } = await import('node:os')
   const { join } = await import('node:path')
@@ -335,31 +346,99 @@ async function readSettingsSubtree() {
   const lines = text.split('\n')
   const projectAt = lines.findIndex((line) => /^ui-projects:\s*$/.test(line))
   if (projectAt === -1) return { ok: false, why: 'no `ui-projects:` section in the document' }
-  const settingsAt = lines.findIndex((line, index) => index > projectAt && /^\s+settings:/.test(line))
-  if (settingsAt === -1) return { ok: true, text: '(no settings key)', path }
-  const indent = lines[settingsAt].length - lines[settingsAt].trimStart().length
-  let end = settingsAt + 1
+  const keyAt = lines.findIndex((line, index) => index > projectAt && new RegExp(`^\\s+${key}:`).test(line))
+  if (keyAt === -1) return { ok: true, text: `(no ${key} key)`, path }
+  const indent = lines[keyAt].length - lines[keyAt].trimStart().length
+  let end = keyAt + 1
   while (end < lines.length) {
     const line = lines[end]
     if (line.trim() !== '' && line.length - line.trimStart().length <= indent) break
     end += 1
   }
-  const block = lines.slice(settingsAt, end).join('\n')
+  const block = lines.slice(keyAt, end).join('\n')
   return { ok: true, text: block.replace(/\s+/g, ' ').trim(), path }
 }
 
 /**
- * Drive the checklist to a confirmation, the way a person does: open the disclosure, tick every box,
- * wait for the button to accept input, click it. Shared by the gate and by the withdrawal test, so
- * there is one place that knows how this control is driven.
+ * The plugin's own record — `ui-projects.settings` — the key the gate exists to protect.
+ * @returns {Promise<{ ok: true, text: string, path: string } | { ok: false, why: string }>}
+ */
+async function readSettingsSubtree() {
+  return readUiProjectsBlock('settings')
+}
+
+/**
+ * WHICH PROJECT THE GATE DRIVES, resolved from the page rather than named here.
+ *
+ * The gate used to name its project — `details.uip-tests[data-project="liquid-glass"]`, written out at
+ * three call sites — and a name is not a target, it is an assumption. The project has to be ON for the
+ * checklist's confirmation to reach the settings API: a click on a project the document says is off is
+ * dropped without a trace, and the gate then reported `the interceptor saw and refused at least one
+ * write (0)`, which reads as a broken refusal rule and was really "the project I clicked belongs to a
+ * skin another skin displaced". It cost a whole self-test round: the document said
+ * `enabled: [example, liquid-glass]`, the one-skin policy left `example` active, and every assertion
+ * below the click was measuring a card nobody had touched.
+ *
+ * So the target is found: the FIRST project, in the panel's own order, that is BOTH on and carrying a
+ * checklist. No id appears below, and a machine whose document names a different project — or whose
+ * active project is the example rather than the skin — drives that one. A run with nothing to drive
+ * fails in the gate's own precondition, naming what it saw, instead of failing three assertions later.
+ *
+ * `aria-checked` is read as the string the panel writes, the same reading `PANEL_STATE` and
+ * `clickSwitch` already do. `boxes` counts the checklist's checkboxes: `details.uip-tests` is rendered
+ * exactly when a project declares `testItems`, and a project with an empty checklist has nothing to
+ * confirm.
  * @param {{ send: Function }} session
+ * @returns {Promise<{ target: string | null, projects: Array<{ id: string, checked: string | null, boxes: number }> }>}
+ */
+async function resolveChecklistTarget(session) {
+  return evaluate(
+    session,
+    `(() => {
+      const ids = Array.from(document.querySelectorAll('li.uip-card[data-project]')).map((card) => card.getAttribute('data-project'));
+      const projects = ids.map((id) => {
+        const card = document.querySelector('li.uip-card[data-project="' + id + '"]');
+        const control = card === null ? null : card.querySelector('[role="switch"]');
+        const details = document.querySelector('details.uip-tests[data-project="' + id + '"]');
+        return {
+          id: id,
+          checked: control === null ? null : control.getAttribute('aria-checked'),
+          boxes: details === null ? 0 : details.querySelectorAll('input[type=checkbox]').length,
+        };
+      });
+      const drivable = projects.filter((entry) => entry.checked === 'true' && entry.boxes > 0);
+      return { target: drivable.length === 0 ? null : drivable[0].id, projects: projects };
+    })()`,
+  )
+}
+
+/**
+ * Every project the precondition found, in the panel's order, on one line.
+ *
+ * The states are printed even when the answer is "none" — a machine where the SKIN is off and the
+ * EXAMPLE is on is a different machine from one where nothing is on, and the sentence that says which
+ * is the difference between a five-minute fix and a hunt.
+ * @param {Array<{ id: string, checked: string | null, boxes: number }>} projects
+ */
+function describeSwitches(projects) {
+  if (projects.length === 0) return '(the panel listed no project cards)'
+  return projects.map((entry) => `${entry.id}: switch=${entry.checked}, boxes=${entry.boxes}`).join('; ')
+}
+
+/**
+ * Drive the checklist to a confirmation, the way a person does: open the disclosure, tick every box,
+ * wait for the button to accept input, click it. The gate is its only caller, and it drives a
+ * confirmation and then a withdrawal on the SAME project, so there is one place that knows how this
+ * control is driven and one id that says whose.
+ * @param {{ send: Function }} session
+ * @param {string} id the project whose checklist to drive, as `resolveChecklistTarget` returned it
  * @returns {Promise<{ ok: boolean, why?: string }>}
  */
-async function driveChecklistConfirm(session) {
+async function driveChecklistConfirm(session, id) {
   const opened = await evaluate(
     session,
     `(() => {
-      const details = document.querySelector('details.uip-tests[data-project="liquid-glass"]')
+      const details = document.querySelector('details.uip-tests[data-project="${id}"]')
       if (details === null) return { ok: false, why: 'no disclosure' }
       details.open = true
       const boxes = Array.from(details.querySelectorAll('input[type=checkbox]'))
@@ -373,7 +452,7 @@ async function driveChecklistConfirm(session) {
     await waitFor(
       session,
       `(() => {
-        const button = document.querySelector('details.uip-tests[data-project="liquid-glass"] button[data-uip-action="confirm-checks"]')
+        const button = document.querySelector('details.uip-tests[data-project="${id}"] button[data-uip-action="confirm-checks"]')
         return button !== null && !button.disabled
       })()`,
       'the confirm button to accept input',
@@ -383,17 +462,25 @@ async function driveChecklistConfirm(session) {
   }
   await evaluate(
     session,
-    `document.querySelector('details.uip-tests[data-project="liquid-glass"] button[data-uip-action="confirm-checks"]').click()`,
+    `document.querySelector('details.uip-tests[data-project="${id}"] button[data-uip-action="confirm-checks"]').click()`,
   )
   return { ok: true }
 }
 
-/** Click the withdrawal control, if it is offered. */
-async function driveChecklistWithdraw(session) {
+/**
+ * Click the withdrawal control, if it is offered — on the same project the confirmation was driven on.
+ *
+ * Same id for the same reason the gate needs both triggers from one card: the withdrawal is the write
+ * shape WITHOUT a record, and it is only offered where the confirmation just created one. Driving it
+ * elsewhere would capture a shape from a project whose state this run never established.
+ * @param {{ send: Function }} session
+ * @param {string} id
+ */
+async function driveChecklistWithdraw(session, id) {
   return evaluate(
     session,
     `(() => {
-      const button = document.querySelector('details.uip-tests[data-project="liquid-glass"] button[data-uip-action="clear-checks"]')
+      const button = document.querySelector('details.uip-tests[data-project="${id}"] button[data-uip-action="clear-checks"]')
       if (button === null) return { ok: false, why: 'no withdrawal offered' }
       button.click()
       return { ok: true }
@@ -1722,9 +1809,52 @@ try {
      * act on a value that was never observed.
      */
     startedWithSkinOn = await skinIsOn(session)
-    const confirmed = await driveChecklistConfirm(session)
-    truthy(confirmed.ok, `the gate could drive a confirmation (${JSON.stringify(confirmed)})`)
-    const withdrew = await driveChecklistWithdraw(session)
+
+    /*
+     * ── THE PRECONDITION, BEFORE ANY CLICK ────────────────────────────────────
+     *
+     * The gate's subject is the refusal rule, but its evidence is a WRITE, and a write only happens if
+     * the project it drives is on. That made every assertion below the click depend on a fact nobody
+     * had checked: the gate named `liquid-glass`, the one-skin policy can leave another skin active
+     * instead, and a click on a project the document says is off is dropped in silence. The run then
+     * reported `the interceptor saw and refused at least one write (0)` — a sentence about the rule,
+     * about a run where the rule never got a chance to speak. An hour went into reading the rule again.
+     *
+     * So the target is RESOLVED first and the resolution is asserted, which turns that class of failure
+     * into one sentence that names the state it found: which projects exist, which are on, and which of
+     * them carry a checklist. Nothing is clicked before it passes, and no id is named: `enabled` in
+     * somebody's document decides, not this file.
+     */
+    const resolved = await resolveChecklistTarget(session)
+    if (resolved.target === null) {
+      const enabled = await readUiProjectsBlock('enabled')
+      /*
+       * The pause summary is printed HERE, not at the gate's usual report further down: this failure is
+       * the one where the counts decide the diagnosis — a page that never reached the settings API and a
+       * click that was dropped both produce zero writes — and the summary prints once by design
+       * (`settingsPausesReported`). The gate's own call below therefore prints nothing when this fires,
+       * which is why the tag in the log is `[gate precondition]` and not `[gate]`.
+       */
+      reportSettingsPauses('[gate precondition]', true)
+      throw new Error(
+        'PRECONDITION NOT MET — no project is both ON and carrying a checklist, so the gate has nothing ' +
+          'it can drive. It clicks a project the document says is off at its peril: the click is dropped ' +
+          'without a trace and the failure is then read as a broken refusal rule. Turn a project with a ' +
+          'checklist on, then re-run.' +
+          `\n           switch states: ${describeSwitches(resolved.projects)}` +
+          `\n           ui-projects.enabled: ${enabled.ok ? enabled.text : `(unreadable — ${enabled.why})`}`,
+      )
+    }
+    // Named in the log rather than implied: which project this run drove is part of its evidence.
+    process.stdout.write(
+      `         note  the gate drives ${resolved.target}: switch on, checklist present\n`,
+    )
+    const confirmed = await driveChecklistConfirm(session, resolved.target)
+    truthy(
+      confirmed.ok,
+      `the gate could drive a confirmation on ${resolved.target} (${JSON.stringify(confirmed)})`,
+    )
+    const withdrew = await driveChecklistWithdraw(session, resolved.target)
     // Not an assertion: whether a withdrawal is offered depends on whether the instance has a record,
     // and a gate that demanded one would fail on a machine with nothing to protect.
     process.stdout.write(`         note  the withdrawal trigger: ${JSON.stringify(withdrew)}\n`)
