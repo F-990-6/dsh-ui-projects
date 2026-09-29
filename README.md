@@ -656,7 +656,8 @@ restore the *exact* set of blurred surfaces and the original token values. It al
 dark palette, the `prefers-contrast: more` branch in BOTH themes, the reduced tier on a device
 forced to be weak, the composer's own material and its step-downs (16px on a phone, 12px on a
 two-core device), the checklist's confirmation and its withdrawal through the card's reset, and the
-first frame with this bundle blocked (`--shot` writes `glass.png` and `glass-dark.png`).
+first frame with this bundle blocked (`--shot` writes three files: `glass.png` with the dialog
+open, `glass-closed.png` with the dialog closed by Escape, `glass-dark.png` in dark mode).
 
 Dark mode is entered the way a skin actually sees it: by setting `data-ds-dark-theme` on `body`,
 which is the whole interface between the shipped theme feature and a skin. Driving the Appearance
