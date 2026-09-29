@@ -4730,6 +4730,82 @@ await test('every argument the card prints arrives at the framework as the param
       'and the wrapper excludes its own -FrameworkDir from what it forwards',
     )
     /*
+     * EVERY DECLARED PARAMETER, not a hand-picked subset.
+     *
+     * The table above proves the shapes the CARD prints — real combinations, and the order they are run
+     * in — and its seven cases touch nine of the eighteen forwarded names. A parameter nothing exercises
+     * is a parameter a later framework addition can leave behind silently, which is the exact failure
+     * this whole test exists for (`-Snapshot` used to arrive as `$To`), so the entire surface is driven
+     * in ONE invocation and compared name by name.
+     *
+     * The TYPE decides the sample value, and the sample table is deliberately closed: a type this test
+     * does not know how to pass fails the `unsupported` assertion below instead of being skipped, so a
+     * future `[datetime]`-typed parameter cannot pass through unproved. That red is GOOD NEWS and is the
+     * documented way to read it: add the branch, or ask why the surface grew a type nothing else uses.
+     */
+    const SAMPLES = {
+      SwitchParameter: (name) => [`-${name}`],
+      String: (name) => [`-${name}`, `sample-${name}`],
+      Int32: (name) => [`-${name}`, '7'],
+    }
+    /*
+     * `forwards` is read from the PARSED SURFACE, and both the drive loop and the coverage assertion are
+     * derived from it, so a parameter added to the wrapper is exercised the day it exists with no list
+     * here to update. The FIRST version of this block built the list once and then asserted coverage
+     * over the same list it had driven — which made the coverage assertion unfalsifiable: the red run
+     * that dropped a name from the drive list passed, and a guard that cannot fail is the thing this
+     * whole test exists to prevent. The drive loop and the assertion therefore read the surface
+     * separately, and the red evidence for the assertion is "skip a name in the loop only".
+     */
+    const forwards = Object.keys(surface.wrapper).filter((name) => name !== 'FrameworkDir')
+    const unsupported = forwards.filter((name) => SAMPLES[surface.wrapper[name]] === undefined)
+    equal(
+      unsupported.map((name) => `${name}: ${surface.wrapper[name]}`),
+      [],
+      'every declared parameter has a sample value this test knows how to pass',
+    )
+    const allArgs = []
+    const allExpected = { SourceDir: skinRoot }
+    for (const name of forwards) {
+      const args = SAMPLES[surface.wrapper[name]](name)
+      allArgs.push(...args)
+      allExpected[name] = surface.wrapper[name] === 'SwitchParameter' ? 'True' : args[1]
+    }
+    const allReceived = await runWrapperAgainstFakeFramework(wrapper, fakeDir, allArgs)
+    /*
+     * ONE invocation carrying the whole surface is not a realistic command line — the seven cases above
+     * are what a person actually runs — and it is the only form that proves every NAME arrives intact.
+     * Both halves are kept for that reason; neither replaces the other.
+     */
+    equal(
+      canonical(allReceived),
+      canonical(allExpected),
+      `the framework receives the whole surface, by name (${JSON.stringify(allReceived)})`,
+    )
+    equal(
+      forwards.filter((name) => !(name in allReceived)),
+      [],
+      'and no declared parameter was left unexercised',
+    )
+    /*
+     * THE WRAPPER'S OWN DECISION ABOUT `-SourceDir`, proved as a refusal rather than as an absence.
+     * The surface test above says the wrapper does not DECLARE it; that is a statement about a list.
+     * What matters is that a caller cannot point the framework at another package through this wrapper,
+     * and the honest proof of that is a process that exits non-zero instead of forwarding it: with
+     * `-SourceDir` undeclared and `[CmdletBinding()]` in place, parameter binding fails before any line
+     * of the script runs, so nothing reaches the framework at all.
+     */
+    let refused = null
+    try {
+      await runWrapperAgainstFakeFramework(wrapper, fakeDir, ['-Snapshot', '-SourceDir', 'C:\\elsewhere'])
+    } catch (error) {
+      refused = error
+    }
+    truthy(
+      typeof refused?.status === 'number' && refused.status !== 0,
+      `the wrapper refuses a caller-supplied -SourceDir and exits non-zero (${refused === null ? 'it exited zero' : `exit ${String(refused.status)}`})`,
+    )
+    /*
      * THE OTHER DIRECTION, so this probe is known to be able to fail. The old shape is written here
      * rather than patched into the package: a probe proven only against the fixed file proves that the
      * probe runs, not that it would have caught anything.
