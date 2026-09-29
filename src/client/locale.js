@@ -266,6 +266,21 @@ export const STRINGS = {
       changelogUnreadable: (detail) => `the changelog could not be read: ${detail}`,
       changelogNotInstalled: (name) => `${name} is not in this profile's dependency list`,
       changelogTruncated: (count) => `… ${count} more line(s); see CHANGELOG.md`,
+      /*
+       * ── step 56c: the default view, the folds, and the copy buttons ──────────
+       *
+       * Every §五 field is still here, one fold down; what changed is what a reader meets FIRST. The
+       * "not declared" sentences are no longer read by anything — a field with no value renders nothing
+       * — and they are kept in the dictionary because the column may want them again, and because the
+       * suite's unread-key note is a better place to see them than a deleted key would be.
+       */
+      rowDetails: 'Package details',
+      maintenanceBrief: 'These act on the PACKAGE: run them in its own directory, or from here with -Package <name>.',
+      uninstallTitle: (name) => `Remove ${name}`,
+      uninstallBrief: 'Removing it takes the package only — your switch and its settings stay.',
+      copyCommand: 'Copy',
+      copyDone: 'Copied',
+      copyFailed: 'Copy failed — select it manually',
     },
     priority: SHARED.en.priority,
     orderHint: (name) => `${name} is running ahead of a higher-priority project; the order is restored on the next load.`,
@@ -450,6 +465,14 @@ export const STRINGS = {
       changelogUnreadable: (detail) => `更新日志无法读取：${detail}`,
       changelogNotInstalled: (name) => `${name} 不在本 profile 的依赖列表里`,
       changelogTruncated: (count) => `……还有 ${count} 行，见 CHANGELOG.md`,
+      /* ── step 56c：默认视图、折叠块、复制按钮（与 en 同构） ───────────────── */
+      rowDetails: '包详情',
+      maintenanceBrief: '这些命令作用于**包**：在本包目录里运行，或在此处加 -Package <name> 运行。',
+      uninstallTitle: (name) => `卸载 ${name}`,
+      uninstallBrief: '只移除此包——你的开关与它的设置都会保留。',
+      copyCommand: '复制',
+      copyDone: '已复制',
+      copyFailed: '复制失败，请手动复制',
     },
     priority: SHARED.zh.priority,
     orderHint: (name) => `${name} 目前运行在更高优先级的项目之前；下次加载时顺序会恢复。`,

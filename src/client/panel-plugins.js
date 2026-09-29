@@ -197,42 +197,72 @@ export function UiPluginsSection(props) {
             : null,
           contractBadge,
         ),
-        ...FactsBlock({ copy, React: React_, dependency, hasProject, project, mirrorAvailable: projectsLive !== undefined }),
         /*
-         * THE FRAMEWORK'S ROW OPENS TOO (9b review). Its badge stays `na` — the contract is not a rule the
-         * instrument is measured by — but declining to render the panel hid two findings that ARE in the
-         * payload, and a reader who never runs the CLI could not see them. So the row explains itself:
-         * the summary says the contract does not apply, the findings are listed, and a note says they are
-         * recorded rather than fixed. `na` is a judgement about the BADGE; silence was a different claim.
-         */
-        ContractPanel({ copy, React: React_, name: dependency.name, state: contractState, contract: dependency.contract }),
-        /*
-         * §五's CHANGELOG, folded away, and read only when a reader opens it. It sits with the contract
-         * panel because both are the package explaining itself, and above the commands because those
-         * are the action half of the row.
-         */
-        ChangelogBlock({
-          copy,
-          React: React_,
-          dependency,
-          state: typeof store.changelog === 'function' ? store.changelog(dependency.name) : undefined,
-          onToggle: createChangelogToggle(store, dependency.name),
-        }),
-        ...(dependency.problems ?? []).map((problem, index) =>
-          React_.createElement('p', { className: 'uip-error', key: 'problem-' + index }, problem.code + ': ' + problem.message),
-        ),
-        /*
-         * THE MAINTENANCE BLOCK IS FOR EVERY ROW, the framework's included.
+         * THE DEFAULT VIEW ANSWERS THREE QUESTIONS — what is it, what does it look like, which project
+         * is it — and nothing else. Everything the row knows beyond that is folded into the block below,
+         * because the column had grown to where a reader met a wall of commands and hints before
+         * learning what the package was.
          *
-         * 7d-1 put it inside `CommandBlock`, which this row skips for the framework — so the package that
-         * most needs `-Snapshot`/`-Update`/`-Rollback` (updating and rolling back the framework is the
-         * ordinary case) was the one row without them. What the framework must not carry is a REMOVAL
-         * command, because it is the thing rendering this list; maintenance is not removal.
+         * A field with no value renders NOTHING: no "not declared", no empty row. A package that
+         * declares nothing says nothing about it, and a reader can tell the difference between "this
+         * package has no author" and "the page is broken" from the absence of the line just as well as
+         * from a sentence about it — better, in fact, since eight rows of "not declared" is a page
+         * nobody reads.
          */
-        MaintenanceBlock({ copy, React: React_, name: dependency.name }),
-        dependency.name === 'dsh-ui-projects'
-          ? null
-          : CommandBlock({ copy, React: React_, name: dependency.name, profileName: scan.profileName }),
+        ...RowHeadFacts({ copy, React: React_, dependency }),
+        React_.createElement(
+          'details',
+          { className: 'uip-plugin-details', 'data-uip-row-details': dependency.name },
+          React_.createElement('summary', { className: 'uip-hint', 'data-uip-fold-summary': 'row-details' }, copy.rowDetails),
+          ...RowFoldFacts({ copy, React: React_, dependency, hasProject, project, mirrorAvailable: projectsLive !== undefined }),
+          /*
+           * THE FRAMEWORK'S ROW OPENS TOO (9b review). Its badge stays `na` — the contract is not a rule
+           * the instrument is measured by — but declining to render the panel hid two findings that ARE
+           * in the payload, and a reader who never runs the CLI could not see them. So the row explains
+           * itself: the summary says the contract does not apply, the findings are listed, and a note
+           * says they are recorded rather than fixed. `na` is a judgement about the BADGE; silence was a
+           * different claim.
+           *
+           * A CLEAN ROW KEEPS ITS PANEL AND KEEPS IT SHUT (`open` is the state's answer, not a
+           * constant): the limits inside it — rule 3 is not scanned at all — are the sentence that
+           * stops a green badge from reading as "this plugin is fine", and that matters most on the
+           * rows where nothing was found. A finding opens it, because then it is the answer.
+           */
+          ContractPanel({
+            copy,
+            React: React_,
+            name: dependency.name,
+            state: contractState,
+            contract: dependency.contract,
+            open: contractState !== 'ok',
+          }),
+          ...(dependency.problems ?? []).map((problem, index) =>
+            React_.createElement('p', { className: 'uip-error', key: 'problem-' + index }, problem.code + ': ' + problem.message),
+          ),
+          /*
+           * §五's CHANGELOG, folded away, and read only when a reader opens it. §五's CHANGELOG, in its
+           * own fold inside this one, because it is content rather than a state of the package.
+           */
+          ChangelogBlock({
+            copy,
+            React: React_,
+            dependency,
+            state: typeof store.changelog === 'function' ? store.changelog(dependency.name) : undefined,
+            onToggle: createChangelogToggle(store, dependency.name),
+          }),
+          /*
+           * THE MAINTENANCE BLOCK IS FOR EVERY ROW, the framework's included.
+           *
+           * 7d-1 put it inside `CommandBlock`, which this row skips for the framework — so the package that
+           * most needs `-Snapshot`/`-Update`/`-Rollback` (updating and rolling back the framework is the
+           * ordinary case) was the one row without them. What the framework must not carry is a REMOVAL
+           * command, because it is the thing rendering this list; maintenance is not removal.
+           */
+          MaintenanceBlock({ copy, React: React_, name: dependency.name }),
+          dependency.name === 'dsh-ui-projects'
+            ? null
+            : CommandBlock({ copy, React: React_, name: dependency.name, profileName: scan.profileName }),
+        ),
       ),
     )
   })
@@ -297,7 +327,7 @@ function ChangelogBlock({ copy, React, dependency, state, onToggle }) {
     { className: 'uip-plugin-changelog', 'data-uip-changelog': dependency.name },
     React.createElement(
       'summary',
-      { className: 'uip-hint', 'data-uip-changelog-summary': dependency.name, onClick: onToggle },
+      { className: 'uip-hint', 'data-uip-changelog-summary': dependency.name, 'data-uip-fold-summary': 'changelog', onClick: onToggle },
       heading === null ? copy.changelogTitle : copy.changelogTitle + ' · ' + heading,
     ),
     body,
@@ -347,62 +377,28 @@ export function createChangelogToggle(store, name) {
 }
 
 /**
- * §五's facts for one row, as the elements the row splices in.
+ * THE DEFAULT VIEW: the description line, and the project the package contributes.
  *
- * THREE FALLBACKS, and keeping them apart is the whole point of this function:
+ * A field with no value renders NOTHING — no "not declared", no empty row. The previous version
+ * reported every absence in words, which turned a column of five packages into a column of thirty
+ * sentences and buried the one thing a reader needs (which fields matter for THIS package). Absence is
+ * legible as absence; eight lines of "not declared" is a page nobody reads.
  *
- *   not declared      the package (or its project) says nothing → "not declared", in the dictionary's
- *                     own words, so a reader sees a fact rather than a gap
- *   not applicable    the field exists but not for this kind — priority is an enhancement's, and a skin
- *                     says so instead of claiming it declared none
- *   host too old      the KEY is absent from the payload, which is a fact about the running dsh and
- *                     must not be reported as a fact about the package
- *
- * The four project chips render only for a package that declares a project at all: for every other
- * package they would be four identical "not declared" badges about a project that does not exist.
+ * `hostFieldMissing` survives for exactly one case: the KEY is missing from the payload, which means
+ * the running dsh is older than this page. That is a fact about the host rather than about the
+ * package, and silence there would leave a reader to guess.
  */
-function FactsBlock({ copy, React, dependency, hasProject, project, mirrorAvailable }) {
-  const olderHost = dependency.uiProject === undefined
-  const fields = [
-    React.createElement(
-      'p',
-      { className: 'uip-description', key: 'description', 'data-uip-field': 'description' },
-      typeof dependency.description === 'string'
-        ? dependency.description
-        : olderHost
-          ? copy.hostFieldMissing('description')
-          : copy.descriptionNotDeclared,
-    ),
-    React.createElement(
-      'p',
-      { className: 'uip-hint', key: 'author', 'data-uip-field': 'author' },
-      typeof dependency.author === 'string'
-        ? copy.author(dependency.author)
-        : olderHost
-          ? copy.hostFieldMissing('author')
-          : copy.authorNotDeclared,
-    ),
-  ]
-
-  if (hasProject) {
-    const declared = dependency.uiProject
+function RowHeadFacts({ copy, React, dependency }) {
+  const fields = []
+  if (typeof dependency.description === 'string' && dependency.description.length > 0) {
     fields.push(
-      React.createElement(
-        'div',
-        { className: 'uip-plugin-meta', key: 'meta', 'data-uip-meta-row': '' },
-        metaChip(React, 'perfLevel', declared.perfLevel, declared.perfLevel === null ? copy.perfNotDeclared : copy.perf?.[declared.perfLevel] ?? declared.perfLevel),
-        metaChip(React, 'priority', declared.priority, priorityTextOf(copy, declared)),
-        metaChip(
-          React,
-          'modifies',
-          declared.modifies,
-          declared.modifies === null ? copy.modifiesNotDeclared : copy.modifies(declared.modifies.map((region) => copy.regions?.[region] ?? region)),
-        ),
-        metaChip(React, 'requires', declared.requires, declared.requires === null ? copy.requiresNotDeclared : copy.requires(declared.requires)),
-      ),
+      React.createElement('p', { className: 'uip-description', key: 'description', 'data-uip-field': 'description' }, dependency.description),
+    )
+  } else if (dependency.description === undefined) {
+    fields.push(
+      React.createElement('p', { className: 'uip-hint', key: 'description', 'data-uip-field': 'description' }, copy.hostFieldMissing('description')),
     )
   }
-
   if (dependency.projectId !== undefined) {
     fields.push(
       React.createElement(
@@ -411,30 +407,71 @@ function FactsBlock({ copy, React, dependency, hasProject, project, mirrorAvaila
         copy.project(dependency.projectId),
       ),
     )
-    /*
-     * THE MIRROR, and the one thing it must never do is invent a state. `absent` is a real answer —
-     * installed, but this session never registered its client half — and it is not "off".
-     */
-    if (mirrorAvailable) {
-      const name = project?.name ?? dependency.projectId
-      const state = project?.state ?? 'absent'
-      fields.push(
-        React.createElement(
-          'p',
-          {
-            className: 'uip-hint',
-            key: 'mirror',
-            'data-uip-project-mirror': dependency.projectId,
-            'data-uip-project-state': state,
-          },
-          state === 'absent'
-            ? copy.projectNotRegistered(dependency.projectId)
-            : (state === 'on' ? copy.projectOn(name) : copy.projectOff(name)) + ' · ' + copy.changeInUiPage,
-        ),
+  }
+  return fields
+}
+
+/**
+ * THE FOLDED HALF: the author, the project's declared metadata, and the switch mirror.
+ *
+ * The four chips render ONLY when they have a value, and `priority` needs one rule beyond that: it is
+ * a number for an enhancement and means nothing for a skin, which is alone by policy and never sorted
+ * (`panel.js` states the same rule and hides the badge there). A skin's priority is therefore simply
+ * not shown — the sentence that used to stand in its place ("enhancements only") was a sentence about
+ * the vocabulary rather than about the package, and this column no longer prints those.
+ */
+function RowFoldFacts({ copy, React, dependency, hasProject, project, mirrorAvailable }) {
+  const fields = []
+  if (typeof dependency.author === 'string' && dependency.author.length > 0) {
+    fields.push(React.createElement('p', { className: 'uip-hint', key: 'author', 'data-uip-field': 'author' }, copy.author(dependency.author)))
+  } else if (dependency.author === undefined) {
+    fields.push(React.createElement('p', { className: 'uip-hint', key: 'author', 'data-uip-field': 'author' }, copy.hostFieldMissing('author')))
+  }
+
+  if (hasProject) {
+    const declared = dependency.uiProject
+    const chips = []
+    if (declared.perfLevel !== null && declared.perfLevel !== undefined) {
+      chips.push(metaChip(React, 'perfLevel', declared.perfLevel, copy.perf?.[declared.perfLevel] ?? declared.perfLevel))
+    }
+    if (declared.type === 'enhancement' && declared.priority !== null && declared.priority !== undefined) {
+      chips.push(metaChip(React, 'priority', declared.priority, copy.priority(declared.priority)))
+    }
+    if (declared.modifies !== null && declared.modifies !== undefined) {
+      chips.push(
+        metaChip(React, 'modifies', declared.modifies, copy.modifies(declared.modifies.map((region) => copy.regions?.[region] ?? region))),
       )
+    }
+    if (declared.requires !== null && declared.requires !== undefined) {
+      chips.push(metaChip(React, 'requires', declared.requires, copy.requires(declared.requires)))
+    }
+    if (chips.length > 0) {
+      fields.push(React.createElement('div', { className: 'uip-plugin-meta', key: 'meta', 'data-uip-meta-row': '' }, chips))
     }
   }
 
+  /*
+   * THE MIRROR, and the one thing it must never do is invent a state. `absent` is a real answer —
+   * installed, but this session never registered its client half — and it is not "off".
+   */
+  if (dependency.projectId !== undefined && mirrorAvailable) {
+    const name = project?.name ?? dependency.projectId
+    const state = project?.state ?? 'absent'
+    fields.push(
+      React.createElement(
+        'p',
+        {
+          className: 'uip-hint',
+          key: 'mirror',
+          'data-uip-project-mirror': dependency.projectId,
+          'data-uip-project-state': state,
+        },
+        state === 'absent'
+          ? copy.projectNotRegistered(dependency.projectId)
+          : (state === 'on' ? copy.projectOn(name) : copy.projectOff(name)) + ' · ' + copy.changeInUiPage,
+      ),
+    )
+  }
   return fields
 }
 
@@ -452,15 +489,78 @@ function metaChip(React, kind, value, text) {
 }
 
 /**
- * Priority, as the sentence its kind deserves.
+ * Copy one command to the clipboard, and report which of three things happened.
  *
- * A number means something only among composable projects; a skin is alone by policy and never sorted
- * (`panel.js` states the rule and hides the badge there). §五 asks this column to show the field, so
- * the row shows the REASON it does not apply instead of nothing at all.
+ * THREE STEPS, in order of preference, because a copy button that silently does nothing is worse than
+ * no button at all:
+ *
+ *   1. `navigator.clipboard.writeText` — the supported API, and available on the origins this page is
+ *      served from (`127.0.0.1` and `localhost` are secure contexts)
+ *   2. a hidden `<textarea>` and `document.execCommand('copy')` — the deprecated path, for a page that
+ *      is not in a secure context (Electron over `file://` is the case this project has to keep working)
+ *   3. `'failed'` — the caller renders "select it and copy by hand", so the reader is never left
+ *      wondering whether the click landed
+ *
+ * NOTHING IS EVER EXECUTED: the command is text that goes to the clipboard, and no code path here
+ * reaches a shell. The suite asserts that this module contains no `spawn`/`exec` at all.
+ * @param {string} source
+ * @returns {Promise<'copied'|'failed'>}
  */
-function priorityTextOf(copy, declared) {
-  if (declared.type !== 'enhancement') return copy.priorityNotApplicable
-  return declared.priority === null ? copy.priorityNotDeclared : copy.priority(declared.priority)
+export async function copyCommandText(source) {
+  try {
+    if (typeof navigator !== 'undefined' && navigator?.clipboard?.writeText !== undefined) {
+      await navigator.clipboard.writeText(source)
+      return 'copied'
+    }
+  } catch {
+    /* the API exists and refused (permissions, focus): try the legacy path before giving up */
+  }
+  try {
+    const area = document.createElement('textarea')
+    area.value = source
+    area.setAttribute('readonly', '')
+    area.style.position = 'fixed'
+    area.style.top = '0'
+    area.style.opacity = '0'
+    document.body.appendChild(area)
+    area.select()
+    const copied = document.execCommand('copy')
+    document.body.removeChild(area)
+    return copied === true ? 'copied' : 'failed'
+  } catch {
+    return 'failed'
+  }
+}
+
+/**
+ * One command line and its copy button.
+ *
+ * `data-uip-copy-source` carries the command ITSELF, so the suite can assert the button copies exactly
+ * the line printed beside it rather than a second string that happens to look the same — the defect
+ * this project has already paid for once, when one command was written out twice in one row.
+ */
+function CommandRow({ copy, React, kind, source, hook }) {
+  const [state, setState] = React.useState('idle')
+  const label = state === 'copied' ? copy.copyDone : state === 'failed' ? copy.copyFailed : copy.copyCommand
+  return React.createElement(
+    'div',
+    { className: 'uip-commandRow' },
+    React.createElement('pre', hook ?? null, source),
+    React.createElement(
+      'button',
+      {
+        type: 'button',
+        className: 'uip-button uip-copyButton',
+        'data-uip-copy': kind,
+        'data-uip-copy-source': source,
+        'aria-label': copy.copyCommand + ': ' + source,
+        onClick: () => {
+          void copyCommandText(source).then((outcome) => setState(outcome))
+        },
+      },
+      label,
+    ),
+  )
 }
 
 /**
@@ -523,7 +623,7 @@ function contractBadgeText(copy, state, contract) {
  * the coverage line — repeating that sentence is the one summary that cannot disagree with the badge above
  * it — because dropping the panel there would drop the LIMITS, which are the part that matters most.
  */
-function ContractPanel({ copy, React, name, state, contract }) {
+function ContractPanel({ copy, React, name, state, contract, open }) {
   const findings = contract?.findings ?? []
   const limits = contract?.limits ?? []
   const rules = contract?.rules
@@ -538,7 +638,9 @@ function ContractPanel({ copy, React, name, state, contract }) {
   if (summary === null || summary === undefined || summary === '') return null
   return React.createElement(
     'details',
-    { className: 'uip-contract', 'data-uip-contract-panel': name },
+    // `open` is the caller's answer to "is there something to read here": a clean row keeps its panel
+    // shut (the badge already said it), a finding opens it (the panel IS the answer).
+    { className: 'uip-contract', 'data-uip-contract-panel': name, open: open === true },
     /*
      * TWO HOOKS, ADDED FOR THE SAME REASON THE BUTTONS HAVE THEM: an assertion belongs on state, not on
      * copy. The summary's sentence is localized and its number is part of the sentence ("2 accepted" /
@@ -546,7 +648,7 @@ function ContractPanel({ copy, React, name, state, contract }) {
      * able to FIND it — and a test that parsed the row's text instead found the "0" in the package
      * version and reported a rendering bug that did not exist.
      */
-    React.createElement('summary', { className: 'uip-hint', 'data-uip-contract-summary': name }, summary),
+    React.createElement('summary', { className: 'uip-hint', 'data-uip-contract-summary': name, 'data-uip-fold-summary': 'contract' }, summary),
     findings.length === 0
       ? null
       : React.createElement('p', { className: 'uip-hint' }, copy.contractFindingsTitle),
@@ -609,18 +711,31 @@ function ContractPanel({ copy, React, name, state, contract }) {
  */
 function MaintenanceBlock({ copy, React, name }) {
   return React.createElement(
-    'div',
+    'details',
     { className: 'uip-maintenance', 'data-uip-maintenance': name },
-    React.createElement('p', { className: 'uip-hint', 'data-uip-maintenance-title': name }, copy.maintenanceTitle(name)),
-    React.createElement('p', { className: 'uip-hint' }, copy.maintenanceHint),
-    React.createElement('p', { className: 'uip-hint' }, copy.cmdSnapshotWhy),
-    React.createElement('pre', { 'data-uip-command-maintenance': 'snapshot' }, 'install.ps1 -Snapshot'),
-    React.createElement('p', { className: 'uip-hint' }, copy.cmdUpdateWhy),
-    React.createElement('pre', { 'data-uip-command-maintenance': 'update' }, 'install.ps1 -Update'),
-    React.createElement('p', { className: 'uip-hint' }, copy.cmdRollbackWhy),
-    React.createElement('pre', { 'data-uip-command-maintenance': 'rollback' }, 'install.ps1 -Rollback -To <name>'),
+    React.createElement(
+      'summary',
+      { className: 'uip-hint', 'data-uip-fold-summary': 'maintenance', 'data-uip-maintenance-title': name },
+      copy.maintenanceTitle(name),
+    ),
+    /*
+     * ONE SENTENCE, then the three commands. The block used to carry four hints and a restart reminder
+     * per row — correct, and unreadable at five rows. The sentence that survives is the load-bearing
+     * one: WHERE the command has to be run, which is the difference between `install.ps1` working and
+     * "not recognized" (the dictionaries keep the long version, and the suite still asserts it says
+     * `-Package`).
+     */
+    React.createElement('p', { className: 'uip-hint' }, copy.maintenanceBrief),
+    CommandRow({ copy, React, kind: 'snapshot', source: 'install.ps1 -Snapshot', hook: { 'data-uip-command-maintenance': 'snapshot' } }),
+    CommandRow({ copy, React, kind: 'update', source: 'install.ps1 -Update', hook: { 'data-uip-command-maintenance': 'update' } }),
+    CommandRow({
+      copy,
+      React,
+      kind: 'rollback',
+      source: 'install.ps1 -Rollback -To <name>',
+      hook: { 'data-uip-command-maintenance': 'rollback' },
+    }),
     React.createElement('p', { className: 'uip-hint' }, copy.cmdRollbackList),
-    React.createElement('p', { className: 'uip-hint' }, copy.restartReminder),
   )
 }
 
@@ -641,25 +756,23 @@ function CommandBlock({ copy, React, name, profileName }) {
    * The three answers, in the order a person asks them before running the command above: what goes on
    * its own, what the command does, and what is deliberately left alone.
    *
-   * The third list is the load-bearing one. Everything else here can be discovered by trying it; "your
-   * switch and this package's settings survive, and your source tree is not touched" cannot, and those
-   * are precisely the facts somebody about to delete a package wants BEFORE pasting the command rather
-   * than after. It is also the only place the two data decisions are visible from inside the interface:
-   * an uninstall keeps what the user owns (`enabled`'s id, this package's settings entry) and removes
-   * what the package owns.
+   * They now live one fold deeper, under a one-line summary. The third list is the load-bearing one —
+   * everything else can be discovered by trying it, while "your switch and this package's settings
+   * survive, and your source tree is not touched" cannot, and it is where the two data decisions are
+   * visible from inside the interface. Brevity must not delete it, so it is folded rather than dropped.
    *
    * `copy.uninstall` is read without a fallback, deliberately: a missing dictionary key should fail
    * loudly here rather than render three empty lists — the shape of mistake that Round 35 was about.
    */
   const uninstall = copy.uninstall
   /*
-   * ONE COMMAND, PRINTED TWICE — and one source for it.
+   * ONE COMMAND, ONE SOURCE.
    *
-   * The line under the hint and the line inside the block a person copies are the same string, which is
-   * the only arrangement in which they cannot disagree. They did: the block came from a dictionary
-   * literal with `dsh-ui-projects` typed into it, so every row offered its own name in the first command
-   * and the framework's name in the second. Invisible while a profile held one removable package; the
-   * user read it off the page the first time three packages shared this template.
+   * The hint line, the block a person copies and the string the copy button carries are the same
+   * string. They were not, once: the block came from a dictionary literal with `dsh-ui-projects` typed
+   * into it, so every row offered its own name on one line and the framework's name four lines later.
+   * Invisible while a profile held one removable package; the user read it off the page the first time
+   * three packages shared this template.
    */
   const command = 'dsh plugin --profile ' + profileName + ' remove ' + name
   const groups = [
@@ -668,16 +781,19 @@ function CommandBlock({ copy, React, name, profileName }) {
     { key: 'kept', heading: uninstall.keptTitle, items: uninstall.kept },
   ]
   return React.createElement(
-    'div',
+    'details',
     { className: 'uip-command', 'data-uip-command': name },
+    React.createElement('summary', { className: 'uip-hint', 'data-uip-fold-summary': 'uninstall' }, copy.uninstallTitle(name)),
     React.createElement('p', { className: 'uip-hint' }, copy.commandsHint),
-    React.createElement('pre', null, command),
-    React.createElement('p', { className: 'uip-hint', 'data-uip-restart': 'hint' }, copy.restartHint),
-    React.createElement('pre', { 'data-uip-restart': 'block' }, copy.restartBlock(command)),
-    React.createElement('p', { className: 'uip-hint' }, uninstall.title),
+    CommandRow({ copy, React, kind: 'uninstall', source: command }),
+    React.createElement('p', { className: 'uip-hint' }, copy.uninstallBrief),
     React.createElement(
-      'div',
-      { className: 'uip-uninstall' },
+      'details',
+      { className: 'uip-uninstall', 'data-uip-uninstall-details': name },
+      React.createElement('summary', { className: 'uip-hint', 'data-uip-fold-summary': 'uninstall-details' }, uninstall.title),
+      React.createElement('p', { className: 'uip-hint', 'data-uip-restart': 'hint' }, copy.restartHint),
+      React.createElement('pre', { 'data-uip-restart': 'block' }, copy.restartBlock(command)),
+      React.createElement('p', { className: 'uip-hint' }, copy.restartReminder),
       groups.map((group) =>
         React.createElement(
           'div',

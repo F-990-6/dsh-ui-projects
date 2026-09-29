@@ -662,6 +662,105 @@
   line-height: 18px;
 }
 
+/*
+ * ── every fold's summary, and the content under it (step 56c) ───────────────
+ *
+ * ONE LOOK for all five kinds of fold — the row's own details, the contract panel, the maintenance
+ * block, the uninstall block and the changelog — because they are the same object to a reader: a title
+ * that opens into content. The shared `data-uip-fold-summary` hook is what makes that one rule instead
+ * of five, and it is scoped to `.uip-plugin` so it cannot reach any other plugin's summary.
+ *
+ * The native marker is removed and replaced by a `▶` that rotates, because `::marker` cannot be
+ * transformed in any engine this ships to — a rotating triangle is the whole reason for the pseudo
+ * element rather than `list-style`.
+ */
+.uip-plugin [data-uip-fold-summary] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--dsw-alias-brand-primary);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.uip-plugin [data-uip-fold-summary]::-webkit-details-marker {
+  display: none;
+}
+
+.uip-plugin [data-uip-fold-summary]::before {
+  content: '▶';
+  font-size: 9px;
+  transition: transform 120ms ease;
+}
+
+.uip-plugin details[open] > [data-uip-fold-summary]::before {
+  transform: rotate(90deg);
+}
+
+/* The fold's content: indented, separated from its title, and never on the title's background. */
+.uip-plugin details > *:not(summary) {
+  padding-left: 16px;
+}
+
+.uip-plugin details > summary + * {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+}
+
+/* Sibling folds breathe the same amount, so a row reads as a list of blocks rather than a pile. */
+.uip-plugin details,
+.uip-plugin .uip-contract,
+.uip-plugin .uip-maintenance,
+.uip-plugin .uip-command,
+.uip-plugin .uip-plugin-changelog {
+  margin-top: 10px;
+}
+
+/*
+ * Commands never scroll sideways (step 56c item 2). A maintenance command is short, a path or a
+ * package name is not, and `pre` defaults to `white-space: pre` with no wrapping at all: one long line
+ * would push the whole settings dialog wider than its frame. Wrapping is the honest fix — the command
+ * is still one string, and the copy button carries that string rather than what is painted.
+ */
+.uip-plugin pre {
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.uip-commandRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.uip-commandRow pre {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.uip-copyButton {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
 @container (max-width: 420px) {
   .uip-plugin[data-uip-preview='gradient'],
   .uip-plugin[data-uip-preview='image'] {

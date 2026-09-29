@@ -3624,7 +3624,9 @@ await test('the column reads the dictionary it is actually given', async () => {
     'regions', 'perf', 'priority', 'previewAlt',
     // Step 56b: the folded CHANGELOG, and the five answers it can give.
     'changelogTitle', 'changelogLoading', 'changelogFailed', 'changelogNoFile', 'changelogNoSections',
-    'changelogUnreadable', 'changelogNotInstalled', 'changelogTruncated']
+    'changelogUnreadable', 'changelogNotInstalled', 'changelogTruncated',
+    // Step 56c: the row's default view, its shared fold summary, and the copy buttons.
+    'rowDetails', 'maintenanceBrief', 'uninstallTitle', 'uninstallBrief', 'copyCommand', 'copyDone', 'copyFailed']
   const readyScan = {
     profileName: 'web',
     dependencies: [{ name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] }],
@@ -3847,10 +3849,16 @@ await test('the row shows its own facts, and a package without a uiProject gets 
   contains(skin, '&lt;ada@example.com&gt;', 'with the brackets escaped rather than turned into markup')
   contains(skin, copy.perf.high, 'the effects tier uses the vocabulary the projects page uses')
   contains(skin, 'data-uip-meta="perfLevel"', 'and carries the tier as state')
-  contains(skin, copy.priorityNotApplicable, 'a skin says priority does not apply to it rather than claiming it declared none')
+  /*
+   * STEP 56C REMOVED THE FALLBACKS, and these four assertions had to change with them: they pinned
+   * the sentences the row used to print for a field it does not have ("not applicable", "not
+   * declared"). The row now renders NOTHING for a field with no value, so the property to assert is
+   * the absence of the chip or the line — which is what these do.
+   */
+  equal(skin.includes('data-uip-meta="priority"'), false, 'a skin has no priority number, so it gets no priority chip at all')
   contains(skin, copy.regions.center, 'the regions are translated through the shared vocabulary')
   contains(skin, 'data-uip-meta="modifies"', 'and the row carries which regions it declares')
-  contains(skin, copy.requiresNotDeclared, 'a package that declares no chain says so instead of showing nothing')
+  equal(skin.includes('data-uip-meta="requires"'), false, 'a package that declares no chain gets no chain chip')
   contains(skin, 'data-uip-preview="gradient"', 'a declared preview renders as a swatch')
   contains(skin, 'role="img"', 'which is an image to a screen reader')
   contains(skin, 'Skin preview', 'labelled by the package own preview label')
@@ -3861,10 +3869,10 @@ await test('the row shows its own facts, and a package without a uiProject gets 
   contains(image, 'class="uip-previewImage"', 'and renders as an <img>')
   contains(image, 'src="./shot.png"', 'pointing at the declared path')
 
-  contains(late, copy.requires(['skin-pkg']), 'a declared chain renders, so the fallback above is not the only path')
+  contains(late, copy.requires(['skin-pkg']), 'a declared chain renders, so the absence above is about the value, not about the field')
 
-  contains(plain, copy.descriptionNotDeclared, 'a package with no description gets a sentence, not a gap')
-  contains(plain, copy.authorNotDeclared, 'and one for the missing author')
+  equal(plain.includes('data-uip-field="description"'), false, 'a package with no description gets no description line')
+  equal(plain.includes('data-uip-field="author"'), false, 'and no author line either')
   equal(plain.includes('data-uip-meta-row'), false, 'a package with no dsh.uiProject gets no project metadata row')
   equal(plain.includes('data-uip-project-mirror'), false, 'and no switch mirror')
   contains(plain, 'data-uip-preview="none"', 'while saying outright that it has no preview')
@@ -4198,6 +4206,204 @@ await test('the changelog loads when a row is opened, and not when it is closed'
   realToggle({ currentTarget: { parentElement: { open: false } } })
   await new Promise((resolve) => setImmediate(resolve))
   equal(requests, 1, 'opening twice issues one request, because the store shares and caches it')
+})
+
+/*
+ * ── the row's default view, its folds, and its copy buttons (step 56c) ──────
+ *
+ * The column had grown to where a reader met a wall of commands, hints and "not declared" sentences
+ * before learning anything about the package. A row now answers three questions in its default view —
+ * what is it, what does it look like, which project is it — and everything else is FOLDED.
+ *
+ * "Folded" is structural, not just visual, and that is what these tests check: the default region is
+ * everything before `data-uip-row-details`, and a command or a fallback sentence appearing THERE is a
+ * regression even though the CSS would hide it. (A closed `<details>` still renders its children into
+ * the markup, so a test that only looked for absence anywhere in the row would be vacuous.)
+ */
+const unescapeHtml = (text) =>
+  text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&amp;/g, '&')
+
+/** The `data-uip-copy` button for one command, with its source decoded — React escapes attribute values. */
+const copyButtonOf = (markup, kind) => {
+  const at = markup.indexOf('data-uip-copy="' + kind + '"')
+  if (at < 0) return null
+  const tag = markup.slice(markup.lastIndexOf('<', at), markup.indexOf('>', at))
+  const source = /data-uip-copy-source="([^"]*)"/.exec(tag)
+  return { tag, source: source === null ? null : unescapeHtml(source[1]) }
+}
+
+/** The text of the `<pre>` carrying one hook, decoded. */
+const preTextOf = (markup, hook) => {
+  const at = markup.indexOf(hook)
+  if (at < 0) return null
+  const open = markup.indexOf('>', at) + 1
+  const close = markup.indexOf('</pre>', open)
+  return close < 0 ? null : unescapeHtml(markup.slice(open, close))
+}
+
+/** One row's markup, split at its fold: the default view, and everything folded away. */
+const rowSplit = (markup, name) => {
+  const row = rowOf(markup, name)
+  const at = row.indexOf('data-uip-row-details')
+  return { row, visible: at < 0 ? row : row.slice(0, at), folded: at < 0 ? '' : row.slice(at) }
+}
+
+const foldScan = () => ({
+  profileName: 'web',
+  dependencies: [
+    {
+      name: 'ok-pkg', version: '1.0.0', kind: 'ui-project', bundled: true, projectId: 'ok-project', problems: [],
+      description: 'A tidy skin.', author: 'Ada <a@example.com>', changelogHeading: '## Round 9 — tidy',
+      contract: { scanned: true, reason: null, findings: [], limits: ['rule 3 is not scanned'], rules: { judged: 3, total: 4 } },
+      uiProject: { type: 'enhancement', preview: 'linear-gradient(#fff, #000)', previewLabel: 'Ok preview', perfLevel: 'high', priority: 2, modifies: ['center'], requires: ['dep-a'] },
+    },
+    {
+      name: 'bare-pkg', version: '1.0.0', kind: 'plugin-with-client', bundled: true, problems: [],
+      description: null, author: null, changelogHeading: null,
+      contract: { scanned: true, reason: null, findings: [{ code: 'UI_CONTRACT_HARD_COLOUR', message: 'a hard colour', action: 'use a token', evidence: { line: 3, excerpt: 'border: 1px solid #fff' } }], limits: [], rules: { judged: 3, total: 4 } },
+      uiProject: null,
+    },
+  ],
+  orphanedBindings: [],
+})
+
+const renderFold = (extra = {}) =>
+  renderSection({
+    store: {
+      state: () => ({ status: 'ready', scan: foldScan() }),
+      refresh: async () => {},
+      changelog: () => ({ status: 'ready', payload: { reason: null, sections: [{ heading: '## Round 9 — tidy', lines: ['body line'], truncated: false, moreLines: 0 }] } }),
+      loadChangelog: async () => {},
+    },
+    projects: projectsStoreOf([{ id: 'ok-project', name: 'Ok', enabled: true }]),
+    t: { plugins: columnCopy() },
+    state: { status: 'ready', scan: foldScan() },
+    React: react,
+    ...extra,
+  })
+
+await test('a row answers three questions by default, and folds the rest away', () => {
+  const copy = columnCopy()
+  const markup = renderFold()
+  const { visible, folded } = rowSplit(markup, 'ok-pkg')
+
+  contains(visible, 'ok-pkg@1.0.0', 'the default view names the package and its version')
+  contains(visible, 'A tidy skin.', 'and gives the one-line description')
+  contains(visible, 'data-uip-project-id', 'and says which project the package contributes')
+  contains(folded, 'data-uip-row-details', 'the fold itself is part of the row')
+
+  equal(visible.includes('data-uip-maintenance'), false, 'while the maintenance block is NOT in the default view')
+  equal(visible.includes('install.ps1 -Snapshot'), false, 'not even as printed text')
+  equal(visible.includes('data-uip-contract-panel'), false, 'nor the contract panel')
+  equal(visible.includes('data-uip-changelog'), false, 'nor the changelog')
+  contains(folded, 'data-uip-maintenance', 'they are all inside the fold instead')
+  contains(folded, 'install.ps1 -Snapshot', 'including the commands themselves')
+  contains(folded, 'data-uip-changelog', 'and the changelog')
+
+  /*
+   * The fallbacks are GONE, not merely folded: a reader who opened the row would otherwise meet a
+   * column of "not declared" for every field a package does not have. A field with no value is left
+   * out entirely, and the row for a package that declares nothing says nothing about it.
+   */
+  for (const sentence of [copy.descriptionNotDeclared, copy.authorNotDeclared, copy.perfNotDeclared, copy.priorityNotDeclared, copy.priorityNotApplicable, copy.modifiesNotDeclared, copy.requiresNotDeclared, copy.previewNotDeclared]) {
+    equal(markup.includes(sentence), false, 'no "not declared" fallback is rendered: ' + sentence)
+  }
+  const bare = rowOf(markup, 'bare-pkg')
+  equal(bare.includes('data-uip-field="author"'), false, 'a package with no author gets no author line at all')
+  equal(bare.includes('data-uip-meta-row'), false, 'and a package with no project gets no metadata row')
+})
+
+await test('every fold has the shared summary hook, and no content block does', () => {
+  const markup = renderFold()
+  const row = rowOf(markup, 'ok-pkg')
+  const summaries = row.match(/<summary[^>]*>/g) ?? []
+  truthy(summaries.length >= 4, `the row has several folds (${summaries.length})`)
+  equal(
+    summaries.filter((tag) => tag.includes('data-uip-fold-summary')).length,
+    summaries.length,
+    'every summary in the row carries the shared hook',
+  )
+  equal(
+    (row.match(/data-uip-fold-summary/g) ?? []).length,
+    summaries.length,
+    'and nothing else does — the hook marks a title, never content',
+  )
+})
+
+await test('the copy buttons carry exactly the commands their blocks print', () => {
+  const markup = renderFold()
+  const row = rowOf(markup, 'bare-pkg')
+  for (const [kind, hook] of [
+    ['snapshot', 'data-uip-command-maintenance="snapshot"'],
+    ['update', 'data-uip-command-maintenance="update"'],
+    ['rollback', 'data-uip-command-maintenance="rollback"'],
+  ]) {
+    const button = copyButtonOf(row, kind)
+    truthy(button !== null, `the ${kind} command has a copy button`)
+    equal(button.source, preTextOf(row, hook), `and it copies the line the block prints for ${kind}`)
+    equal(/type="button"/.test(button.tag), true, 'a real button, so it cannot submit anything')
+  }
+  const uninstall = copyButtonOf(row, 'uninstall')
+  truthy(uninstall !== null, 'the uninstall command has a copy button too')
+  equal(uninstall.source, 'dsh plugin --profile web remove bare-pkg', 'carrying the same command the block builds from the profile and the package name')
+})
+
+await test('a clean contract keeps its badge and stays folded; a finding opens', () => {
+  const markup = renderFold()
+  const clean = rowOf(markup, 'ok-pkg')
+  const finding = rowOf(markup, 'bare-pkg')
+  /* From the `<details` that OPENS the panel, not from the attribute: the attribute is inside the tag. */
+  const panelTagOf = (row) => {
+    const at = row.indexOf('data-uip-contract-panel')
+    if (at < 0) return null
+    return row.slice(row.lastIndexOf('<details', at), row.indexOf('>', at) + 1)
+  }
+  contains(clean, 'data-uip-contract="ok"', 'a clean row still carries its badge')
+  equal(panelTagOf(clean) !== null, true, 'and still carries its panel, which is where the instrument limits live')
+  equal(/\sopen(=|>|\s)/.test(panelTagOf(clean)), false, 'with the panel folded, because the badge already said it')
+  equal(/\sopen(=|>|\s)/.test(panelTagOf(finding)), true, 'while a row with a finding opens its panel for the reader')
+})
+
+await test('the fold styles and the copy helper hold their two promises', async () => {
+  const css = await readFile(join(packageRoot, 'src', 'client', 'styles', 'core.css'), 'utf8')
+  const preRule = /\.uip-plugin pre \{[^}]*\}/.exec(css)
+  truthy(preRule !== null, 'the column declares its own rule for the commands it prints')
+  for (const declaration of ['white-space: pre-wrap', 'word-break: break-all', 'max-width: 100%', 'overflow-x: hidden']) {
+    contains(preRule[0], declaration, 'so a command cannot scroll sideways: ' + declaration)
+  }
+  const summaryRule = /\.uip-plugin \[data-uip-fold-summary\] \{[^}]*\}/.exec(css)
+  truthy(summaryRule !== null, 'and ONE rule styles every fold summary, through the shared hook')
+  for (const declaration of [
+    'border-left: 3px solid var(--dsw-alias-brand-primary)',
+    'background: var(--dsw-alias-bg-layer-2)',
+    'list-style: none',
+  ]) {
+    contains(summaryRule[0], declaration, 'a title looks like a title: ' + declaration)
+  }
+  contains(css, '.uip-plugin details > *:not(summary)', 'and content is told apart from the title above it')
+
+  /*
+   * NOTHING IS EVER EXECUTED. The copy button is the only control in this column that touches the
+   * machine at all, and the promise it makes is that it writes a string to a clipboard and stops. A
+   * source guard rather than a behavioural one, because the failure it prevents is a future edit
+   * reaching for a shell to "just run the command for the user".
+   */
+  const source = await readFile(join(packageRoot, 'src', 'client', 'panel-plugins.js'), 'utf8')
+  equal(
+    /child_process|execSync|[^.\w]spawn\s*\(|[^.\w]exec\s*\(/.test(source),
+    false,
+    'the column reaches no shell: no spawn, no exec, no child_process',
+  )
+  equal(
+    /navigator\.clipboard|execCommand\('copy'\)/.test(source),
+    true,
+    'it copies through the clipboard APIs, and only through them',
+  )
 })
 
 /* ── the UI Contract badge (step 9b, module 3) ─────────────────────────────── */
