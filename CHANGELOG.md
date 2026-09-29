@@ -25,6 +25,189 @@ Verification vocabulary used below:
 
 ---
 
+## Round 56a — the installed-package row reads its own facts, and the preview rule gets one home
+
+**Status: done — ten files changed: `src/host/profile-scan.js` (+92 / −1),
+`src/host/installed-endpoint.js` (+11), `src/client/preview.js` (new, 3247 bytes), `src/client/panel.js`
+(+6 / −28), `src/client/panel-plugins.js` (+217 / −39), `src/client/index.js` (+6 / −1),
+`src/client/locale.js` (+102 / −26), `src/client/styles/core.css` (+74), `scripts/verify.mjs`
+(+307 / −1), and `scripts/build.mjs` (+1 — the plan had missed this file: `MODULE_ORDER` is a hard
+list, and a new client module that is not registered in it fails the build). Offline, run by the agent,
+all exit 0: `suite` **965 / 0** (878 before, six tests added), `conformance` 122 / 0, `load` 85 / 0,
+`host` 41 ok / 0 failing, `browser --self-check` green. `lib/client.js` moves from
+`sha256:6185ed77fe76` (330400 bytes) to `sha256:6228749b2535` (347672 bytes); `lib/index.js` stays
+`sha256:426313c951a1` (13665 bytes) because the host ENTRY did not change — while
+`lib/profile-scan.js` (`sha256:f703bcceb9eb`, 32711 bytes) and `lib/installed-endpoint.js`
+(`sha256:6137012ddc8a`, 6542 bytes) do carry this round. `lib/**` is gitignored; the snapshot is what
+keeps it. Live: **the browser suite 239 / 0, `browser (user)`.**
+
+### The goal: §五's first batch, and one rule with one home
+
+The plugins column rendered name, version, kind, composition state, the contract badge and panel,
+problems, the maintenance commands and the uninstall block — and none of the identity facts §五 opens
+with: 作者、描述、预览. It also rendered `.uip-plugin`, `.uip-plugin-head` and `.uip-plugin-name` with
+**no stylesheet rules at all** (the classes existed only in the component), which is half of why the
+column read as unfinished.
+
+This round carries the package's own facts from `package.json` to the row, gives the preview a single
+implementation shared by both settings pages, and — the part that turned out to need a decision —
+renders §五's 启用开关 as a **read-only mirror** of the projects page's switch rather than as a second
+switch. §二.2 already divides the labour ("UI 栏目管外观项目启停，插件栏目管安装来源、版本、更新、
+卸载"), and a second switch in this column would be a second writer for one state.
+
+### What changed
+
+- `profile-scan.js`: three exported pure mappings — `displayAuthor` (npm's string form passed through
+  unparsed, its object form assembled, everything else `null`), `uiProjectSubset` (exactly the seven
+  fields a row renders, every absent one `null`, and an EMPTY `modifies`/`requires` list collapsed to
+  the same `null` so one fact has one spelling), and `packageFacts` (the description comes from the
+  package's own `package.json`, not from `dsh.uiProject.description` — two different sentences about
+  two different things).
+- `installed-endpoint.js`: the projection gains `description`, `author`, `uiProject`. All three are
+  always present (`null` when the package declares nothing), so "declared nothing" and "this host is
+  older than this page" cannot collapse into one another — the rule `contract.reason` already states.
+  `INSTALLED_SCHEMA_VERSION` is deliberately NOT bumped: the fields are additive, and bumping would
+  demand a restart on both sides to agree.
+- `preview.js` (new) + `panel.js`: `createPreview` moved out so that "is this an image path or a CSS
+  material", and "what does a screen reader call it", have one answer for both columns;
+  `previewKindOf` was added because the installed-package column needs the same decision TWICE for one
+  row (once for `data-uip-preview`, which the stylesheet keys the layout off, and once to decide
+  whether to render anything) — a second regex there would have been the defect this move removes.
+- `panel-plugins.js`: the row is `li.uip-plugin[data-uip-preview="image|gradient|none"]` with an
+  optional preview column and a `div.uip-plugin-body`; new `FactsBlock` (description, author, four
+  project chips, project id, mirror), `metaChip`, `priorityTextOf` and `projectStateOf`; a new optional
+  `projects` prop with its own subscription; the project-id line moved up into the facts block.
+- `index.js`: `UiPluginsSection({ …, projects: store })` — the projects store, read-only, the same way
+  the projects page already receives the installed store.
+- `locale.js`: 16 new keys per language, plus a `SHARED` object holding the four vocabularies BOTH
+  pages read (perf tiers, the priority sentence, the eight region names, the preview alt text).
+  `plugins.perf` and `perf` are the SAME object, not two equal ones — asserted by reference, because
+  "equal today" is what drifts.
+- `core.css`: a new `/* ── installed package row ── */` block. Every selector is scoped to
+  `.uip-plugin`, INCLUDING the ones that size a preview, because `.uip-preview` is shared with the
+  projects page and its own rules own the default size.
+
+### The red
+
+```
+875 assertions, 7 failing
+
+  FAIL the column reads the dictionary it is actually given
+         every key the column reads exists in the en dictionary: expected [], got ["descriptionNotDeclared", "authorNotDeclared", "author", "hostFieldMissing", "previewNotDeclared", "perfNotDeclared", …14 more]
+  FAIL displayAuthor renders every npm author shape, and refuses to invent one
+         profileScan.displayAuthor is not a function
+  FAIL the uiProject subset carries exactly the seven fields the row reads
+         profileScan.uiProjectSubset is not a function
+  FAIL packageFacts reads the package manifest, and never invents an author
+         profileScan.packageFacts is not a function
+  FAIL the wire projection carries the row facts, and null is not the same as a missing key
+         the key is PRESENT even when the answer is null: "declared nothing" and "this host is older" must not collapse: expected true, got false
+  FAIL the row shows its own facts, and a package without a uiProject gets none of the project ones
+         the dictionary carries the sentences this row is about to render: expected [], got ["descriptionNotDeclared", "authorNotDeclared", "author", "previewNotDeclared", "perfNotDeclared", "priorityNotApplicable", …4 more]
+  FAIL the switch mirror reports the project state, and degrades when there is no project store
+         expected to find "data-uip-project-state=\"on\""
+```
+
+**The first red run was not a red at all.** The new tests imported `displayAuthor` and friends BY NAME,
+and an export that does not exist yet is a module-load `SyntaxError`: the whole suite died before a
+single test ran, so nothing could be shown about the existing 878. Switching to a namespace import
+(`import * as profileScan …`) turns a missing export into `undefined`, the call into a TypeError inside
+its own test, and the failure into a named one — which is the shape above. **No pre-existing test went
+red**: the seven failures are the six new tests plus the dictionary test this round extended, and the
+source guard that forbids a direct `t.<key>` read in `panel-plugins.js` stayed green — it is the test
+named "the column reads its copy through the plugins namespace", cited by NAME rather than by line
+number because this round added three hundred lines above it.
+
+### The green
+
+`suite` 965 / 0 (878 → 965, +87 assertions). `conformance` 122 / 0, `load` 85 / 0,
+`host` 41 ok / 0 failing and `browser --self-check` are unchanged — the host suites matter here because
+this round changed the scan and the wire projection, and `check-installed.test.mjs` is the suite that
+watches them.
+
+### Self-inflicted, three of them
+
+1. **The first red run was not a red.** Named imports of exports that do not exist yet are a
+   module-load `SyntaxError`, so the suite died before any test ran. Stated in full under "The red",
+   because the fix — a namespace import — is the reason the red above is readable at all.
+2. **A wrong assertion of mine, not wrong code.** The author test asserted the raw string
+   `Ada <ada@example.com>`, but `renderToStaticMarkup` escapes it: the markup carries
+   `Ada &lt;ada@example.com&gt;`. The implementation was right; the assertion was rewritten to pin the
+   property that actually matters — **a package cannot inject markup through its own `package.json`** —
+   rather than the spelling of a string. (The tempting fix here is to the renderer, which is why the
+   test now says out loud which behaviour it is asserting.)
+3. **A draft that never ran.** The first version of the mirror subscription cleared a
+   `setProjectsRevision` it declared further down the component (a temporal-dead-zone hazard). It was
+   replaced with the same "hold the snapshot" pattern the installed state already uses, before any run.
+
+### The five answers this round had to give
+
+- **The projection carries exactly seven keys.** Asserted twice, with `Object.keys(...).sort()` — once
+  on `uiProjectSubset` and once on the wire entry `projectScan` produced — because "only what a row
+  reads crosses" is the endpoint's stated doctrine and a leak of `testItems`/`controls`/`id`/`name`
+  would be invisible in any behavioural test. A third assertion pins that every absent field is `null`
+  and never `undefined`, so `JSON.stringify` cannot drop one.
+- **Every npm author shape is covered.** Five declared forms (a string passed through unparsed,
+  `{name}`, `{name,email}`, `{email}`, `{url}`) and four that declare nothing (`{}`, `null`, a number, a
+  list) — nine assertions, plus one that `packageFacts` reads `manifest.author` rather than
+  `dsh.author`.
+- **The mirror's degradation is safe.** With no `projects` prop the column renders, throws nothing, and
+  shows **no mirror at all** — asserted as the absence of `data-uip-project-mirror` anywhere, because
+  "some mirror" would pass a weaker test while inventing a state. The three states are pinned
+  individually: `on`, `off`, and `absent` (installed, but this session never mounted its client half),
+  which is explicitly not `off`.
+- **The shared vocabularies are one object, not two equal ones.** `perf`, `priority`, `regions` and
+  `previewAlt` are asserted by **reference** (`dictionary.plugins.regions === dictionary.regions`) in
+  both languages, and the premise was checked first: `strings(locale)` returns the same dictionary
+  object every call (`locale.js`), so a reference comparison means what it says.
+- **`panel.js` lost a function and changed nothing else.** A probe compared the moved function against
+  the file at HEAD line by line: 18 non-blank lines then, 17 now, and the only difference is the two
+  lines that were deliberately replaced (the local `isImage` regex → the shared
+  `previewKindOf(...) === 'image'` call); the other sixteen are byte-identical. The probe
+  (`node_modules/.probe-56/`, gitignored) also documents why the comparison is of CODE and not of
+  screenshots. On top of that, the round added the assertion the move needed: the three branches are
+  pinned on the **card itself** (gradient, image path, nothing), so a future edit to the shared helper
+  cannot silently restyle the projects page.
+
+### A finding, recorded: the row had no stylesheet at all
+
+`.uip-plugin`, `.uip-plugin-head` and `.uip-plugin-name` existed **only in the component** — `core.css`
+had rules for `.uip-list`, `.uip-title`, `.uip-badge*` and `.uip-preview*`, and none for these three. So
+the column has been rendering unstyled since it was built, which is most of why it read as unfinished.
+This round adds the block (a grid with a 116px preview column and `container-type: inline-size`, because
+the settings dialog can be 300px wide inside a wide window — the same reasoning the project card's own
+container query records).
+
+Every selector in it is scoped to `.uip-plugin`, including the preview sizing: `.uip-preview` is shared
+with the projects page, and a bare rule here would resize that page's cards from this column's
+stylesheet.
+
+### What the rows will show today, and why that is not a bug
+
+Recorded because a later reader will see it and file it: **no package in this workspace declares an
+`author`** (`contributors`, `homepage` and `repository` are absent too), **no package declares
+`modifies`, `priority` or `requires`**, and `perfLevel` exists on two of the five. So §五's four chips
+render their "not declared" / "enhancements only" sentences for every row right now, and the author line
+says `package.json` has none. That is the honest report of what is installed rather than a rendering
+fault — and adding the metadata to the packages is a packaging decision, deliberately left out of this
+round.
+
+### The browser run
+
+**239 / 0, `browser (user)`.** The class of assertion most at risk was the text-based few (a row's
+`textContent` now carries a description, an author line and up to four chips that were not there
+before), and they passed. Structural assertions were never at risk: the row gained a wrapper and a
+preview sibling, while every existing hook (`data-uip-plugin`, `data-uip-contract*`,
+`data-uip-maintenance*`, `data-uip-command*`, `data-uip-restart*`) is unchanged.
+
+### What this round does not include
+
+The CHANGELOG panel and its on-demand endpoint (56b), the copy buttons and the "copy diagnostics"
+control (56c), and `author` declarations in the five `package.json`s (a packaging decision, not a
+rendering one).
+
+---
+
 ## Round 55 — T3: an unknown record is not an empty one, and the first frame answers while it lasts
 
 **Status: done — five files changed: `src/client/persist.js` (+83 / −20), `src/client/runtime.js`
