@@ -25,6 +25,245 @@ Verification vocabulary used below:
 
 ---
 
+## Round 56b–56d — the CHANGELOG arrives on demand, and the row folds down to what a reader needs
+
+**Status: done — four sub-rounds, one commit each, and one of them a repair of the one before it:**
+
+| sub-round | commit | what it did | `suite` | browser |
+| --- | --- | --- | --- | --- |
+| 56b | `a685891` | the per-package CHANGELOG endpoint, folded on demand | 1029 / 0 | 239 / 0 |
+| 56c | `54893c6` | the row folds the noise away, folds get one look, commands get copy buttons | 1080 / 0 | **232 / 1** |
+| 56c fix | `07ca174` | `CommandRow` becomes a component instead of a function call | 1084 / 0 | 239 / 0 |
+| 56d | `36a5ca7` | the layout redone, every fold starts closed | 1122 / 0 | 239 / 0 |
+
+Offline, run by the agent, all exit 0 at the end: `suite` 1122 / 0, `conformance` 122 / 0, `load` 91 / 0,
+`host` 41 ok / 0 failing, `browser --self-check` green. `lib/index.js` did not change once in the three
+rounds (`sha256:426313c951a1`, 13665 bytes) — no host entry was touched — while `lib/client.js` moved
+four times, `9bddd1319152` → `1b841db51e4f` → `462ace47381c` → `a524d5921ef0` (375108 bytes), and
+`lib/changelog.js` was born in 56b (`44af689b32e6`, 9316 bytes) and changed in 56d
+(`b0f978c1eb05`, 10483 bytes).**
+
+### 56b — §五's CHANGELOG, read on demand
+
+The one field §五 asks for that has real CONTENT behind it (the framework's own file is 284 KB), and the
+page cannot see a package directory at all: the listing sends identity, composition state and problems,
+and never a path. So the reading happens on the host, for one package at a time, when a reader opens the
+row.
+
+- **`src/host/changelog.js` (new)**: `summarizeChangelog`, `firstHeadingOf`, `readChangelogAt`,
+  `readFirstHeading`, and the constants the CLI's own behaviour is copied into — `CHANGELOG_MAX_BYTES`
+  (1 MB), `CHANGELOG_HEAD_BYTES` (64 KB), `CHANGELOG_SECTION_LINES` (40), `CHANGELOG_SECTIONS` (1), and
+  `CHANGELOG_REASONS` (five codes: `not-installed`, `no-file`, `no-sections`, `too-large`,
+  `unreadable`).
+- **`profile-scan.js`**: each dependency carries `changelogHeading`, read from a bounded **64 KB head** of
+  its file — a folded row should name the section it will show without costing one request per package on
+  every page open, and the partial last line is dropped so a heading cut in half by the cap cannot be
+  reported as a heading that exists.
+- **`installed-endpoint.js`**: `CHANGELOG_PATH` and `createChangelogHandler({ scan, read })`. The route
+  rides the same `/api` fence as the listing, and it is registered in the same function so that "the
+  routes this package mounts" stays one list.
+- **The name is a LOOKUP KEY, never a path segment.** `?name=` is matched against the same scan the
+  listing comes from, and the directory read is the one that entry resolved — so `../../secret` is
+  answered `not-installed` **without touching a filesystem**.
+- **`installed.js`**: `loadChangelog(name)` with a per-package cache, one in-flight request per package,
+  and `refresh()` as the single invalidation point; a result that arrives after a refresh is dropped and
+  forgotten — the store's `generation` counter is what decides — the same rule the listing follows.
+- **`panel-plugins.js`**: `ChangelogBlock`, a `<details>` whose summary drives the load from an
+  `onClick` on the summary — React has no `onToggle` synthetic event and the `toggle` event does not
+  bubble, so `<details onToggle>` would be a control that looks wired and reads nothing.
+- **The truncation arithmetic is `install.ps1`'s**, including its off-by-one: the cap counts the heading,
+  so a heading plus 59 body lines is 60 lines, 40 are kept, and the reader is told 20 were dropped. The
+  one deliberate difference: the CLI prints the "… N more line(s)" sentence itself, while this module
+  reports `truncated`/`moreLines` as facts and the page renders the sentence from its own dictionary —
+  the CLI speaks English, the settings page is bilingual.
+
+The red, before any product change:
+
+```
+953 assertions, 7 failing
+
+  FAIL the column reads the dictionary it is actually given
+         every key the column reads exists in the en dictionary: expected [], got ["changelogTitle", "changelogLoading", "changelogFailed", "changelogNoFile", "changelogNoSections", "changelogUnreadable", …2 more]
+  FAIL the changelog endpoint looks the name up and never joins it into a path
+         installedEndpoint.createChangelogHandler is not a function
+  FAIL the changelog summariser keeps install.ps1 rules, including its arithmetic
+         changelog.summarizeChangelog is not a function
+  FAIL the changelog reader tells its own answers apart, without reading a file it refuses
+         the reader publishes a one-megabyte cap, and the sparse file below is one byte over it: expected 1048576, got undefined
+  FAIL the changelog is fetched on demand, cached per package, and invalidated by a refresh
+         store.changelog is not a function
+  FAIL the row folds its changelog away, and renders all three answers
+         expected to find "data-uip-changelog=\"skin-pkg\""
+  FAIL the changelog loads when a row is opened, and not when it is closed
+         plugin.__internals.createChangelogToggle is not a function
+```
+
+Green: `suite` **1029 / 0** (965 → 1029, +64) and `load` **91 / 0** (85 → 91) — the second one matters
+because 56b changed the host's route table, and `load-check.mjs` is the suite that watches it.
+
+**Self-inflicted, three of them.** (1) The first version of the reader test failed on its own
+SCAFFOLDING — `truncate(NaN)` from a constant that did not exist yet — instead of on a named assertion;
+it now asserts the cap first and builds the sparse file from a literal. (2) `load-check.mjs`'s `equal` is
+strict identity, so a new assertion comparing `sections` to `[]` could never pass (`[] !== []`); it
+asserts `.length` now. (3) An `import` was first written among the constants of `installed-endpoint.js`
+instead of at the module head — legal, and moved before anything ran.
+
+### 56c — the row folds the noise away, folds get one look, commands get copy buttons
+
+The column had grown to where a reader met a wall of commands, hints and "not declared" sentences before
+learning anything about the package. This sub-round folded all of it and gave the folds one appearance.
+
+- `panel-plugins.js`: `RowHeadFacts` (the description line, and the project id) / `RowFoldFacts` (the
+  author, the four project chips, the switch mirror) / `CommandRow` / `copyCommandText`; the row gained an
+  outer `<details data-uip-row-details>`; `MaintenanceBlock` and `CommandBlock` became folds of their own;
+  `ContractPanel` took an `open` prop; `ChangelogBlock`'s summary joined the shared hook.
+- `core.css`: ONE rule for every fold summary through the shared `data-uip-fold-summary` hook — background
+  `--dsw-alias-bg-layer-2`, a 3px brand-coloured left border, a `▶` that rotates, 12px bold — plus
+  `padding-left: 16px` for content, a separator above it, and the four declarations that stop a command
+  from scrolling sideways (`pre-wrap`, `break-all`, `max-width: 100%`, `overflow-x: hidden`).
+- `locale.js`: seven keys in both languages. The "not declared" sentences stopped being read at all: a
+  field with no value renders nothing, because eight rows of "not declared" is a page nobody reads.
+
+The red:
+
+```
+1038 assertions, 4 failing
+
+  FAIL a row answers three questions by default, and folds the rest away
+         expected to find "data-uip-row-details"
+  FAIL every fold has the shared summary hook, and no content block does
+         the row has several folds (2): expected truthy, got false
+  FAIL the copy buttons carry exactly the commands their blocks print
+         the snapshot command has a copy button: expected truthy, got false
+  FAIL a clean contract keeps its badge and stays folded; a finding opens
+         while a row with a finding opens its panel for the reader: expected true, got false
+```
+
+Green: `suite` **1080 / 0** (1029 → 1080, +51).
+
+**Self-inflicted, three of them, and two are worth reading.** (1) A missing closing parenthesis in the row
+assembly left the source syntactically invalid — and **the build printed success anyway**, because
+`scripts/bundle-client.mjs` rewrites ESM into CJS with pattern matching and passes each module's body
+through as text inside a factory wrapper ("the only transformation is ESM → CJS plus the module
+registration wrapper", its own header); the suite died loading the bundle, and `node --check` on the
+touched source found it in a second. "The build succeeded" is not "the source loads". (2) An assertion
+looked for the fold marker inside the slice taken BEFORE the fold — a test that could never pass. (3) The
+contract-panel assertion sliced from the attribute while its regex required the tag to start with
+`<details`, so the "clean row stays folded" half was passing because the regex could never match at all;
+the failing half next to it is what exposed it.
+
+**Four existing assertions had to change**, because this sub-round removed the behaviour they pinned:
+the two "not declared" sentences and the two "not applicable" ones now assert the ABSENCE of the line or
+chip instead. Each carries a comment saying that the specification changed rather than that the code was
+wrong.
+
+### 56c fix — `CommandRow` becomes a component, and a source guard keeps it that way
+
+The browser reported **React error #310**, "Rendered more hooks than during the previous render", with the
+stack pointing at `CommandRow` — and the column rendered blank.
+
+- **The cause was not a conditional hook.** `CommandRow` called `useState` unconditionally; it was
+  **called as a plain function** at four sites, and a plain call is not a component boundary, so its hooks
+  were registered on `UiPluginsSection`, four per row, inside a loop over the dependencies. The loading
+  render had three hooks and the first render with data had 3 + 4N. The offline suite could not see it:
+  `renderToStaticMarkup` mounts once and never reconciles, so there is no previous render to compare
+  against.
+- **The fix** is four call sites: `CommandRow({…})` → `React.createElement(CommandRow, {…})`. Its
+  implementation was not touched, and neither was anything else — including the `UiPluginsSection` root
+  call in `index.js`, which is the session root and has a constant hook count.
+- **The guard** in `verify.mjs` reads `panel-plugins.js` with comments blanked (so failure line numbers
+  are the file's own), collects the functions whose bodies call a hook, and asserts that set is EXACTLY
+  `['UiPluginsSection', 'CommandRow']` — named, not implied — and that neither name is ever called
+  plainly. A new hook in any of this file's element factories now fails the suite instead of a browser.
+
+The red, against the code as 56c shipped it:
+
+```
+1083 assertions, 1 failing
+
+  FAIL a hook lives in a component, and components are created rather than called
+         CommandRow is CREATED as an element, never called as a plain function — a plain call puts its hooks on the enclosing component: expected [], got ["L729: CommandRow({ copy, React, kind: 'snapshot', source: 'install.ps1", "L730: CommandRow({ copy, React, kind: 'update', source: 'install.ps1 -", "L731: CommandRow({", "L788: CommandRow({ copy, React, kind: 'uninstall', source: command }),"]
+```
+
+Green: `suite` **1084 / 0**, and the browser back to **239 / 0**.
+
+**Self-inflicted, one.** The guard's own first version matched `NAME(`, and `createElement(CommandRow, {…})`
+is followed by a comma — so after the fix it reported zero element call sites and failed on its own last
+assertion. It was found by running the guard **against the fixed code as well as the broken code**, which
+is the lesson: a guard has to be exercised in both directions, or it fails for the wrong reason.
+
+### 56d — the layout redone, every fold starts closed, and the copy button comes back
+
+- **The default row** is preview, name@version, the badges, one line of description cut at 80 characters,
+  and one `▶ 详情`. The project id and the switch mirror moved into the fold: the default row answers
+  "what is this package", and which project it contributes is the first thing wanted after opening it.
+- **Inside the fold, in the reader's order**: author (when declared) → contract → maintenance →
+  uninstall → changelog, every one of them folded, and one level deeper still the prose that explains the
+  commands (`data-uip-hint`). Opening the row must not open four panels with it.
+- **Every `<details>` carries `open: false` explicitly**, and nothing is remembered: no store, no
+  `localStorage`, no key of its own. React writes the attribute on mount and only when the prop CHANGES,
+  so a reader's own open/close survives ordinary re-renders while a fresh mount always starts closed.
+- **`ContractPanel` is folded whatever the scan found.** 56c had it open itself when a finding existed,
+  which pushed the rest of the row off the screen and broke the browser assertion `the panels start
+  folded, so a row stays a row` — that assertion is green again.
+- **The copy button recovers.** It says `Copied` (or why it could not), and 1.5 s later says `Copy`
+  again; the timer lives in a `useRef`, is armed by one `useEffect`, and `clearTimeout` runs in that
+  effect's cleanup so an unmount cannot leave a timer behind. The button is never disabled.
+- **The changelog summary reads `CHANGELOG · 1.0.0 — Step 8c`**: the version it belongs to, then the
+  heading with its markdown `##` taken off and cut at sixty characters. The body is the section's lines
+  and does NOT repeat the heading, which used to be printed twice.
+- **`src/host/changelog.js` gained `stripMarkdown`**: `**bold**`, `__bold__` and `` `code` `` lose their
+  marks before the payload is sent, because the row renders plain text and asterisks read as a rendering
+  fault. A `###` line is kept as the plain text it looks like, and links, images and list markers are NOT
+  rewritten — structure a plain `<pre>` cannot express is left as written rather than quietly flattened.
+- **`core.css`**: 8px between sibling folds, 8px between a summary and its content, an 8px radius on the
+  summary.
+
+Green: `suite` **1122 / 0** (1084 → 1122, +38), and the browser **239 / 0**.
+
+**Six existing assertions changed**, all for the same reason and each with a comment saying so: two
+pinned the raw `## ` heading in the summary, one pinned the project id in the default view, one pinned
+the contract panel opening on a finding, and two pinned the maintenance title naming the package (the
+package is now named by the fold's own hook and by the row header).
+
+**Self-inflicted, four of them.** (1) and (2): a new test callback used `await` without being `async`,
+twice, and both times the suite died at load with no output at all — a one-second `node --check` would
+have found either. (3) The React stand-in used to walk the column as data did not INVOKE function
+components, which real React does, so the tree stopped at the component boundary and the test could not
+find the button it was looking for. (4) The first attempt at a fake clock replaced `globalThis.setTimeout`
+— which cannot work, because the bundle captured its own `setTimeout` in the sandbox it was evaluated in;
+the harness's `boot({ fakeTimers: true })` clock is the one the component actually calls, and the test now
+reads the 1500 ms deadline out of `harness.timers`.
+
+### The process deviation of this batch, stated plainly
+
+**56d was not red-first.** Its tests and its implementation were written in one pass, and the first suite
+run happened after the code was in — so the three failures it produced were not "new assertions failing",
+they were an existing assertion the new specification reverses, a test of mine that was wrong, and a
+second existing assertion the same reversal caught. The red-first discipline held for 56b, 56c and the
+56c fix, and it did not hold for 56d; the record should say which round broke it rather than implying all
+four were the same.
+
+### Browser verification, per sub-round
+
+`browser (user)`, and it caught what no offline assertion could: 56b → **239 / 0**; 56c → **232 / 1**, the
+failure being `the panels start folded, so a row stays a row` (the contract panel opened itself); 56c fix →
+**239 / 0**, which is also the proof that the hooks regression is gone; 56d → **239 / 0**. The counts moved
+because a failure aborts the phases after it, so "232 with one failure" is one broken assertion rather than
+seven missing ones.
+
+### Left to verify by hand, and what it would take to fix
+
+**Whether leaving Settings › UI plugins and coming back really closes every fold.** The component carries
+no remembered open state, and a fresh mount renders every fold closed — that is asserted offline. What
+offline cannot know is whether the SHELL unmounts the section or merely hides it: a hidden tree keeps its
+DOM, and DOM `<details>` state is not React's to reset. If the browser check finds folds still open after
+a round trip, the fix is a `mountId` counter in `index.js` — the render handler already runs once per
+entry, so it can pass a number that becomes part of each row's `key`. `index.js` was outside this batch's
+file list, so that is a next-round item with a known shape rather than a guess.
+
+---
+
 ## Round 56a — the installed-package row reads its own facts, and the preview rule gets one home
 
 **Status: done — ten files changed: `src/host/profile-scan.js` (+92 / −1),
