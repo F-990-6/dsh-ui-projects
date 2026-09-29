@@ -6255,6 +6255,29 @@ await test('every package under plugins/ is covered by a snapshot root', async (
 })
 
 /*
+ * A REPOSITORY INSIDE `.snapshots` IS NOT A SNAPSHOT (56h-B).
+ *
+ * `snapshots()` in `tools/snapshot.mjs` enumerates every DIRECTORY under `.snapshots` and asks each one to
+ * describe itself. A `.git` directory there would be read as a legacy-layout snapshot — it holds no root
+ * subdirectories, so `readSnapshot` maps its whole contents onto the `plugin` root — and `--list` would
+ * report it as a snapshot while `--diff .git` compared git's own internals against the plugin tree. The FILE
+ * walk already skips `.git` by name (`EXCLUDE`); this is the LISTING side, which needed a rule of its own.
+ *
+ * The assertion is made against the FILTER LINE rather than against the whole file, so a `startsWith('.')`
+ * written somewhere else cannot satisfy it. The second subject is the control: a filter that stopped
+ * excluding `pre-build` would mean the listing had been rewritten rather than extended, and this is a test of
+ * its own rather than one more line in the test above because the count moving is what shows either ran.
+ */
+await test('the snapshot listing skips dotted directories, so a repository cannot be read as a snapshot', async () => {
+  const workspaceRoot = resolve(packageRoot, '..', '..')
+  const source = await readFile(join(workspaceRoot, 'tools', 'snapshot.mjs'), 'utf8')
+  const filter = source.split('\n').find((line) => line.includes('.filter((e) => e.isDirectory()'))
+  truthy(filter !== undefined, 'the listing still has the filter this test is about')
+  contains(String(filter), "!e.name.startsWith('.')", 'and it skips every dotted directory, `.git` among them')
+  contains(String(filter), "e.name !== 'pre-build'", 'while still skipping `pre-build`, which is not a snapshot either')
+})
+
+/*
  * THE SNAPSHOT SECTION, WHICH HAS ONE WRITING HALF AND ONE READ-ONLY HALF.
  *
  * `-Snapshot` writes version copies under the profile's `.dsh-ui-projects-versions\`; `-ListVersions`
