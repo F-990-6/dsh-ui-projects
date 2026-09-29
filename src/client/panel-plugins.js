@@ -198,35 +198,32 @@ export function UiPluginsSection(props) {
           contractBadge,
         ),
         /*
-         * THE DEFAULT VIEW ANSWERS THREE QUESTIONS — what is it, what does it look like, which project
-         * is it — and nothing else. Everything the row knows beyond that is folded into the block below,
-         * because the column had grown to where a reader met a wall of commands and hints before
-         * learning what the package was.
+         * THE DEFAULT ROW: preview, name, badges, one line of description, and one fold. Nothing else.
          *
-         * A field with no value renders NOTHING: no "not declared", no empty row. A package that
-         * declares nothing says nothing about it, and a reader can tell the difference between "this
-         * package has no author" and "the page is broken" from the absence of the line just as well as
-         * from a sentence about it — better, in fact, since eight rows of "not declared" is a page
-         * nobody reads.
+         * A field with no value renders NOTHING — no "not declared", no empty line. A package that
+         * declares nothing says nothing about it, and eight rows of "not declared" is a page nobody
+         * reads.
          */
         ...RowHeadFacts({ copy, React: React_, dependency }),
         React_.createElement(
           'details',
-          { className: 'uip-plugin-details', 'data-uip-row-details': dependency.name },
+          { className: 'uip-plugin-details', 'data-uip-row-details': dependency.name, open: false },
           React_.createElement('summary', { className: 'uip-hint', 'data-uip-fold-summary': 'row-details' }, copy.rowDetails),
           ...RowFoldFacts({ copy, React: React_, dependency, hasProject, project, mirrorAvailable: projectsLive !== undefined }),
+          ...(dependency.problems ?? []).map((problem, index) =>
+            React_.createElement('p', { className: 'uip-error', key: 'problem-' + index }, problem.code + ': ' + problem.message),
+          ),
           /*
+           * THE ORDER IS THE READER'S, not the payload's: who made it, what the contract found, how to
+           * maintain it, how to remove it, what changed. Every one of them is folded, and every one of
+           * them starts folded — opening the row must not open four panels with it.
+           *
            * THE FRAMEWORK'S ROW OPENS TOO (9b review). Its badge stays `na` — the contract is not a rule
            * the instrument is measured by — but declining to render the panel hid two findings that ARE
            * in the payload, and a reader who never runs the CLI could not see them. So the row explains
            * itself: the summary says the contract does not apply, the findings are listed, and a note
            * says they are recorded rather than fixed. `na` is a judgement about the BADGE; silence was a
            * different claim.
-           *
-           * A CLEAN ROW KEEPS ITS PANEL AND KEEPS IT SHUT (`open` is the state's answer, not a
-           * constant): the limits inside it — rule 3 is not scanned at all — are the sentence that
-           * stops a green badge from reading as "this plugin is fine", and that matters most on the
-           * rows where nothing was found. A finding opens it, because then it is the answer.
            */
           ContractPanel({
             copy,
@@ -234,21 +231,6 @@ export function UiPluginsSection(props) {
             name: dependency.name,
             state: contractState,
             contract: dependency.contract,
-            open: contractState !== 'ok',
-          }),
-          ...(dependency.problems ?? []).map((problem, index) =>
-            React_.createElement('p', { className: 'uip-error', key: 'problem-' + index }, problem.code + ': ' + problem.message),
-          ),
-          /*
-           * §五's CHANGELOG, folded away, and read only when a reader opens it. §五's CHANGELOG, in its
-           * own fold inside this one, because it is content rather than a state of the package.
-           */
-          ChangelogBlock({
-            copy,
-            React: React_,
-            dependency,
-            state: typeof store.changelog === 'function' ? store.changelog(dependency.name) : undefined,
-            onToggle: createChangelogToggle(store, dependency.name),
           }),
           /*
            * THE MAINTENANCE BLOCK IS FOR EVERY ROW, the framework's included.
@@ -262,6 +244,17 @@ export function UiPluginsSection(props) {
           dependency.name === 'dsh-ui-projects'
             ? null
             : CommandBlock({ copy, React: React_, name: dependency.name, profileName: scan.profileName }),
+          /*
+           * LAST, because it is the longest thing a row can hold and the least often read: §五's
+           * CHANGELOG, folded, and fetched only when a reader opens it.
+           */
+          ChangelogBlock({
+            copy,
+            React: React_,
+            dependency,
+            state: typeof store.changelog === 'function' ? store.changelog(dependency.name) : undefined,
+            onToggle: createChangelogToggle(store, dependency.name),
+          }),
         ),
       ),
     )
@@ -306,7 +299,8 @@ function ChangelogBlock({ copy, React, dependency, state, onToggle }) {
       React.createElement(
         'div',
         { className: 'uip-plugin-changelogSection', key: 'section-' + index },
-        React.createElement('h4', { className: 'uip-plugin-changelogHeading' }, section.heading),
+        // The heading is NOT repeated here: the summary above already names the section, and printing it
+        // twice is the first thing a reader notices inside a fold.
         React.createElement('pre', { 'data-uip-changelog-body': dependency.name }, section.lines.join('\n')),
         section.truncated
           ? React.createElement('p', { className: 'uip-hint' }, copy.changelogTruncated(section.moreLines))
@@ -320,15 +314,26 @@ function ChangelogBlock({ copy, React, dependency, state, onToggle }) {
      */
     body = React.createElement('p', { className: 'uip-hint' }, copy.changelogLoading)
   }
+  /*
+   * THE SUMMARY IS THE ONLY PLACE THE HEADING APPEARS, and it reads `CHANGELOG · 1.0.0 — Step 8c`: the
+   * version because a changelog belongs to a version, and the heading with its `##` markdown taken off
+   * and cut at sixty characters because a heading is a line rather than a paragraph.
+   */
   const heading =
     typeof dependency.changelogHeading === 'string' && dependency.changelogHeading.length > 0 ? dependency.changelogHeading : null
+  const parts = [copy.changelogTitle]
+  if (typeof dependency.version === 'string' && dependency.version.length > 0) parts.push(dependency.version)
+  const label =
+    heading === null
+      ? parts.join(' · ')
+      : parts.join(' · ') + ' — ' + truncate(heading.replace(/^#+\s*/, ''), CHANGELOG_SUMMARY_CHARS)
   return React.createElement(
     'details',
-    { className: 'uip-plugin-changelog', 'data-uip-changelog': dependency.name },
+    { className: 'uip-plugin-changelog', 'data-uip-changelog': dependency.name, open: false },
     React.createElement(
       'summary',
       { className: 'uip-hint', 'data-uip-changelog-summary': dependency.name, 'data-uip-fold-summary': 'changelog', onClick: onToggle },
-      heading === null ? copy.changelogTitle : copy.changelogTitle + ' · ' + heading,
+      label,
     ),
     body,
   )
@@ -392,20 +397,17 @@ function RowHeadFacts({ copy, React, dependency }) {
   const fields = []
   if (typeof dependency.description === 'string' && dependency.description.length > 0) {
     fields.push(
-      React.createElement('p', { className: 'uip-description', key: 'description', 'data-uip-field': 'description' }, dependency.description),
+      React.createElement(
+        'p',
+        { className: 'uip-description', key: 'description', 'data-uip-field': 'description' },
+        // One line, cut at 80 characters: a package with a 400-character description must not be able to
+        // make every other row unreadable. The full sentence stays in `package.json`, where it belongs.
+        truncate(dependency.description, DESCRIPTION_CHARS),
+      ),
     )
   } else if (dependency.description === undefined) {
     fields.push(
       React.createElement('p', { className: 'uip-hint', key: 'description', 'data-uip-field': 'description' }, copy.hostFieldMissing('description')),
-    )
-  }
-  if (dependency.projectId !== undefined) {
-    fields.push(
-      React.createElement(
-        'p',
-        { className: 'uip-hint', key: 'project', 'data-uip-project-id': dependency.projectId },
-        copy.project(dependency.projectId),
-      ),
     )
   }
   return fields
@@ -426,6 +428,19 @@ function RowFoldFacts({ copy, React, dependency, hasProject, project, mirrorAvai
     fields.push(React.createElement('p', { className: 'uip-hint', key: 'author', 'data-uip-field': 'author' }, copy.author(dependency.author)))
   } else if (dependency.author === undefined) {
     fields.push(React.createElement('p', { className: 'uip-hint', key: 'author', 'data-uip-field': 'author' }, copy.hostFieldMissing('author')))
+  }
+  /*
+   * The project id moved in here with the layout redo: the default row answers "what is this package",
+   * and which project it contributes is the first thing a reader wants when they open it.
+   */
+  if (dependency.projectId !== undefined) {
+    fields.push(
+      React.createElement(
+        'p',
+        { className: 'uip-hint', key: 'project', 'data-uip-project-id': dependency.projectId },
+        copy.project(dependency.projectId),
+      ),
+    )
   }
 
   if (hasProject) {
@@ -532,20 +547,65 @@ export async function copyCommandText(source) {
   }
 }
 
+/** How long a button says "copied" (or "copy failed") before it goes back to "Copy". */
+export const COPY_FEEDBACK_MS = 1500
+
+/** How many characters of a package's DESCRIPTION the default row keeps. */
+export const DESCRIPTION_CHARS = 80
+
+/** How many characters of a CHANGELOG heading the folded summary keeps. */
+export const CHANGELOG_SUMMARY_CHARS = 60
+
 /**
- * One command line and its copy button.
+ * Cut a string to `limit` characters, with an ellipsis when it was longer.
+ *
+ * Used wherever a package's own text can be arbitrarily long — its description line and a changelog
+ * heading — because the row is a list, and one package with a 400-character description must not be
+ * able to make every other row unreadable. `limit` counts the characters KEPT, so the marker never
+ * pushes the result past what a caller asked for.
+ * @param {unknown} text @param {number} limit
+ */
+export function truncate(text, limit) {
+  const value = typeof text === 'string' ? text : ''
+  return value.length <= limit ? value : value.slice(0, limit) + '…'
+}
+
+/** What a copy button says for each state. Pure, so the three labels are pinned without a renderer. */
+export function copyLabelFor(state, copy) {
+  if (state === 'copied') return copy.copyDone
+  if (state === 'failed') return copy.copyFailed
+  return copy.copyCommand
+}
+
+/**
+ * One command and its copy button.
+ *
+ * THE BUTTON COMES FIRST, then the command: a reader scanning the column sees the control in the same
+ * place on every line, and the command — which is long and wraps — hangs off it.
  *
  * `data-uip-copy-source` carries the command ITSELF, so the suite can assert the button copies exactly
  * the line printed beside it rather than a second string that happens to look the same — the defect
  * this project has already paid for once, when one command was written out twice in one row.
+ *
+ * THE FEEDBACK IS TEMPORARY, AND THE TIMER IS OWNED. "Copied" that stays for ever is a button a reader
+ * cannot use twice without wondering whether the second click landed; and a timer that outlives the
+ * component is a `setState` on something that no longer exists. So: one effect, one ref, one cleanup.
+ * The button is never disabled — a copy button that stops accepting clicks reads as broken.
  */
 function CommandRow({ copy, React, kind, source, hook }) {
   const [state, setState] = React.useState('idle')
-  const label = state === 'copied' ? copy.copyDone : state === 'failed' ? copy.copyFailed : copy.copyCommand
+  const timer = React.useRef(undefined)
+  React.useEffect(() => {
+    if (state === 'idle') return undefined
+    timer.current = setTimeout(() => setState('idle'), COPY_FEEDBACK_MS)
+    return () => {
+      if (timer.current !== undefined) clearTimeout(timer.current)
+      timer.current = undefined
+    }
+  }, [state])
   return React.createElement(
     'div',
     { className: 'uip-commandRow' },
-    React.createElement('pre', hook ?? null, source),
     React.createElement(
       'button',
       {
@@ -558,8 +618,9 @@ function CommandRow({ copy, React, kind, source, hook }) {
           void copyCommandText(source).then((outcome) => setState(outcome))
         },
       },
-      label,
+      copyLabelFor(state, copy),
     ),
+    React.createElement('pre', hook ?? null, source),
   )
 }
 
@@ -623,7 +684,7 @@ function contractBadgeText(copy, state, contract) {
  * the coverage line — repeating that sentence is the one summary that cannot disagree with the badge above
  * it — because dropping the panel there would drop the LIMITS, which are the part that matters most.
  */
-function ContractPanel({ copy, React, name, state, contract, open }) {
+function ContractPanel({ copy, React, name, state, contract }) {
   const findings = contract?.findings ?? []
   const limits = contract?.limits ?? []
   const rules = contract?.rules
@@ -631,16 +692,25 @@ function ContractPanel({ copy, React, name, state, contract, open }) {
   const framework = state === 'na'
   const covered =
     typeof rules?.judged === 'number' && typeof rules?.total === 'number' ? copy.contractCoverage(rules.judged, rules.total) : null
-  let summary = covered
-  if (state === 'none') summary = copy.contractNotScannedWhy(contract?.reason)
-  else if (framework) summary = copy.contractFramework(findings.length)
-  else if (summary === null) summary = contractBadgeText(copy, state, contract)
-  if (summary === null || summary === undefined || summary === '') return null
+  let detail = covered
+  if (state === 'none') detail = copy.contractNotScannedWhy(contract?.reason)
+  else if (framework) detail = copy.contractFramework(findings.length)
+  else if (detail === null) detail = contractBadgeText(copy, state, contract)
+  if (detail === null || detail === undefined || detail === '') return null
+  /*
+   * ALWAYS FOLDED, AND THE TITLE IS A LABEL RATHER THAN A SENTENCE.
+   *
+   * The panel used to open itself when the scan found something, which pushed the rest of the row off
+   * the screen: a row that answers a question nobody asked yet stops being a row. The verdict is
+   * already on the badge above; what is folded here is the evidence, and evidence waits to be asked
+   * for. The long sentence — the coverage counts, or why nothing was scanned — moves into the body,
+   * where it sits with the findings it describes.
+   */
+  const title =
+    state === 'warn' ? copy.foldContractFindings(findings.length) : state === 'ok' ? copy.foldContractPassed : detail
   return React.createElement(
     'details',
-    // `open` is the caller's answer to "is there something to read here": a clean row keeps its panel
-    // shut (the badge already said it), a finding opens it (the panel IS the answer).
-    { className: 'uip-contract', 'data-uip-contract-panel': name, open: open === true },
+    { className: 'uip-contract', 'data-uip-contract-panel': name, open: false },
     /*
      * TWO HOOKS, ADDED FOR THE SAME REASON THE BUTTONS HAVE THEM: an assertion belongs on state, not on
      * copy. The summary's sentence is localized and its number is part of the sentence ("2 accepted" /
@@ -648,7 +718,8 @@ function ContractPanel({ copy, React, name, state, contract, open }) {
      * able to FIND it — and a test that parsed the row's text instead found the "0" in the package
      * version and reported a rendering bug that did not exist.
      */
-    React.createElement('summary', { className: 'uip-hint', 'data-uip-contract-summary': name, 'data-uip-fold-summary': 'contract' }, summary),
+    React.createElement('summary', { className: 'uip-hint', 'data-uip-contract-summary': name, 'data-uip-fold-summary': 'contract' }, title),
+    React.createElement('p', { className: 'uip-hint', 'data-uip-contract-detail': state }, detail),
     findings.length === 0
       ? null
       : React.createElement('p', { className: 'uip-hint' }, copy.contractFindingsTitle),
@@ -712,20 +783,12 @@ function ContractPanel({ copy, React, name, state, contract, open }) {
 function MaintenanceBlock({ copy, React, name }) {
   return React.createElement(
     'details',
-    { className: 'uip-maintenance', 'data-uip-maintenance': name },
+    { className: 'uip-maintenance', 'data-uip-maintenance': name, open: false },
     React.createElement(
       'summary',
       { className: 'uip-hint', 'data-uip-fold-summary': 'maintenance', 'data-uip-maintenance-title': name },
-      copy.maintenanceTitle(name),
+      copy.foldMaintenance,
     ),
-    /*
-     * ONE SENTENCE, then the three commands. The block used to carry four hints and a restart reminder
-     * per row — correct, and unreadable at five rows. The sentence that survives is the load-bearing
-     * one: WHERE the command has to be run, which is the difference between `install.ps1` working and
-     * "not recognized" (the dictionaries keep the long version, and the suite still asserts it says
-     * `-Package`).
-     */
-    React.createElement('p', { className: 'uip-hint' }, copy.maintenanceBrief),
     /*
      * CREATED, NOT CALLED. A plain `CommandRow({…})` would run its `useState` on whichever component is
      * currently rendering — this file's helpers are element factories, and a factory is not a component
@@ -742,7 +805,19 @@ function MaintenanceBlock({ copy, React, name }) {
       source: 'install.ps1 -Rollback -To <name>',
       hook: { 'data-uip-command-maintenance': 'rollback' },
     }),
-    React.createElement('p', { className: 'uip-hint' }, copy.cmdRollbackList),
+    /*
+     * THE PROSE IS ONE FOLD DEEPER than the commands it explains. A reader who opens "maintenance" wants
+     * three lines they can copy; the sentence about WHERE to run them and the reminder about restarting
+     * are what they need a moment later, and both stay one click away instead of printed under every row.
+     */
+    React.createElement(
+      'details',
+      { className: 'uip-hint-fold', 'data-uip-hint': 'maintenance', open: false },
+      React.createElement('summary', { className: 'uip-hint', 'data-uip-fold-summary': 'hint' }, copy.foldHint),
+      React.createElement('p', { className: 'uip-hint' }, copy.maintenanceBrief),
+      React.createElement('p', { className: 'uip-hint' }, copy.cmdRollbackList),
+      React.createElement('p', { className: 'uip-hint' }, copy.restartReminder),
+    ),
   )
 }
 
@@ -789,15 +864,16 @@ function CommandBlock({ copy, React, name, profileName }) {
   ]
   return React.createElement(
     'details',
-    { className: 'uip-command', 'data-uip-command': name },
+    { className: 'uip-command', 'data-uip-command': name, open: false },
     React.createElement('summary', { className: 'uip-hint', 'data-uip-fold-summary': 'uninstall' }, copy.uninstallTitle(name)),
-    React.createElement('p', { className: 'uip-hint' }, copy.commandsHint),
+    /* One command, one copy button, and the explanation one fold deeper — same shape as maintenance. */
     React.createElement(CommandRow, { copy, React, kind: 'uninstall', source: command }),
-    React.createElement('p', { className: 'uip-hint' }, copy.uninstallBrief),
     React.createElement(
       'details',
-      { className: 'uip-uninstall', 'data-uip-uninstall-details': name },
-      React.createElement('summary', { className: 'uip-hint', 'data-uip-fold-summary': 'uninstall-details' }, uninstall.title),
+      { className: 'uip-hint-fold', 'data-uip-hint': 'uninstall', open: false },
+      React.createElement('summary', { className: 'uip-hint', 'data-uip-fold-summary': 'hint' }, uninstall.title),
+      React.createElement('p', { className: 'uip-hint' }, copy.uninstallBrief),
+      React.createElement('p', { className: 'uip-hint' }, copy.commandsHint),
       React.createElement('p', { className: 'uip-hint', 'data-uip-restart': 'hint' }, copy.restartHint),
       React.createElement('pre', { 'data-uip-restart': 'block' }, copy.restartBlock(command)),
       React.createElement('p', { className: 'uip-hint' }, copy.restartReminder),

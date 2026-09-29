@@ -92,7 +92,7 @@ function linesOf(text) {
  * @returns {string | null}
  */
 export function firstHeadingOf(text) {
-  for (const line of linesOf(text)) if (HEADING.test(line)) return line
+  for (const line of linesOf(text)) if (HEADING.test(line)) return stripMarkdown(line)
   return null
 }
 
@@ -123,13 +123,35 @@ export function summarizeChangelog(text, options = {}) {
     const truncated = body.length > maxLines
     const kept = truncated ? body.slice(0, maxLines) : body
     sections.push({
-      heading: kept[0],
-      lines: kept.slice(1),
+      heading: stripMarkdown(kept[0]),
+      lines: kept.slice(1).map(stripMarkdown),
       truncated,
       moreLines: truncated ? body.length - maxLines : 0,
     })
   }
   return { sections, reason: null }
+}
+
+/**
+ * The markdown the panel does NOT render, taken off the text before it crosses the wire.
+ *
+ * A changelog is markdown and the row renders PLAIN TEXT: `**bold**` would reach a reader as literal
+ * asterisks, which reads as a rendering fault rather than as emphasis. Three decorations are removed —
+ * `**bold**`, `__bold__` and `` `code` `` — and everything else is left exactly as written. Links,
+ * images and list markers are STRUCTURE that a plain `<pre>` cannot express, and turning `[x](y)` into
+ * `x` would quietly hide where a reference points; a `###` line is kept as the plain text it looks
+ * like, which is what a sub-heading inside a folded body should be.
+ *
+ * On the host rather than in the panel, because the panel is not the only reader of this payload and
+ * because "what does this file mean" is the host's business — the same division `packageFacts` follows.
+ * @param {unknown} text
+ * @returns {string}
+ */
+export function stripMarkdown(text) {
+  return String(text ?? '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
 }
 
 /**

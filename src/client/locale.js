@@ -281,6 +281,11 @@ export const STRINGS = {
       copyCommand: 'Copy',
       copyDone: 'Copied',
       copyFailed: 'Copy failed — select it manually',
+      /* ── step 56d: short fold titles, because a fold's title is a label rather than a sentence ── */
+      foldContractPassed: 'Contract: passed',
+      foldContractFindings: (count) => `Contract: ${count} finding(s)`,
+      foldMaintenance: 'Maintenance commands',
+      foldHint: 'Notes',
     },
     priority: SHARED.en.priority,
     orderHint: (name) => `${name} is running ahead of a higher-priority project; the order is restored on the next load.`,
@@ -473,6 +478,11 @@ export const STRINGS = {
       copyCommand: '复制',
       copyDone: '已复制',
       copyFailed: '复制失败，请手动复制',
+      /* ── step 56d：折叠标题是标签而不是句子 ─────────────────────────────── */
+      foldContractPassed: '契约：通过',
+      foldContractFindings: (count) => `契约：${count} 处发现`,
+      foldMaintenance: '维护命令',
+      foldHint: '说明',
     },
     priority: SHARED.zh.priority,
     orderHint: (name) => `${name} 目前运行在更高优先级的项目之前；下次加载时顺序会恢复。`,

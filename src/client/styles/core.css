@@ -660,6 +660,7 @@
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 18px;
+  /* The body keeps its own line breaks (`pre-wrap`), which the rule further down already states. */
 }
 
 /*
@@ -681,7 +682,7 @@
   margin: 0;
   padding: 6px 10px;
   border-left: 3px solid var(--dsw-alias-brand-primary);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--dsw-alias-bg-layer-2);
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
@@ -711,18 +712,19 @@
 }
 
 .uip-plugin details > summary + * {
-  margin-top: 10px;
+  margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--dsw-alias-border-l1);
 }
 
-/* Sibling folds breathe the same amount, so a row reads as a list of blocks rather than a pile. */
+/* Sibling folds breathe the same amount (8px), so a row reads as a list of blocks rather than a pile. */
 .uip-plugin details,
 .uip-plugin .uip-contract,
 .uip-plugin .uip-maintenance,
 .uip-plugin .uip-command,
-.uip-plugin .uip-plugin-changelog {
-  margin-top: 10px;
+.uip-plugin .uip-plugin-changelog,
+.uip-plugin .uip-hint-fold {
+  margin-top: 8px;
 }
 
 /*

@@ -3626,7 +3626,9 @@ await test('the column reads the dictionary it is actually given', async () => {
     'changelogTitle', 'changelogLoading', 'changelogFailed', 'changelogNoFile', 'changelogNoSections',
     'changelogUnreadable', 'changelogNotInstalled', 'changelogTruncated',
     // Step 56c: the row's default view, its shared fold summary, and the copy buttons.
-    'rowDetails', 'maintenanceBrief', 'uninstallTitle', 'uninstallBrief', 'copyCommand', 'copyDone', 'copyFailed']
+    'rowDetails', 'maintenanceBrief', 'uninstallTitle', 'uninstallBrief', 'copyCommand', 'copyDone', 'copyFailed',
+    // Step 56d: the short fold titles.
+    'foldContractPassed', 'foldContractFindings', 'foldMaintenance', 'foldHint']
   const readyScan = {
     profileName: 'web',
     dependencies: [{ name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] }],
@@ -4164,7 +4166,12 @@ await test('the row folds its changelog away, and renders all three answers', ()
 
   const ready = rowOf(render({ status: 'ready', payload: { reason: null, sections: [section] } }), 'skin-pkg')
   contains(ready, 'data-uip-changelog="skin-pkg"', 'the row folds its changelog away')
-  contains(ready, scan.dependencies[0].changelogHeading, 'and the collapsed summary already names the newest section, from the listing')
+  /*
+   * Step 56d took the markdown `##` off the label and cuts long headings at sixty characters, so the
+   * assertion follows the summary that is actually rendered rather than the raw heading line.
+   */
+  contains(ready, 'Round 55 — newest section', 'and the collapsed summary names the newest section, from the listing')
+  equal(ready.includes('## Round 55'), false, 'with its markdown prefix taken off')
   contains(ready, 'data-uip-changelog-body', 'while the body is its own element, so a test can find it')
   contains(ready, '&lt;script&gt;alert(1)&lt;/script&gt;', 'whose text is escaped, not injected: a changelog is package-supplied content')
   contains(ready, copy.changelogTruncated(20), 'and a truncated section says how much of it is missing')
@@ -4294,7 +4301,13 @@ await test('a row answers three questions by default, and folds the rest away', 
 
   contains(visible, 'ok-pkg@1.0.0', 'the default view names the package and its version')
   contains(visible, 'A tidy skin.', 'and gives the one-line description')
-  contains(visible, 'data-uip-project-id', 'and says which project the package contributes')
+  /*
+   * The project id moved INTO the fold in step 56d: the default row is preview, name, badges,
+   * description and one fold — the project a package contributes is the first thing a reader wants when
+   * they open it, not a fourth line before they have decided to care.
+   */
+  equal(visible.includes('data-uip-project-id'), false, 'the project id is not in the default view')
+  contains(folded, 'data-uip-project-id', 'it is inside the fold')
   contains(folded, 'data-uip-row-details', 'the fold itself is part of the row')
 
   equal(visible.includes('data-uip-maintenance'), false, 'while the maintenance block is NOT in the default view')
@@ -4353,20 +4366,20 @@ await test('the copy buttons carry exactly the commands their blocks print', () 
   equal(uninstall.source, 'dsh plugin --profile web remove bare-pkg', 'carrying the same command the block builds from the profile and the package name')
 })
 
-await test('a clean contract keeps its badge and stays folded; a finding opens', () => {
+await test('a contract panel is folded whatever the scan found', () => {
   const markup = renderFold()
-  const clean = rowOf(markup, 'ok-pkg')
-  const finding = rowOf(markup, 'bare-pkg')
   /* From the `<details` that OPENS the panel, not from the attribute: the attribute is inside the tag. */
   const panelTagOf = (row) => {
     const at = row.indexOf('data-uip-contract-panel')
     if (at < 0) return null
     return row.slice(row.lastIndexOf('<details', at), row.indexOf('>', at) + 1)
   }
-  contains(clean, 'data-uip-contract="ok"', 'a clean row still carries its badge')
-  equal(panelTagOf(clean) !== null, true, 'and still carries its panel, which is where the instrument limits live')
-  equal(/\sopen(=|>|\s)/.test(panelTagOf(clean)), false, 'with the panel folded, because the badge already said it')
-  equal(/\sopen(=|>|\s)/.test(panelTagOf(finding)), true, 'while a row with a finding opens its panel for the reader')
+  contains(rowOf(markup, 'ok-pkg'), 'data-uip-contract="ok"', 'a clean row still carries its badge')
+  for (const name of ['ok-pkg', 'bare-pkg']) {
+    const tag = panelTagOf(rowOf(markup, name))
+    equal(tag !== null, true, name + ': the panel is still rendered, because the limits inside it are the point')
+    equal(/\sopen(=|>|\s)/.test(tag), false, name + ': and it starts FOLDED — the badge above already carries the verdict')
+  }
 })
 
 await test('the fold styles and the copy helper hold their two promises', async () => {
@@ -4498,6 +4511,187 @@ await test('a hook lives in a component, and components are created rather than 
     true,
     'and the four command rows really are elements',
   )
+})
+
+/* ── step 56d: one row, one fold, and the labels a reader sees ─────────────── */
+
+/** Every `<details …>` opening tag in a piece of markup. */
+const detailsTags = (markup) => markup.match(/<details[^>]*>/g) ?? []
+
+/** Whether an opening tag carries an `open` attribute (React omits it for `open={false}`). */
+const isOpen = (tag) => /\sopen(=|>|\s)/.test(tag)
+
+/**
+ * A React stand-in, so the column can be walked as DATA and a hook's state can be FORCED.
+ *
+ * `props.React` is the only React the section uses, so handing it this object turns the whole component
+ * tree into plain objects — and, unlike `renderToStaticMarkup`, it lets a test force what `useState`
+ * returns and capture the effects a component registers. That is the only way to see a copy button's
+ * three labels offline: real server rendering never clicks a button and never runs an effect.
+ */
+const fakeReact = (forced = {}) => {
+  let index = 0
+  const effects = []
+  return {
+    effects,
+    React: {
+      createElement: (type, props, ...children) => {
+        const flat = children.flat(Infinity).filter((child) => child !== null && child !== undefined && child !== false)
+        /*
+         * A FUNCTION COMPONENT IS INVOKED, the way React invokes it. A stand-in that only recorded the
+         * element would stop at every component boundary — and the button this test is looking for lives
+         * inside one (`CommandRow`), so the tree would simply not contain it.
+         */
+        if (typeof type === 'function') return type({ ...(props ?? {}), children: flat })
+        return { type: type, props: props ?? {}, children: flat }
+      },
+      useState: (initial) => {
+        const forcedState = forced[index]
+        index += 1
+        return [forcedState ?? (typeof initial === 'function' ? initial() : initial), () => {}]
+      },
+      useEffect: (effect) => effects.push(effect),
+      useRef: (initial) => ({ current: initial }),
+    },
+  }
+}
+
+/** Every node in a stand-in tree, depth first. */
+const walk = (node) => {
+  if (Array.isArray(node)) return node.flatMap(walk)
+  if (node === null || typeof node !== 'object') return []
+  return [node, ...(node.children ?? []).flatMap(walk)]
+}
+
+await test('no fold in a row starts open, and a fresh render starts clean again', async () => {
+  const first = renderFold()
+  const row = rowOf(first, 'ok-pkg')
+  const kinds = ['data-uip-row-details', 'data-uip-contract-panel', 'data-uip-maintenance', 'data-uip-command', 'data-uip-changelog', 'data-uip-hint']
+  for (const hook of kinds) {
+    const tag = detailsTags(row).find((candidate) => candidate.includes(hook))
+    truthy(tag !== undefined, 'the row has a fold carrying ' + hook)
+    equal(isOpen(tag), false, hook + ' starts folded')
+  }
+  equal(row.includes('open='), false, 'and nothing else in the row is open either')
+
+  /*
+   * "LEAVE THE COLUMN AND COME BACK", as far as an offline suite can say it: a fresh render is a fresh
+   * mount, and a fresh mount is what the shell does when a reader returns to the section. Whether the
+   * shell really remounts — rather than hiding a live tree — is a fact about the shell, and the browser
+   * run is where it is checked; what this pins is that nothing in THIS component carries a remembered
+   * open state (no store, no localStorage, no key of its own).
+   */
+  const again = renderFold()
+  equal(detailsTags(rowOf(again, 'ok-pkg')).filter(isOpen), [], 'a fresh mount renders every fold closed again')
+  equal(/localStorage|sessionStorage/.test(await readFile(join(packageRoot, 'src', 'client', 'panel-plugins.js'), 'utf8')), false, 'and the column persists no open state anywhere')
+})
+
+await test('a copy button says so, and the timer it arms is cleaned up', async () => {
+  const copy = columnCopy()
+  const buttonIn = (forced) => {
+    const { React: Stand, effects } = fakeReact(forced)
+    /*
+     * The component is CALLED, not rendered through `renderToStaticMarkup`: the stand-in's elements are
+     * plain objects, which the real React refuses as children. This is also how `index.js` reaches it.
+     */
+    const tree = plugin.__internals.UiPluginsSection({
+      store: {
+        state: () => ({ status: 'ready', scan: foldScan() }),
+        refresh: async () => {},
+        changelog: () => ({ status: 'idle' }),
+        loadChangelog: async () => {},
+      },
+      t: { plugins: copy },
+      state: { status: 'ready', scan: foldScan() },
+      React: Stand,
+    })
+    const button = walk(tree).find((node) => node.type === 'button' && node.props['data-uip-copy'] === 'snapshot')
+    return { button, effects }
+  }
+
+  const idle = buttonIn({})
+  equal(idle.button.children.join(''), copy.copyCommand, 'before a click the button says copy')
+
+  /* The first two `useState` calls are the section own; the third belongs to the first command row. */
+  const copied = buttonIn({ 2: 'copied' })
+  equal(copied.button.children.join(''), copy.copyDone, 'after a successful copy it says so')
+  const failed = buttonIn({ 2: 'failed' })
+  equal(failed.button.children.join(''), copy.copyFailed, 'and a refusal says what to do instead')
+
+  /*
+   * THE FAKE CLOCK, and it has to be the HARNESS's clock rather than `globalThis`'s: the bundle was
+   * evaluated in a sandbox and captured `setTimeout` there, so replacing the Node global would leave the
+   * component arming a real timer. `boot({ fakeTimers: true })` installs the stand-in the bundle actually
+   * calls, and `harness.timers` then shows the deadline the effect asked for.
+   */
+  const harness = await boot({ fakeTimers: true, withTestSkin: false })
+  const armed = buttonIn({ 2: 'copied' })
+  const effect = armed.effects.find((entry) => typeof entry === 'function' && entry.length === 0 && entry !== armed.effects[0])
+  truthy(effect !== undefined, 'the row registers an effect for its feedback')
+  const cleanup = effect()
+  equal(typeof cleanup, 'function', 'the effect returns a cleanup, so an unmount cannot leave a timer behind')
+  const armedDeadlines = [...harness.timers.timeouts.values()].map((entry) => entry.ms)
+  equal(armedDeadlines.includes(1500), true, `the feedback lasts 1.5 seconds (armed: ${JSON.stringify(armedDeadlines)})`)
+  cleanup()
+  equal(
+    [...harness.timers.timeouts.values()].map((entry) => entry.ms).includes(1500),
+    false,
+    'and the cleanup clears the timer it armed',
+  )
+})
+
+await test('the changelog summary is a label, and the body does not repeat it', () => {
+  const copy = columnCopy()
+  const heading = '## Step 8c: a heading long enough that sixty characters will not hold all of it'
+  const scan = foldScan()
+  scan.dependencies[0].changelogHeading = heading
+  scan.dependencies[0].version = '1.2.3'
+  const section = { heading, lines: ['first body line', 'second body line'], truncated: false, moreLines: 0 }
+  const markup = renderSection({
+    store: {
+      state: () => ({ status: 'ready', scan }),
+      refresh: async () => {},
+      changelog: () => ({ status: 'ready', payload: { reason: null, sections: [section] } }),
+      loadChangelog: async () => {},
+    },
+    t: { plugins: copy },
+    state: { status: 'ready', scan },
+    React: react,
+  })
+  const row = rowOf(markup, 'ok-pkg')
+  const summary = /<summary[^>]*data-uip-changelog-summary[^>]*>([\s\S]*?)<\/summary>/.exec(row)
+  truthy(summary !== null, 'the changelog fold has a summary')
+  contains(summary[1], copy.changelogTitle, 'which names the changelog')
+  contains(summary[1], '1.2.3', 'and the version it belongs to')
+  contains(summary[1], 'Step 8c', 'and the section')
+  equal(summary[1].includes('#'), false, 'with no markdown hashes left in the label')
+  contains(summary[1], '…', 'and the section cut short rather than run on')
+  const body = preTextOf(row, 'data-uip-changelog-body')
+  equal(typeof body === 'string', true, 'the body renders')
+  equal(body.includes('Step 8c'), false, 'without repeating the heading the summary already names')
+  contains(body, 'first body line', 'while keeping the text itself')
+})
+
+await test('the description line is one line, and markdown is stripped before it is sent', () => {
+  const copy = columnCopy()
+  const long = 'x'.repeat(120)
+  const scan = foldScan()
+  scan.dependencies[0].description = long
+  const markup = renderSection({
+    store: { state: () => ({ status: 'ready', scan }), refresh: async () => {}, changelog: () => ({ status: 'idle' }), loadChangelog: async () => {} },
+    t: { plugins: copy },
+    state: { status: 'ready', scan },
+    React: react,
+  })
+  const row = rowOf(markup, 'ok-pkg')
+  equal(row.includes(long), false, 'a 120-character description is not rendered whole')
+  contains(row, 'x'.repeat(80) + '…', 'it is cut at eighty characters, with a marker that says so')
+
+  const stripped = changelog.summarizeChangelog('## **Bold** heading and `code`\nline with **bold** and `code` and __more__\n')
+  equal(stripped.sections[0].heading, '## Bold heading and code', 'a heading loses its bold and its code ticks')
+  equal(stripped.sections[0].lines[0], 'line with bold and code and more', 'and so does every body line')
+  equal(changelog.summarizeChangelog('## A\n### sub heading stays\n').sections[0].lines[0], '### sub heading stays', 'while a sub-heading is left as the plain text it looks like')
+  equal(changelog.summarizeChangelog('## A\nsee [docs](https://x) and ![img](y)\n').sections[0].lines[0], 'see [docs](https://x) and ![img](y)', 'and links and images are NOT rewritten: structure a plain pre cannot express is kept as written')
 })
 
 /* ── the UI Contract badge (step 9b, module 3) ─────────────────────────────── */
@@ -6340,14 +6534,15 @@ await test('the plugins column prints the maintenance commands, addressed at the
      * ordinary case is updating-and-rolling-back had no maintenance commands at all.
      */
     contains(markup, 'data-uip-maintenance="dsh-ui-projects"', 'and so does the framework row (' + locale + ')')
-    contains(
-      markup,
-      copy.maintenanceTitle('dsh-ui-projects'),
-      'whose heading names the framework package (' + locale + ')',
-    )
+    /*
+     * THE FOLD'S TITLE IS A SHORT LABEL SINCE STEP 56d. It used to be `copy.maintenanceTitle(name)` —
+     * a sentence that named the package; the package is now named by the fold's own hook
+     * (`data-uip-maintenance="<name>"`, asserted above) and by the row header, and the title says what
+     * the fold holds. The assertion follows the change rather than the old sentence.
+     */
+    contains(markup, copy.foldMaintenance, 'whose title is the short fold label (' + locale + ')')
     const rows = markup.split('data-uip-maintenance="').length - 1
     equal(rows, 2, 'one maintenance block per row, with no row skipped (' + locale + ')')
-    contains(markup, copy.maintenanceTitle('dsh-ui-project-x'), 'whose heading names the package (' + locale + ')')
     for (const verb of ['snapshot', 'update', 'rollback']) {
       contains(
         markup,
