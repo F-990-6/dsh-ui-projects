@@ -114,6 +114,14 @@ export const STRINGS = {
         typeof reason === 'string' && reason.length > 0
           ? `Not scanned: ${reason}`
           : 'The host did not report a contract scan for this row; dsh web may need a restart.',
+      /*
+       * THE FRAMEWORK'S OWN ROW (9b review). Its badge says the contract does not apply, and its panel
+       * still shows what the host read — because two findings behind a badge that says "not applicable"
+       * is a contradiction a reader has to be given the answer to, not shielded from.
+       */
+      contractFramework: (count) => `The framework itself: the contract does not apply (${count} accepted)`,
+      contractFrameworkNote: (count) =>
+        `The framework is not bound by the contract; these ${count} are recorded rather than fixed in this round, and the snapshot in check-installed.test.mjs pins them.`,
       commandsHint: 'To remove it, run this in PowerShell:',
       restartHint: 'The command alone does not take effect: the running dsh still holds the old composition. After it finishes, stop dsh web (Ctrl+C) and start it again.',
       /*
@@ -281,6 +289,13 @@ export const STRINGS = {
         typeof reason === 'string' && reason.length > 0
           ? `未扫描：${reason}`
           : '宿主没有报告这一行的契约扫描结果；可能需要重启 dsh web。',
+      /*
+       * 框架自己那一行（9b 复审）。徽章说契约不适用，面板照样显示宿主读到的东西 ——
+       * “不适用”的徽章旁边挂着两条 finding，这个矛盾必须给读者答案，而不是替他挡掉。
+       */
+      contractFramework: (count) => `契约：框架自身 —— 不适用（${count} 条已接受）`,
+      contractFrameworkNote: (count) =>
+        `框架自身不受契约约束；这 ${count} 条已记档，不在本轮修，check-installed.test.mjs 的快照钉着它们。`,
       commandsHint: '要卸载它，在 PowerShell 里执行：',
       restartHint: '只跑命令不会生效：运行中的 dsh 仍持有旧组合。命令跑完后，停掉 dsh web（Ctrl+C），再启动一次。',
       restartBlock: (command) => `# 1. 在 PowerShell 里\n${command}\n\n# 2. 停掉 dsh web（Ctrl+C），再启动一次`,

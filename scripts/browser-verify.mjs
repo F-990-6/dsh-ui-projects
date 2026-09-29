@@ -24,6 +24,7 @@
  */
 
 import { spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -421,9 +422,122 @@ function carriesSettingsPath(payload) {
   return ops.some((op) => Array.isArray(op?.path) && op.path[0] === 'settings')
 }
 
+/**
+ * EVERY TOP-LEVEL PAGE EXPRESSION, PARSED BEFORE A BROWSER IS EVER LAUNCHED.
+ *
+ * An expression this suite evaluates is a STRING, and `node --check` validates the file that builds the
+ * string rather than the string. A typo inside one — a missing paren, an unbalanced brace in a selector
+ * — therefore costs a Chrome launch and a live navigation to discover, and reports itself as
+ * `page exception: Unexpected token` with nothing pointing at the expression that has it.
+ *
+ * WHAT THIS COVERS, precisely: every top-level binding whose value is a template literal, plus the two
+ * arrow functions that BUILD one (each is called with a sample argument, and the RESULT is what gets
+ * parsed — the same string the page would receive). What it does NOT cover: the expressions written
+ * inline at their `evaluate(...)` call site, which are the majority. A guard that claimed those would
+ * have to parse the whole file; this one says what it checked and refuses to imply more.
+ *
+ * The registry is compared against the file in BOTH directions, so its coverage cannot rot: a page
+ * expression nobody registered fails as loudly as a registered name that stopped being one.
+ *
+ * The interpolations are replaced with `0;` before parsing, and that is the one approximation here: it
+ * keeps the syntax around them (`${HELPERS}` sits after `(() => {`, `${hook}` inside a selector string)
+ * while changing the string that is parsed. Syntax is what a typo breaks; a substitution that keeps the
+ * delimiters in place is enough to catch it.
+ */
+const PAGE_EXPRESSIONS = [
+  ['HELPERS', []],
+  ['PROBE', []],
+  ['OPEN_PANEL', []],
+  ['CLICK_SECTION', []],
+  ['PANEL_STATE', []],
+  ['TEXT_TARGETS', []],
+  ['FILTERED_SET', []],
+  ['clickSwitch', ['liquid-glass']],
+  ['SURFACE_STYLE', ['standard']],
+]
+
+/**
+ * The text of one template literal, from its opening backtick to its closing one.
+ *
+ * `\\` is skipped so an escaped backtick inside a selector does not end the literal, and `${` opens a
+ * depth level so a `}` inside an interpolation does not close it early.
+ * @param {string} source @param {number} start index of the opening backtick
+ * @returns {{ text: string, end: number } | null}
+ */
+function sliceTemplate(source, start) {
+  let depth = 0
+  for (let index = start + 1; index < source.length; index += 1) {
+    const char = source[index]
+    if (char === '\\') {
+      index += 1
+      continue
+    }
+    if (char === '$' && source[index + 1] === '{') {
+      depth += 1
+      index += 1
+      continue
+    }
+    if (char === '}' && depth > 0) {
+      depth -= 1
+      continue
+    }
+    if (char === '`' && depth === 0) return { text: source.slice(start, index + 1), end: index + 1 }
+  }
+  return null
+}
+
+/**
+ * Parse each registered expression and report what does not parse.
+ * @returns {string[]} one line per failure, empty when every expression parses
+ */
+function checkPageExpressions() {
+  const failures = []
+  const source = readFileSync(new URL(import.meta.url), 'utf8')
+  const found = [...source.matchAll(/^const ([A-Za-z_$][\w$]*) = (?=`|\([^)]*\) => `)/gm)].map((match) => match[1])
+  for (const name of found) {
+    if (!PAGE_EXPRESSIONS.some(([registered]) => registered === name)) {
+      failures.push(`${name} is a page expression nothing validates — add it to PAGE_EXPRESSIONS`)
+    }
+  }
+  for (const [name, args] of PAGE_EXPRESSIONS) {
+    if (!found.includes(name)) {
+      failures.push(`${name} is registered but is no longer a top-level page expression`)
+      continue
+    }
+    const declaration = source.indexOf(`const ${name} = `)
+    const sliced = sliceTemplate(source, source.indexOf('`', declaration))
+    if (sliced === null) {
+      failures.push(`${name}: its template literal has no closing backtick`)
+      continue
+    }
+    const initializer = source.slice(declaration + `const ${name} = `.length, sliced.end).replace(/\$\{[^}]*\}/g, '0;')
+    const call = `(${initializer})${args.length === 0 ? '' : `(${args.map((value) => JSON.stringify(value)).join(', ')})`}`
+    try {
+      const built = new Function(`return ${call}`)()
+      new Function(String(built))
+    } catch (error) {
+      failures.push(`${name}: ${String(error?.message ?? error)}`)
+    }
+  }
+  return failures
+}
+
+const expressionFailures = checkPageExpressions()
+if (expressionFailures.length > 0) {
+  process.stderr.write(
+    `[expressions] ${expressionFailures.length} page expression(s) do not parse. Every evaluate() using one\n` +
+      `[expressions] would throw inside the page, with no line here pointing at it:\n` +
+      expressionFailures.map((line) => `[expressions]   ${line}\n`).join(''),
+  )
+  process.exit(2)
+}
+
 if (selfCheckOnly) {
   process.stdout.write('dsh-ui-projects: --no-write refusal rule, against payloads the client really sends\n')
   const failures = runSelfCheck()
+  process.stdout.write(
+    `every top-level page expression parses (${PAGE_EXPRESSIONS.map(([name]) => name).join(', ')})\n`,
+  )
   process.stdout.write(failures === 0 ? '\nthe refusal rule covers every protected write\n' : `\n${failures} case(s) disagreed\n`)
   process.exit(failures === 0 ? 0 : 1)
 }
@@ -884,8 +998,8 @@ const PANEL_STATE = `(() => {
  * was refused" from "the click was accepted and the skin did not follow" — the first version of this
  * diagnostic was taken thirty seconds too late and reported a healthy switch through a whole run.
  */
-const CLICK_SWITCH = `(async () => {
-  const find = () => document.querySelector('[data-project="liquid-glass"] [role="switch"]');
+const clickSwitch = (id) => `(async () => {
+  const find = () => document.querySelector('[data-project="${id}"] [role="switch"]');
   if (find() === null) return { error: 'switch not found' };
   const startedAt = Date.now();
   let target = find();
@@ -907,9 +1021,21 @@ const CLICK_SWITCH = `(async () => {
     replaced: now !== target,
     checkedAfter: now === null ? null : now.getAttribute('aria-checked'),
     disabledAfter: now === null ? null : now.disabled === true,
-    markerAfter: document.body.getAttribute('data-ui-project-liquid-glass'),
+    markerAfter: document.body.getAttribute('data-ui-project-${id}'),
   };
 })()`
+
+/*
+ * THE SKIN IS ONE PROJECT ID, and this suite used to be unable to say so.
+ *
+ * The click expression hard-coded `[data-project="liquid-glass"]` and the marker it read was
+ * `data-ui-project-liquid-glass`, so every phase could drive exactly one project package — the one
+ * this file was written beside. Step 9b shipped a SECOND project package (the example), and the
+ * difference between "the framework applies a project" and "the framework applies this project" is
+ * only visible when two of them exist. `clickSwitch(id)` is that expression with the id as a
+ * parameter; `CLICK_SWITCH` is the skin's instance of it, so every existing use is unchanged.
+ */
+const CLICK_SWITCH = clickSwitch('liquid-glass')
 
 /**
  * Boxes of the text a reader depends on, with the label to report them under. Each
@@ -929,6 +1055,57 @@ const CLICK_SWITCH = `(async () => {
  * is the settings surface — which really does sit on the glass — plus, only when
  * no dialog covers it, the sidebar's own label.
  */
+/* ── the two example surfaces, and what "covered" means in computed styles ─── */
+
+/**
+ * One example surface's computed material, by hook.
+ *
+ * The pair these read is the whole of step 9b's third example: two surfaces that look identical and
+ * differ in one attribute. The skin's rule is
+ * `:where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip'])`, so `role="dialog"` is
+ * reachable by a published interface and `role="custom-dialog"` is reachable by nothing.
+ *
+ * `boxShadow` is read beside `backdropFilter` because the two are set by the same rule and prove
+ * different halves: the filter says the frost landed, the shadow says the rule's OTHER declaration did
+ * — and since the example's own stylesheet sets `box-shadow` too (from the shipped palette), a shadow
+ * that changed is evidence the skin's declaration won on specificity rather than a default.
+ * @param {string} hook `standard` | `custom`
+ */
+const SURFACE_STYLE = (hook) => `(() => {
+  const el = document.querySelector('[data-example-dialog="${hook}"]');
+  if (el === null) return null;
+  const style = getComputedStyle(el);
+  return {
+    role: el.getAttribute('role'),
+    backdropFilter: String(style.backdropFilter || style.webkitBackdropFilter || ''),
+    boxShadow: String(style.boxShadow),
+  };
+})()`
+
+/**
+ * Every element whose computed `backdrop-filter` is doing something, as stable identities.
+ *
+ * THE SET, not a count, and that is the assertion test C needs: "the page is back to normal" cannot be
+ * said by counting, because one element that gained frost while another lost it leaves the count
+ * unchanged. Identities are tag + id + class list + role, sorted — enough to compare two moments of the
+ * same page, and deliberately not a selector, because the elements this catches are the ones no
+ * selector of ours names.
+ */
+const FILTERED_SET = `(() => {
+  const seen = [];
+  for (const el of document.querySelectorAll('*')) {
+    const style = getComputedStyle(el);
+    const value = String(style.backdropFilter || style.webkitBackdropFilter || '');
+    if (value === '' || value === 'none') continue;
+    const classes = typeof el.className === 'string' && el.className.trim().length > 0
+      ? '.' + el.className.trim().split(/\\s+/).join('.')
+      : '';
+    const role = el.getAttribute('role');
+    seen.push(el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + classes + (role ? '[role=' + role + ']' : ''));
+  }
+  return seen.sort();
+})()`
+
 const TEXT_TARGETS = `(() => {${HELPERS}
   const runBox = (el, label) => {
     if (!el) return null;
@@ -1027,19 +1204,24 @@ async function closePanel(session) {
 }
 
 /**
- * Whether the skin is applied right now.
+ * Whether one project is applied right now.
  *
  * Read from the marker rather than from the switch's own attribute: the two agree, and when they do
  * not, the marker is the one the stylesheet keys off — it decides what the page looks like.
+ *
+ * The marker is on `<body>`: `runtime.js` stamps `body[data-ui-project-<id>="on"]` and scopes every
+ * project stylesheet with that selector (`scope-css.js` documents `html[…]`, which is an older
+ * spelling of the same idea and NOT what the runtime writes — measured, not assumed).
  * @param {{ send: Function }} session
+ * @param {string} id
  * @returns {Promise<boolean>}
  */
-async function skinIsOn(session) {
-  return (await evaluate(session, "document.body.getAttribute('data-ui-project-liquid-glass') === 'on'")) === true
+async function projectIsOn(session, id) {
+  return (await evaluate(session, `document.body.getAttribute('data-ui-project-${id}') === 'on'`)) === true
 }
 
 /**
- * Drive the skin to a known state through the UI, the way a person would.
+ * Drive ONE project to a known state through the UI, the way a person would.
  *
  * Each phase states the state it needs rather than inheriting one from the phase before it. Two
  * things made that necessary rather than tidy: the suite used to assume the settings document
@@ -1047,21 +1229,154 @@ async function skinIsOn(session) {
  * produced a dozen failures, every one of them an echo of that single mismatch — and one phase "set"
  * the state by writing a `localStorage` key this plugin has never read, which worked only because
  * the document beside it happened to say the right thing.
+ *
+ * The project id is a parameter because there is more than one project package now; `setSkin` below
+ * is the skin's call.
+ * @param {{ send: Function }} session
+ * @param {string} id
+ * @param {boolean} wantOn
+ */
+async function setProject(session, id, wantOn) {
+  await ensurePanel(session)
+  if ((await projectIsOn(session, id)) === wantOn) return
+  const clicked = await evaluate(session, clickSwitch(id))
+  truthy(clicked.ok, `switch click for ${id} (${JSON.stringify(clicked)})`)
+  await waitFor(
+    session,
+    wantOn
+      ? `document.body.getAttribute('data-ui-project-${id}') === 'on'`
+      : `document.body.getAttribute('data-ui-project-${id}') === null`,
+    wantOn ? `the ${id} marker` : `the ${id} marker to clear`,
+  )
+}
+
+/**
+ * The skin, as one project among several.
+ *
+ * Kept as a name because the suite's phases are about the skin and read better for it, and kept as a
+ * WRAPPER rather than a second implementation so the two can never drift: there is one click, one
+ * marker read, one wait, and this is the skin's arguments to it. The four `skinIsOn` call sites and
+ * the six `setSkin` call sites below are unchanged for the same reason.
  * @param {{ send: Function }} session
  * @param {boolean} wantOn
  */
 async function setSkin(session, wantOn) {
+  return setProject(session, 'liquid-glass', wantOn)
+}
+
+/** Whether the skin is on — the read half of the wrapper above. @param {{ send: Function }} session */
+async function skinIsOn(session) {
+  return projectIsOn(session, 'liquid-glass')
+}
+
+/**
+ * Go to Settings — UI — the PROJECTS page, whatever the panel happens to be showing.
+ *
+ * The suite has one opener (`ensurePanel`) and one section selector (`CLICK_SECTION`, matched by the
+ * section's own label), and they are separate steps on purpose: the earlier phases are the projects
+ * page's, the plugins group is the other page's, and a test that needs one of them has to say so.
+ * @param {{ send: Function }} session
+ */
+async function gotoProjectsPage(session) {
   await ensurePanel(session)
-  if ((await skinIsOn(session)) === wantOn) return
-  const clicked = await evaluate(session, CLICK_SWITCH)
-  truthy(clicked.ok, `switch click (${JSON.stringify(clicked)})`)
-  await waitFor(
-    session,
-    wantOn
-      ? "document.body.getAttribute('data-ui-project-liquid-glass') === 'on'"
-      : "document.body.getAttribute('data-ui-project-liquid-glass') === null",
-    wantOn ? 'the marker' : 'the marker to clear',
+  const section = await evaluate(session, CLICK_SECTION)
+  truthy(
+    section?.ok === true,
+    `the UI section item exists (${JSON.stringify(section?.error ?? '')} ${JSON.stringify(section?.seen ?? [])})`,
   )
+  await waitFor(session, `document.querySelector('[data-project="liquid-glass"]') !== null`, 'the project card')
+}
+
+/**
+ * Go to Settings — UI plugins — the PACKAGES page.
+ *
+ * Matched by the nav item's own copy, which is the only handle the shell offers (it renders our
+ * `label()` and nothing else); everything asserted afterwards reads the `data-uip-*` hooks our own
+ * renderer writes, so a copy edit in either language cannot break those.
+ * @param {{ send: Function }} session
+ */
+async function gotoPluginsPage(session) {
+  await ensurePanel(session)
+  const clicked = await evaluate(
+    session,
+    `(() => {
+      const items = Array.from(document.querySelectorAll('button,[role="button"],[role="tab"],a'))
+      const wanted = items.find((el) => /UI 插件|UI plugins/.test((el.textContent || '').trim()))
+      if (!wanted) return { ok: false, seen: items.slice(0, 12).map((el) => (el.textContent || '').trim().slice(0, 16)) }
+      wanted.click()
+      return { ok: true }
+    })()`,
+  )
+  truthy(clicked?.ok === true, `the UI plugins nav item exists (saw ${JSON.stringify(clicked?.seen ?? [])})`)
+  await waitFor(session, `document.querySelector('[data-uip-plugins="ready"]') !== null`, 'the plugins column to be ready')
+}
+
+/**
+ * The names the HOST says are installed, read from the endpoint the column reads.
+ *
+ * Used as a PRECONDITION, never as an assertion of the feature: a test whose subject is not installed
+ * has to fail with a sentence that says which package is missing and what to do, rather than pass
+ * against an empty page or quietly skip. Skipping would let a green run mean "everything is fine"
+ * on a machine where the example packages were never installed.
+ * @param {{ send: Function }} session
+ * @param {string[]} names
+ * @returns {Promise<string[]>}
+ */
+async function requireInstalled(session, names) {
+  const listed = await evaluate(
+    session,
+    `fetch('/api/ui-projects/installed.json', { credentials: 'same-origin' })
+      .then(async (response) => ((await response.json()).scan?.dependencies ?? []).map((entry) => entry.name))
+      .catch(() => null)`,
+  )
+  const missing = names.filter((name) => !(listed ?? []).includes(name))
+  if (missing.length > 0) {
+    throw new Error(
+      `PRECONDITION NOT MET — the profile listing has no ${missing.join(', ')}. ` +
+        `Install it into the profile this page is served from, restart dsh web, then re-run. ` +
+        `Listing seen: ${JSON.stringify(listed ?? null)}`,
+    )
+  }
+  return listed ?? []
+}
+
+/*
+ * THE EXAMPLE PACKAGES' OWN NAMES, scoped, read out of their `package.json`s rather than guessed.
+ *
+ * They were guessed first, and wrongly: the suite looked for `dsh-plugin-example` while the package
+ * that ships is `@xjl-resources/dsh-plugin-example` — so every precondition below would have failed
+ * with "the listing has no dsh-plugin-example" on a machine where it was installed and working. The
+ * names are the same identity the listing, the row and the removal command all use.
+ */
+const EXAMPLE_PROJECT_PACKAGE = '@xjl-resources/dsh-plugin-example'
+const EXAMPLE_DIALOG_PACKAGE = '@xjl-resources/dsh-plugin-example-dialog'
+
+/**
+ * The two example packages, and the DOM only they can produce.
+ *
+ * The listing alone is not enough: a package can be installed and still not be in the page, because
+ * the running process loaded its composition before the install — which is the ordinary state right
+ * after `dsh plugin add` and exactly what this suite's own README tells a reader to expect. So this
+ * checks both halves and names which one is missing.
+ * @param {{ send: Function }} session
+ */
+async function requireExamplePackages(session) {
+  const listed = await requireInstalled(session, [EXAMPLE_PROJECT_PACKAGE, EXAMPLE_DIALOG_PACKAGE])
+  const scene = await evaluate(
+    session,
+    `({
+      surfaces: document.querySelectorAll('[data-example-dialog]').length,
+      roles: Array.from(document.querySelectorAll('[data-example-dialog]')).map((el) => el.getAttribute('role')),
+    })`,
+  )
+  if (scene?.surfaces !== 2) {
+    throw new Error(
+      `PRECONDITION NOT MET — ${EXAMPLE_DIALOG_PACKAGE} is listed (${listed.includes(EXAMPLE_DIALOG_PACKAGE)}) ` +
+        `but its two [data-example-dialog] surfaces are not in the page (${JSON.stringify(scene ?? null)}). ` +
+        `The running dsh web loaded its composition before the install: stop it, start it again, then re-run.`,
+    )
+  }
+  return scene
 }
 
 /* ── run ──────────────────────────────────────────────────────────────────── */
@@ -1092,6 +1407,80 @@ let startedWithSkinOn = false
  * ReferenceError instead of reporting anything — in the one code path whose whole job is to report.
  */
 let checksAtStart = null
+
+/**
+ * EVERY pause on the settings API, counted BEFORE anything is decided about it.
+ *
+ * WHY THIS EXISTS, and it is this file's own history: the interceptor used to log a request only when
+ * it judged the request to be a WRITE, so "the page never touched the settings API" and "the page made
+ * a hundred settings READS" produced exactly the same output — silence. A run was spent on that
+ * difference: the gate reported `the interceptor saw and refused at least one write (0)` while the
+ * truth was that the client's settings scope was not talking to the API at all (its reads and writes
+ * never crossed the wire), so there was nothing for `--no-write` to refuse and nothing wrong with the
+ * rule. Counting every pause turns those two cases into two different lines of output, which is the
+ * whole fix.
+ *
+ * Declared OUT here for the same reason `startedWithSkinOn` and `checksAtStart` are: the summary
+ * belongs in the `catch` that ends a `--verify-refusal` run, and a `const` inside the `try` is not in
+ * scope there.
+ */
+const settingsPauses = { total: 0, describe: 0, mutate: 0, other: 0, writes: 0, reads: 0 }
+/** How many pauses may be logged per bucket; past it they are counted and not printed, so a run stays readable. */
+const SETTINGS_PAUSE_LOG_CAP = 20
+const settingsPauseLogs = { describe: 0, mutate: 0, other: 0 }
+/** The summary is printed once; the `catch` below is a backstop for an abort before the gate's report. */
+let settingsPausesReported = false
+
+/**
+ * Which bucket a paused settings request belongs to, by its LAST path segment.
+ *
+ * The last segment is the only part that says what the call IS: `describe` is the read, and
+ * `mutate`/`replace`/`update` are the three write-shaped verbs the refusal rule recognises — counted
+ * together, because the question this answers is "did a write arrive at all", not which verb it used.
+ * Anything else under the prefix is `other`: an API this suite has never seen, which is exactly the
+ * thing worth seeing in a count.
+ * @param {string} url
+ * @returns {'describe' | 'mutate' | 'other'}
+ */
+function settingsPauseBucket(url) {
+  let path = url
+  try {
+    path = new URL(url).pathname
+  } catch {
+    /* not a URL this runtime can parse: bucket it by its own text */
+  }
+  const segments = path.split('/').filter((part) => part.length > 0)
+  const last = segments.length === 0 ? '' : segments[segments.length - 1]
+  if (last === 'describe') return 'describe'
+  if (last === 'mutate' || last === 'replace' || last === 'update') return 'mutate'
+  return 'other'
+}
+
+/**
+ * The one-line summary of the pauses above, plus the verdict when there were none.
+ *
+ * `reached` says whether the gate got as far as its own report: a run that died before any page loaded
+ * also has zero pauses, and saying "this page never used the settings API" about a page that never
+ * existed would be a worse diagnostic than saying nothing.
+ * @param {string} tag @param {boolean} reached
+ */
+function reportSettingsPauses(tag, reached) {
+  if (settingsPausesReported) return
+  settingsPausesReported = true
+  const { describe, mutate, other, total, writes, reads } = settingsPauses
+  process.stdout.write(
+    `${tag} settings pauses: describe ×${describe}, mutate ×${mutate}, other ×${other} ` +
+      `(total ${total}; judged writes ${writes}, reads ${reads})\n`,
+  )
+  if (reached && describe === 0 && mutate === 0) {
+    process.stdout.write(
+      `${tag} CONCLUSION: this page never used the settings API — not one request under /api/settings/* was ` +
+        `paused, so --no-write had nothing to refuse and the rule was never exercised. Before blaming the ` +
+        `rule, check the panel's storage line and the page's own /api/settings/* requests.\n`,
+    )
+  }
+}
+
 try {
   const version = await (await fetch(`http://127.0.0.1:${chrome.port}/json/version`)).json()
   cdp = new Cdp(version.webSocketDebuggerUrl)
@@ -1192,6 +1581,29 @@ try {
         const url = String(params.request.url)
         const isWrite = /settings\/(mutate|replace|update)(\?|$)/.test(url)
         const payload = String(params.request.postData ?? '')
+        /*
+         * COUNTED FIRST, before the rule, before the refusal, before anything decides this request is
+         * interesting. The bucket is the request's own last path segment and the write/read split is
+         * the same predicate the rule uses — so the summary says what ARRIVED, independently of what
+         * was done about it. See `settingsPauses` for the run that made this necessary.
+         */
+        const bucket = settingsPauseBucket(url)
+        settingsPauses.total += 1
+        settingsPauses[bucket] += 1
+        if (isWrite) settingsPauses.writes += 1
+        else settingsPauses.reads += 1
+        if (settingsPauseLogs[bucket] < SETTINGS_PAUSE_LOG_CAP) {
+          settingsPauseLogs[bucket] += 1
+          process.stderr.write(
+            `[no-write] pause #${settingsPauses.total} ${String(params.request.method ?? '?')} ${url} ` +
+              `→ ${isWrite ? 'write' : 'read'} (${bucket})\n`,
+          )
+        } else if (settingsPauseLogs[bucket] === SETTINGS_PAUSE_LOG_CAP) {
+          settingsPauseLogs[bucket] += 1
+          process.stderr.write(
+            `[no-write] (${bucket}: further pauses are counted but not printed, cap ${SETTINGS_PAUSE_LOG_CAP})\n`,
+          )
+        }
         /*
          * EVERY write is logged, in the shape it actually has, before any decision is taken.
          *
@@ -1373,6 +1785,12 @@ try {
   })
 
   if (noWrite) {
+    /*
+     * THE GATE'S CLOSING REPORT, printed whether the gate passed or failed — that is the point of it.
+     * The failure this answers was a gate that could only say "0 writes were refused", which reads as a
+     * broken rule and was really a page that never used the settings API; the counts say which.
+     */
+    reportSettingsPauses('[gate]', true)
     const gateFailures = failures - gateStartFailures
     if (gateFailures > 0) {
       throw new Error(
@@ -3117,6 +3535,351 @@ try {
     )
   })
 
+  /* ── the two example packages, in a real page (9b) ───────────────────────────
+   *
+   * WHAT THIS GROUP CAN SEE THAT NO OFFLINE SUITE CAN. Everything above is about the skin, and every
+   * one of those assertions is compatible with a framework that can only ever apply ONE project. Step
+   * 9b shipped two example packages — a UI project package and a plain client plugin that mounts two
+   * floating surfaces differing in one attribute — and these tests walk the pair through a real page:
+   * the skin reaches the surface that carries a WAI-ARIA role and cannot reach the one that does not;
+   * switching the skin off puts the page back exactly; two projects switch independently; and the
+   * settings column tells a reader all of it, including about the framework itself.
+   *
+   * ORDER, and it is a contract rather than a preference: this group runs after the plugins group
+   * (which leaves the panel on that page) and before the last two tests — one blocks the client
+   * bundle, the other calibrates the console collector. It leaves the skin ON and the panel on the
+   * PLUGINS page, because `the first frame is already the skin` requires `marker === 'on'`.
+   *
+   * A MISSING EXAMPLE PACKAGE IS A FAILURE WITH A NAME, never a skip: these tests are the only place
+   * the two-sided example is exercised end to end, so a green run on a machine where it was never
+   * installed would be the suite lying by omission.
+   */
+  const errorsAtExampleGroupStart = pageErrors.length
+
+  await test('a role="dialog" surface from a third-party plugin is reached by the skin', async () => {
+    await requireExamplePackages(session)
+    await gotoProjectsPage(session)
+    /*
+     * THE PROPERTY, MEASURED AS A DIFFERENCE — not the mechanism.
+     *
+     * This assertion used to demand that the skin's box-shadow WIN over the surface's own stylesheet,
+     * and it failed against a correct implementation: the skin's dialog rule is written with `:where()`,
+     * and `scopeCss` puts the project marker INSIDE that `:where()`, so the scoped selector carries ZERO
+     * specificity and deliberately yields to any material a component declares for itself
+     * (glass.css: "a component that wants its own material can still have it"). The shadow therefore
+     * comes from the surface's own `var(--dsw-alias-shadow-l2, none)`, which resolves to `none` because
+     * the shipped palette has no such token — a true measurement that the old assertion called a bug.
+     *
+     * What the skin is for is FROST, and what a third-party component is entitled to keep is its OWN
+     * material. So: same surface, twice, with the skin off and on — the filter must change, the shadow
+     * must not.
+     */
+    await setSkin(session, false)
+    const before = await evaluate(session, SURFACE_STYLE('standard'))
+    equal(
+      before?.role,
+      'dialog',
+      `the surface carries the WAI-ARIA role the skin selects by (${JSON.stringify(before ?? null)})`,
+    )
+    await setSkin(session, true)
+    const after = await evaluate(session, SURFACE_STYLE('standard'))
+    truthy(
+      after?.backdropFilter !== before?.backdropFilter,
+      `with the skin on, the frost on that surface is not what it was without it (${JSON.stringify({ off: before?.backdropFilter, on: after?.backdropFilter })})`,
+    )
+    contains(
+      after?.backdropFilter ?? '',
+      'blur',
+      `and what it gained is a blur, without the skin knowing the package (${JSON.stringify(after ?? null)})`,
+    )
+    equal(
+      after?.boxShadow,
+      before?.boxShadow,
+      `while the surface's own box-shadow is exactly what it was: the skin adds frost and does not take a component's material (${JSON.stringify({ off: before?.boxShadow, on: after?.boxShadow })})`,
+    )
+  })
+
+  await test('a role="custom-dialog" surface is NOT reached, and the difference is the role', async () => {
+    await requireExamplePackages(session)
+    await gotoProjectsPage(session)
+    await setSkin(session, true)
+    const custom = await evaluate(session, SURFACE_STYLE('custom'))
+    equal(
+      custom?.role,
+      'custom-dialog',
+      `the second surface carries a role no stylesheet can name (${JSON.stringify(custom ?? null)})`,
+    )
+    equal(
+      custom?.backdropFilter,
+      'none',
+      `so the skin cannot frost it: this is the contract violation made visible (${JSON.stringify(custom ?? null)})`,
+    )
+    /*
+     * AND THE CONTROL, which is what makes the assertion above mean anything: on the SAME page, at the
+     * same moment, with the same skin, the reachable surface beside it IS frosted. Without this, the
+     * test would pass on a page where the skin was simply off.
+     */
+    const standard = await evaluate(session, SURFACE_STYLE('standard'))
+    contains(
+      standard?.backdropFilter ?? '',
+      'blur',
+      `while the role="dialog" surface beside it is frosted right now (${JSON.stringify(standard ?? null)})`,
+    )
+  })
+
+  await test('switching the skin off restores both surfaces, the body marker, and the frosted set', async () => {
+    await requireExamplePackages(session)
+    await gotoProjectsPage(session)
+
+    /* The baseline: skin off, panel closed, and both surfaces as the example package ships them. */
+    await setSkin(session, false)
+    await closePanel(session)
+    await sleep(400)
+    const baseline = await evaluate(session, FILTERED_SET)
+    const offSurfaces = await evaluate(
+      session,
+      `({ standard: ${SURFACE_STYLE('standard')}, custom: ${SURFACE_STYLE('custom')} })`,
+    )
+    equal(offSurfaces?.standard?.backdropFilter, 'none', "with the skin off, the reachable surface keeps its own look")
+    equal(offSurfaces?.custom?.backdropFilter, 'none', 'and so does the unreachable one')
+
+    /* On: the page gains frost that the baseline did not have. */
+    await setSkin(session, true)
+    await closePanel(session)
+    await sleep(400)
+    const frosted = await evaluate(session, FILTERED_SET)
+    truthy(
+      Array.isArray(frosted) && frosted.length > (baseline ?? []).length,
+      `the skin frosts elements the baseline did not have (${JSON.stringify({ baseline: baseline?.length, on: frosted?.length })})`,
+    )
+
+    /* Off again: the SET is compared, not a count — one element gaining frost while another loses it
+     * leaves a count unchanged, which is exactly the kind of restoration this test exists to refuse. */
+    await setSkin(session, false)
+    await closePanel(session)
+    await sleep(400)
+    const after = await evaluate(session, FILTERED_SET)
+    equal(
+      after,
+      baseline,
+      `the set of elements carrying backdrop-filter is exactly what it was before the skin was switched on (${JSON.stringify({ baseline, after })})`,
+    )
+    const marker = await evaluate(session, "document.body.getAttribute('data-ui-project-liquid-glass')")
+    equal(marker, null, 'the body marker is gone: the stylesheet is scoped to it, so this is what switches the CSS off')
+    const afterSurfaces = await evaluate(session, SURFACE_STYLE('standard'))
+    equal(
+      afterSurfaces?.backdropFilter,
+      'none',
+      `and the surface the skin had frosted is back to the look it ships with (${JSON.stringify(afterSurfaces ?? null)})`,
+    )
+
+    /* The next test in this suite needs the skin on; so does `the first frame is already the skin`. */
+    await setSkin(session, true)
+  })
+
+  /*
+   * THE NON-SKIN CALLER OF `setProject`, and the reason the helper is parameterized at all: with only
+   * the skin in the page, "a project package is applied" and "THIS project package is applied" are the
+   * same sentence. Step 9b's example package makes them different sentences.
+   *
+   * THE POLICY THIS ASSERTS, and the assertion it replaces was wrong about it: this test used to demand
+   * that switching `example` on leave `liquid-glass` alone. The framework's documented rule is the
+   * opposite — `registry.conflictIds` returns the other ACTIVE skins and `runtime.#enable` disables them
+   * first ("at most one global look, so the previous one goes first"), so a second skin TAKES OVER and
+   * the first steps down, including its body marker and `data-ui-skin`. Two skins at once is exactly
+   * what the policy forbids, and a test that asks for it fails against a correct implementation.
+   *
+   * The state it needs is STATED rather than assumed (`setProject(…, false)` first): a machine where
+   * somebody had switched the example on is not a broken machine, and the suite has already paid once
+   * for assuming what the settings document happened to say.
+   */
+  await test('a second project package takes over the skin role, one skin at a time', async () => {
+    await requireExamplePackages(session)
+    await gotoProjectsPage(session)
+    await setProject(session, 'example', false)
+    await setSkin(session, true)
+    try {
+      equal(
+        await projectIsOn(session, 'liquid-glass'),
+        true,
+        'the skin is active before this runs, so there is something for the second skin to take over from',
+      )
+      await setProject(session, 'example', true)
+      equal(await projectIsOn(session, 'example'), true, 'the example project sets its OWN marker')
+      equal(
+        await projectIsOn(session, 'liquid-glass'),
+        false,
+        'and the skin steps down: the framework allows one global look at a time',
+      )
+      const scoped = await evaluate(
+        session,
+        `({
+          ownMarker: Array.from(document.querySelectorAll('style')).some((style) =>
+            String(style.textContent).includes('data-ui-project-example')),
+          card: document.querySelector('[data-project="example"]') !== null,
+          rootSkin: document.documentElement.getAttribute('data-ui-skin'),
+        })`,
+      )
+      equal(
+        scoped?.ownMarker,
+        true,
+        'the framework scoped the example stylesheet to the example marker rather than to the skin’s',
+      )
+      equal(scoped?.card, true, 'the project has its own card on this page, beside the skin’s')
+      equal(
+        scoped?.rootSkin,
+        'example',
+        'and the hand-over is stated on the root, not left to be inferred from the markers',
+      )
+    } finally {
+      /* Whatever happened, the page is handed back the way this test found it: example off, skin on. */
+      await setProject(session, 'example', false)
+      await setSkin(session, true)
+    }
+    equal(await projectIsOn(session, 'example'), false, 'switching it off clears its marker again')
+    equal(await projectIsOn(session, 'liquid-glass'), true, 'and the skin is active again, as it was')
+  })
+
+  await test('the plugins column shows the four contract states, and the framework row explains its own', async () => {
+    await requireExamplePackages(session)
+    await gotoPluginsPage(session)
+    /*
+     * Folded FIRST, then expanded — the two facts a reader gets are "the row stays a row" and "opening
+     * it shows what the scan found", and a test that expands before reading cannot assert the first.
+     */
+    const scene = await evaluate(
+      session,
+      `(() => {
+        const read = (name) => {
+          const row = document.querySelector('[data-uip-plugin="' + name + '"]');
+          if (row === null) return null;
+          const badge = row.querySelector('[data-uip-contract]');
+          const panel = row.querySelector('[data-uip-contract-panel]');
+          const summary = row.querySelector('[data-uip-contract-summary]');
+          return {
+            state: badge === null ? null : badge.getAttribute('data-uip-contract'),
+            text: badge === null ? null : (badge.textContent || '').trim(),
+            panel: panel !== null,
+            open: panel === null ? null : panel.open === true,
+            findings: row.querySelectorAll('[data-uip-contract-finding]').length,
+            note: row.querySelector('[data-uip-contract-note]') !== null,
+            /*
+             * THE SENTENCE, READ FROM ITS OWN HOOK. The whole row's text starts with the package name and
+             * version (dsh-ui-projects@0.1.0), so parsing digits out of IT found the 0 in the version and
+             * reported "expected 2, got 0" against a panel that was rendering correctly. No backticks in
+             * this comment on purpose: it lives inside a template literal, and one would end it.
+             */
+            summary: summary === null ? null : (summary.textContent || '').trim(),
+          };
+        };
+        const ROWS = [
+          ['example', ${JSON.stringify(EXAMPLE_PROJECT_PACKAGE)}],
+          ['dialog', ${JSON.stringify(EXAMPLE_DIALOG_PACKAGE)}],
+          ['framework', 'dsh-ui-projects'],
+        ];
+        const out = {};
+        for (const [key, name] of ROWS) out[key] = read(name);
+        for (const [key, name] of ROWS) {
+          const panel = document.querySelector('[data-uip-plugin="' + name + '"] [data-uip-contract-panel]');
+          if (panel !== null) panel.open = true;
+        }
+        for (const [key, name] of ROWS) {
+          const row = document.querySelector('[data-uip-plugin="' + name + '"]');
+          if (out[key] !== null && out[key] !== undefined && row !== null) out[key].shown = (row.textContent || '').trim();
+        }
+        return out;
+      })()`,
+    )
+
+    equal(scene?.example?.state, 'ok', `a clean client bundle is reported as clean (${JSON.stringify(scene?.example ?? null)})`)
+    truthy(scene?.example?.panel === true, 'and the clean row still opens: a green badge is not a promise')
+    equal(scene?.dialog?.state, 'warn', `the violating package is reported (${JSON.stringify(scene?.dialog ?? null)})`)
+    equal(
+      scene?.dialog?.findings,
+      1,
+      `with exactly the one finding its own package check pins (${JSON.stringify(scene?.dialog ?? null)})`,
+    )
+    contains(
+      scene?.dialog?.shown ?? '',
+      'custom-dialog',
+      'and the finding names the role that no stylesheet can select',
+    )
+    equal(scene?.dialog?.open, false, 'the panels start folded, so a row stays a row')
+
+    equal(
+      scene?.framework?.state,
+      'na',
+      `the contract is not applied to the framework itself, and the badge says so (${JSON.stringify(scene?.framework ?? null)})`,
+    )
+    /*
+     * THE ROW STILL OPENS, and the two accepted findings are inside it. Hiding them behind "n/a" was the
+     * first version of this badge, and the objection was right: a reader who never runs the CLI could
+     * not see that the framework's own bundle carries two colour literals — recorded, accepted, and
+     * pinned by `check-installed.test.mjs`'s snapshot rather than quietly narrowed out of the rule.
+     */
+    truthy(
+      scene?.framework?.panel === true,
+      `the framework's own row opens rather than hiding the decision (${JSON.stringify(scene?.framework ?? null)})`,
+    )
+    truthy(
+      (scene?.framework?.findings ?? 0) >= 2,
+      `and the two accepted findings the host reports are listed (${JSON.stringify(scene?.framework ?? null)})`,
+    )
+    contains(scene?.framework?.shown ?? '', 'rgb(255 255 255 / 45%)', 'the first accepted finding is shown as it was read')
+    contains(scene?.framework?.shown ?? '', 'rgb(255 255 255 / 32%)', 'and so is the second')
+    equal(
+      scene?.framework?.note,
+      true,
+      'with the note that says the pair is recorded rather than fixed, matched by its own hook',
+    )
+    equal(
+      Number((String(scene?.framework?.summary ?? '').match(/\d+/) ?? [])[0]),
+      scene?.framework?.findings,
+      'while the sentence on it counts the same number of findings the panel lists',
+    )
+  })
+
+  await test('a real third-party plugin shows the warning state, with its own findings and the limits', async () => {
+    await requireInstalled(session, ['dsh-cost-meter'])
+    await gotoPluginsPage(session)
+    const row = await evaluate(
+      session,
+      `(() => {
+        const el = document.querySelector('[data-uip-plugin="dsh-cost-meter"]');
+        if (el === null) return null;
+        const badge = el.querySelector('[data-uip-contract]');
+        const panel = el.querySelector('[data-uip-contract-panel]');
+        return {
+          state: badge === null ? null : badge.getAttribute('data-uip-contract'),
+          text: badge === null ? null : (badge.textContent || '').trim(),
+          findings: el.querySelectorAll('[data-uip-contract-finding]').length,
+          codes: Array.from(el.querySelectorAll('[data-uip-contract-finding]')).map((node) => node.getAttribute('data-uip-contract-finding')),
+          limits: el.querySelectorAll('[data-uip-contract-limits] li').length,
+          shown: (el.textContent || '').trim(),
+        };
+      })()`,
+    )
+    equal(row?.state, 'warn', `a package this project did not write is reported rather than silently accepted (${JSON.stringify(row?.state ?? null)})`)
+    truthy(
+      (row?.findings ?? 0) >= 1,
+      `at least one finding is listed (${row?.findings}): the count belongs to that package, and this suite does not pin it`,
+    )
+    equal(
+      Number((String(row?.text ?? '').match(/\d+/) ?? [])[0]),
+      row?.findings,
+      `and the badge counts exactly the findings the panel lists (${JSON.stringify(row?.text ?? null)})`,
+    )
+    truthy(
+      (row?.limits ?? 0) >= 1,
+      'with the instrument’s own limits under them, so a warning is never read as a verdict',
+    )
+    equal(
+      pageErrors.length,
+      errorsAtExampleGroupStart,
+      'the example group added no page errors (' + JSON.stringify(pageErrors.slice(errorsAtExampleGroupStart)) + ')',
+    )
+  })
+
   await test('the first frame is already the skin, with the client bundle blocked', async () => {
     await session.send('Network.enable')
     await session.send('Network.setBlockedURLs', { urls: ['*dsh-ui-projects/client.js*'] })
@@ -3202,8 +3965,17 @@ try {
    * code the recorded failures already set.
    */
   if (err instanceof Error && err.message === GATE_ONLY) {
+    /*
+     * The backstop for requirement this file states twice: a `--verify-refusal` run must SAY what the
+     * interceptor saw, even when it ended early. In the normal path the gate already reported (the
+     * summary prints once), so this is silent then — and when it is not silent, the run never reached
+     * the gate, which is why the verdict line is suppressed (`reached: false`): zero pauses before any
+     * page loaded is not evidence about the page.
+     */
+    reportSettingsPauses('[gate]', false)
     process.stdout.write('\n[gate] the refusal gate is the whole run; stopping here by design.\n')
   } else if (verifyRefusalOnly) {
+    reportSettingsPauses('[gate]', false)
     process.stderr.write(`\n[gate] the gate could not be completed: ${String(err?.message ?? err)}\n`)
     process.exitCode = 1
   } else {

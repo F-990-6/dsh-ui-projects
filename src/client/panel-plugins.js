@@ -149,11 +149,13 @@ export function UiPluginsSection(props) {
         contractBadge,
       ),
       /*
-       * NO PANEL ON THE FRAMEWORK'S ROW. `na` is a decision, not a measurement, and there is nothing under
-       * it to explain — the two accepted findings the host reports for this bundle are printed by the CLI
-       * report (`check-installed.mjs`), which is the surface that reports on the instrument itself.
+       * THE FRAMEWORK'S ROW OPENS TOO (9b review). Its badge stays `na` — the contract is not a rule the
+       * instrument is measured by — but declining to render the panel hid two findings that ARE in the
+       * payload, and a reader who never runs the CLI could not see them. So the row explains itself:
+       * the summary says the contract does not apply, the findings are listed, and a note says they are
+       * recorded rather than fixed. `na` is a judgement about the BADGE; silence was a different claim.
        */
-      contractState === 'na' ? null : ContractPanel({ copy, React: React_, name: dependency.name, state: contractState, contract: dependency.contract }),
+      ContractPanel({ copy, React: React_, name: dependency.name, state: contractState, contract: dependency.contract }),
       dependency.projectId === undefined
         ? null
         : React_.createElement('p', { className: 'uip-hint' }, copy.project(dependency.projectId)),
@@ -240,15 +242,26 @@ function ContractPanel({ copy, React, name, state, contract }) {
   const findings = contract?.findings ?? []
   const limits = contract?.limits ?? []
   const rules = contract?.rules
+  /** The framework's own row: not judged by the contract, and still shown what the scan found. */
+  const framework = state === 'na'
   const covered =
     typeof rules?.judged === 'number' && typeof rules?.total === 'number' ? copy.contractCoverage(rules.judged, rules.total) : null
-  const summary =
-    state === 'none' ? copy.contractNotScannedWhy(contract?.reason) : covered ?? contractBadgeText(copy, state, contract)
+  let summary = covered
+  if (state === 'none') summary = copy.contractNotScannedWhy(contract?.reason)
+  else if (framework) summary = copy.contractFramework(findings.length)
+  else if (summary === null) summary = contractBadgeText(copy, state, contract)
   if (summary === null || summary === undefined || summary === '') return null
   return React.createElement(
     'details',
     { className: 'uip-contract', 'data-uip-contract-panel': name },
-    React.createElement('summary', { className: 'uip-hint' }, summary),
+    /*
+     * TWO HOOKS, ADDED FOR THE SAME REASON THE BUTTONS HAVE THEM: an assertion belongs on state, not on
+     * copy. The summary's sentence is localized and its number is part of the sentence ("2 accepted" /
+     * "2 条已接受"), so a test that wants to check it against the findings the panel lists has to be
+     * able to FIND it — and a test that parsed the row's text instead found the "0" in the package
+     * version and reported a rendering bug that did not exist.
+     */
+    React.createElement('summary', { className: 'uip-hint', 'data-uip-contract-summary': name }, summary),
     findings.length === 0
       ? null
       : React.createElement('p', { className: 'uip-hint' }, copy.contractFindingsTitle),
@@ -276,12 +289,24 @@ function ContractPanel({ copy, React, name, state, contract }) {
             ),
           ),
         ),
+    /*
+     * THE FRAMEWORK'S ROW SAYS WHY, right under the findings it is explaining: a badge that says "not
+     * applicable" beside two findings that are plainly there is a contradiction until this sentence is
+     * read, and it belongs before the instrument's own limits rather than after them.
+     */
+    framework
+      ? React.createElement(
+          'p',
+          { className: 'uip-hint', 'data-uip-contract-note': 'framework' },
+          copy.contractFrameworkNote(findings.length),
+        )
+      : null,
     limits.length === 0 ? null : React.createElement('p', { className: 'uip-hint' }, copy.contractLimitsTitle),
     limits.length === 0
       ? null
       : React.createElement(
           'ul',
-          { className: 'uip-contract-limits' },
+          { className: 'uip-contract-limits', 'data-uip-contract-limits': name },
           limits.map((limit) => React.createElement('li', { className: 'uip-hint', key: limit }, limit)),
         ),
   )

@@ -3293,7 +3293,9 @@ await test('the column reads the dictionary it is actually given', async () => {
     'noSnapshots', 'snapshotNames', 'restartReminder',
     // Step 9b: the UI Contract badge, its four states, and the panel that explains a state.
     'contractOk', 'contractWarn', 'contractNotScanned', 'contractNotApplicable', 'contractCoverage',
-    'contractFindingsTitle', 'contractLimitsTitle', 'contractNotScannedWhy']
+    'contractFindingsTitle', 'contractLimitsTitle', 'contractNotScannedWhy',
+    // And the framework's own row, which says why the contract does not apply to it.
+    'contractFramework', 'contractFrameworkNote']
   const readyScan = {
     profileName: 'web',
     dependencies: [{ name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] }],
@@ -3415,6 +3417,27 @@ await test('the contract badge has four states, and the framework’s own row is
       rows.na.includes(page.contractWarn(2)),
       false,
       'the framework’s two accepted findings are not rendered as this row’s badge (' + locale + ')',
+    )
+    /*
+     * THE ROW STILL OPENS. The first version of this badge showed `n/a` and nothing else, which hid two
+     * findings that are in the payload and in the CLI report — a reader who never opens a terminal could
+     * not know they existed. The badge is a judgement about the contract; the panel is the evidence.
+     */
+    contains(
+      rows.na,
+      'data-uip-contract-panel="dsh-ui-projects"',
+      'and its panel still opens, so the two findings are visible in the page and not only in the CLI (' + locale + ')',
+    )
+    contains(rows.na, page.contractFramework(2), 'under a sentence that says the contract does not apply (' + locale + ')')
+    contains(
+      rows.na,
+      page.contractFrameworkNote(2),
+      'and a note that says the pair is recorded rather than fixed in this round (' + locale + ')',
+    )
+    contains(
+      rows.na,
+      'data-uip-contract-note="framework"',
+      'with a hook of its own, so a test can find the note without reading copy (' + locale + ')',
     )
   }
 })
