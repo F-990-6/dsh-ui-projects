@@ -6928,6 +6928,29 @@ await test('the panel subscribes to the listing it reads, so an answer arriving 
   )
 })
 
+/*
+ * A DEAD EXPORT (56h-4).
+ *
+ * `matchesWithAncestors` sat in `scripts/fake-dom.mjs` as an exported function with no caller anywhere in
+ * the tree: `fake-dom.mjs` is this harness's own DOM, so an export nothing imports reads to the next person
+ * as a supported way in, and it is deleted rather than left as a landmark.
+ *
+ * The FIRST assertion is what makes the second one mean anything. A guard that reads an export list can pass
+ * by reading NOTHING — a reformatted file, a renamed helper, a regex that stopped matching — so one live
+ * export has to be found before the absence of another one is evidence. The second assertion is two-way by
+ * construction: the name coming back fails it, and it names the name rather than counting exports.
+ */
+await test('the fake DOM exports no function nobody calls, and the guard that says so can fail', async () => {
+  const source = await readFile(join(packageRoot, 'scripts', 'fake-dom.mjs'), 'utf8')
+  const exported = [...source.matchAll(/^export function (\w+)/gm)].map((match) => match[1])
+  truthy(exported.includes('parseCompound'), `the export list is really being read (found: ${JSON.stringify(exported)})`)
+  equal(
+    exported.includes('matchesWithAncestors'),
+    false,
+    '`matchesWithAncestors` is gone — it had no caller, and a name that comes back fails this',
+  )
+})
+
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
 if (onlyTest !== '') {
   process.stdout.write(`[filter] DSH_TEST_ONLY=${JSON.stringify(onlyTest)} skipped ${skipped} test(s)\n`)

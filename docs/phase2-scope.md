@@ -122,15 +122,21 @@ project's docs are not allowed to be.
 1. **The CLI report's column width.** A scoped package name longer than the 34-character column runs into
    the next field: `@xjl-resources/dsh-plugin-example-dialog1 finding(s)`,
    `@xjl-resources/dsh-plugin-liquid-glassno findings`. Cosmetic; found during the step-11 self-test.
+   **Closed in 56h-1**: the report's name column is now derived per section from the names in it, so a
+   40-character name cannot reach the next field and a section of short names keeps the layout it had.
 2. **`README.md`'s `--shot` sentence** names two files; the flag writes three (`<name>.png`,
    `<name>-closed.png`, `<name>-dark.png`). The plugins column is captured by none of them, which is why the
    visual evidence for the two-command check is a person's screenshot.
+   **Closed in 56h-2**: `README.md` now names all three files and the moment each one is written (dialog
+   open, dialog closed by Escape, dark mode); the plugins column is still captured by none of them.
 3. **`.snapshots/README.md` is under no version control at all** — `E:\dsh` is not a repository and
    `.snapshots` is an `EXCLUDE` entry in `tools/snapshot.mjs`, so the file that explains the snapshots is
    itself protected by nothing. Deciding which repository should hold it is open.
 4. **`docs/`-adjacent wording:** the snapshot index's heading says "20 – 38" while its prose says "20 through
    37"; the rows for 20–37 are deliberately **not** backfilled (the file states why), and 46–47 now carry a
    pointer to Rounds 45–46.
+   **Closed in 56h-3**: the heading now reads 20–37 and agrees with the prose. The rows for 20–37 are still
+   deliberately not backfilled, and 46–47 still carry the pointer to Rounds 45–46.
 5. **The framework's row has no removal block** — by design and asserted; recorded so that a future reader
    does not "fix" it.
 
@@ -141,7 +147,7 @@ project's docs are not allowed to be.
 | **B.2** | Round 52 | the gate drives a fixed project id and does not check that the project is active; a state that makes the click a no-op reads exactly like a broken refusal rule |
 | **`Ctrl+Shift+R` can come back with the skin off** | Round 52 | the client's settings read has a two-second budget; when it times out the runtime proceeds with the empty record while the host's first paint still marks the body |
 | **the record can name two skins** | Round 50 (9b-5), linked from Round 52 | `#remember` computes the enabled list from the record, not from the runtime's active set; the same family as B.2 |
-| **deferred items (b)–(e)** | Round 51 | move `derive-boot-css.mjs` into the skin package (next round); `.snapshots` index rows 20–37 (pointer added, no backfill); the dead `matchesWithAncestors` in `scripts/fake-dom.mjs` (next round, bundled); `install.ps1`'s decision-tree comment (deferred until that file is touched for another reason) |
+| **deferred items (b)–(e)** | Round 51 | move `derive-boot-css.mjs` into the skin package (next round); `.snapshots` index rows 20–37 (pointer added, no backfill); the dead `matchesWithAncestors` in `scripts/fake-dom.mjs` (next round, bundled); `install.ps1`'s decision-tree comment (deferred until that file is touched for another reason). **The dead `matchesWithAncestors` is deleted (56h-4); the other three still stand.** |
 
 ## Phase 3, and phase 4
 

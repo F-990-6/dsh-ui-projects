@@ -81,35 +81,6 @@ export function parseCompound(selector) {
   return (element) => tests.every((test) => test(element))
 }
 
-/**
- * Would this selector match this element, allowing for a marker ancestor?
- *
- * The scoper's output is always `<marker> <authored selector>`, so the form that has to be
- * checkable is "a compound matching an ancestor, then a compound matching the element". A real CSS
- * engine would do far more; this does exactly enough to answer the question the tests ask, and
- * still refuses anything else rather than guessing.
- * @param {string} selector
- * @param {any} element
- * @returns {boolean}
- */
-export function matchesWithAncestors(selector, element) {
-  const parts = String(selector).trim().split(/\s+/)
-  if (parts.length === 1) {
-    try {
-      return parseCompound(parts[0])(element)
-    } catch {
-      return false
-    }
-  }
-  if (parts.length !== 2) return false
-  let ancestor = element.parentNode
-  while (ancestor !== null && ancestor !== undefined) {
-    if (parseCompound(parts[0])(ancestor) && parseCompound(parts[1])(element)) return true
-    ancestor = ancestor.parentNode
-  }
-  return false
-}
-
 /** @param {string} tagName */
 export function createElement(tagName) {
   /** @type {Map<string, string>} */
