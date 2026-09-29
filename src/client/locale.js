@@ -250,6 +250,22 @@ export const STRINGS = {
       perf: SHARED.en.perf,
       priority: SHARED.en.priority,
       previewAlt: SHARED.en.previewAlt,
+      /*
+       * ── step 56b: the folded CHANGELOG ───────────────────────────────────────
+       *
+       * The reason CODES are the host's (`CHANGELOG_REASONS`); these are the sentences. Four of them
+       * are facts about a package — no file, no sections, too large to read, unreadable — and one is a
+       * fact about the request: the name is not in this profile, which is also the answer a
+       * path-traversal attempt gets.
+       */
+      changelogTitle: 'CHANGELOG',
+      changelogLoading: 'reading the changelog…',
+      changelogFailed: (message) => `the changelog could not be read: ${message}`,
+      changelogNoFile: 'this package ships no CHANGELOG.md',
+      changelogNoSections: 'the changelog has no "## " sections',
+      changelogUnreadable: (detail) => `the changelog could not be read: ${detail}`,
+      changelogNotInstalled: (name) => `${name} is not in this profile's dependency list`,
+      changelogTruncated: (count) => `… ${count} more line(s); see CHANGELOG.md`,
     },
     priority: SHARED.en.priority,
     orderHint: (name) => `${name} is running ahead of a higher-priority project; the order is restored on the next load.`,
@@ -425,6 +441,15 @@ export const STRINGS = {
       perf: SHARED.zh.perf,
       priority: SHARED.zh.priority,
       previewAlt: SHARED.zh.previewAlt,
+      /* ── step 56b：折叠的更新日志（与 en 同构） ───────────────────────────── */
+      changelogTitle: '更新日志',
+      changelogLoading: '正在读取更新日志…',
+      changelogFailed: (message) => `更新日志读取失败：${message}`,
+      changelogNoFile: '这个包没有 CHANGELOG.md',
+      changelogNoSections: '更新日志里没有 "## " 章节',
+      changelogUnreadable: (detail) => `更新日志无法读取：${detail}`,
+      changelogNotInstalled: (name) => `${name} 不在本 profile 的依赖列表里`,
+      changelogTruncated: (count) => `……还有 ${count} 行，见 CHANGELOG.md`,
     },
     priority: SHARED.zh.priority,
     orderHint: (name) => `${name} 目前运行在更高优先级的项目之前；下次加载时顺序会恢复。`,

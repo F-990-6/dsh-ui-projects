@@ -154,6 +154,17 @@ import { __contract as bootPresence } from '../src/client/boot-presence.js'
  */
 import * as profileScan from '../src/host/profile-scan.js'
 import * as installedEndpoint from '../src/host/installed-endpoint.js'
+/*
+ * `changelog.js` is NEW in step 56b, and a static import of a file that does not exist yet is a
+ * module-resolution failure: the suite dies at load and shows nothing about the existing 965
+ * assertions. This form turns "the module is not there yet" into `{}`, so every access is a TypeError
+ * inside its own test — a named red — while any OTHER import failure still throws loudly, because
+ * swallowing those would hide the real cause behind a dozen "is not a function" failures.
+ */
+const changelog = await import('../src/host/changelog.js').catch((error) => {
+  if (error?.code !== 'ERR_MODULE_NOT_FOUND') throw error
+  return {}
+})
 
 
 
@@ -3610,7 +3621,10 @@ await test('the column reads the dictionary it is actually given', async () => {
     'descriptionNotDeclared', 'authorNotDeclared', 'author', 'hostFieldMissing', 'previewNotDeclared',
     'perfNotDeclared', 'priorityNotDeclared', 'priorityNotApplicable', 'modifies', 'modifiesNotDeclared',
     'requires', 'requiresNotDeclared', 'projectOn', 'projectOff', 'projectNotRegistered', 'changeInUiPage',
-    'regions', 'perf', 'priority', 'previewAlt']
+    'regions', 'perf', 'priority', 'previewAlt',
+    // Step 56b: the folded CHANGELOG, and the five answers it can give.
+    'changelogTitle', 'changelogLoading', 'changelogFailed', 'changelogNoFile', 'changelogNoSections',
+    'changelogUnreadable', 'changelogNotInstalled', 'changelogTruncated']
   const readyScan = {
     profileName: 'web',
     dependencies: [{ name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] }],
@@ -3783,21 +3797,21 @@ const factsScan = () => ({
   dependencies: [
     {
       name: 'skin-pkg', version: '2.0.0', kind: 'ui-project', bundled: true, projectId: 'the-skin', problems: [],
-      description: 'A translucent skin.', author: 'Ada <ada@example.com>',
+      description: 'A translucent skin.', author: 'Ada <ada@example.com>', changelogHeading: null,
       uiProject: { type: 'skin', preview: 'linear-gradient(#fff, #000)', previewLabel: 'Skin preview', perfLevel: 'high', priority: null, modifies: ['center', 'overlay'], requires: null },
     },
     {
       name: 'plain-pkg', version: '1.0.0', kind: 'plugin-with-client', bundled: true, problems: [],
-      description: null, author: null, uiProject: null,
+      description: null, author: null, changelogHeading: null, uiProject: null,
     },
     {
       name: 'late-pkg', version: '0.3.0', kind: 'ui-project', bundled: true, projectId: 'not-mounted', problems: [],
-      description: 'An enhancement.', author: null,
+      description: 'An enhancement.', author: null, changelogHeading: null,
       uiProject: { type: 'enhancement', preview: null, previewLabel: null, perfLevel: null, priority: 7, modifies: null, requires: ['skin-pkg'] },
     },
     {
       name: 'image-pkg', version: '4.0.0', kind: 'ui-project', bundled: true, projectId: 'image-project', problems: [],
-      description: 'A package whose preview is a URL.', author: null,
+      description: 'A package whose preview is a URL.', author: null, changelogHeading: null,
       uiProject: { type: 'skin', preview: './shot.png', previewLabel: 'Shot', perfLevel: null, priority: null, modifies: null, requires: null },
     },
   ],
@@ -3921,6 +3935,269 @@ await test('the card renders the same preview the move left behind, branch for b
   contains(card, 'Bare card', 'a project with no preview at all still renders its card')
 
   for (const id of ids) harness.registry.unregister(id)
+})
+
+/*
+ * ── the CHANGELOG, read on demand (step 56b) ───────────────────────────────
+ *
+ * §五 asks the row to show a package's CHANGELOG. It is the one field with real CONTENT behind it —
+ * the framework's own file is 284 KB — so it is read when a reader asks for it rather than shipped
+ * with the listing, and the reading happens on the HOST, because the page cannot see a package
+ * directory.
+ *
+ * That makes this the round's security surface: an endpoint that takes a package NAME from a query
+ * string and reads a file. The rule is that the name is only ever LOOKED UP in the same scan the
+ * listing comes from, and the path comes from that entry's own resolved directory — never from the
+ * query. The first test below is about exactly that, and it asserts on the READER (nothing was read)
+ * rather than on the refusal sentence, because a refusal that still touched the filesystem would pass
+ * the weaker test.
+ */
+await test('the changelog endpoint looks the name up and never joins it into a path', async () => {
+  /** A reader that records what it was asked for, so "it read nothing" is assertable. */
+  const calls = []
+  const handler = installedEndpoint.createChangelogHandler({
+    scan: async () => ({ dependencies: [{ name: 'pkg-a', resolved: true, dir: 'E:\\fake\\pkg-a' }] }),
+    read: async (dir) => {
+      calls.push(dir)
+      return { ok: true, text: '## Round 9 — newest\nbody line\n' }
+    },
+  })
+  const ask = async (query) => (await handler(new Request('http://127.0.0.1/api/ui-projects/changelog.json' + query))).json()
+
+  const traversal = await ask('?name=../../secret')
+  equal(traversal.reason, 'not-installed', 'a name outside the dependency list is refused')
+  equal(traversal.sections, [], 'with no sections rather than an error')
+  equal((await ask('?name=..%2F..%2Fsecret')).reason, 'not-installed', 'and an encoded traversal decodes to the same refusal')
+  equal((await ask('?name=')).reason, 'not-installed', 'as does an empty name')
+  equal(calls.length, 0, 'NOTHING WAS READ: the name is looked up in the scan, never joined into a path')
+
+  const found = await ask('?name=pkg-a')
+  equal(calls.length, 1, 'a name that IS in the dependency list is read exactly once')
+  equal(calls[0], 'E:\\fake\\pkg-a', 'and the path is the dependency own directory, not the query string')
+  equal(found.reason, null, 'and the answer is a normal payload')
+  equal(found.name, 'pkg-a', 'naming the package that was asked for')
+  equal(found.sections.length, 1, 'with the newest section')
+  equal(found.sections[0].heading, '## Round 9 — newest', 'and its heading')
+})
+
+await test('the changelog summariser keeps install.ps1 rules, including its arithmetic', () => {
+  const section = (heading, lines) => [heading, ...lines].join('\n') + '\n'
+  const long = changelog.summarizeChangelog(
+    section('## Round 9 — long', Array.from({ length: 59 }, (_, index) => 'body ' + (index + 1))) +
+      section('## Round 8 — older', ['older body']),
+  )
+  equal(long.sections.length, 1, 'one section, and it is the newest')
+  equal(long.sections[0].heading, '## Round 9 — long', 'the newest heading')
+  equal(long.sections[0].lines.length, 39, 'the cap counts the heading, exactly as install.ps1 counts it')
+  equal(long.sections[0].lines[0], 'body 1', 'and the body starts at the first line under the heading')
+  equal(long.sections[0].truncated, true, 'a long section is marked truncated')
+  equal(long.sections[0].moreLines, 20, 'with the number of lines the CLI would have reported as dropped')
+
+  const short = changelog.summarizeChangelog(section('## Round 2 — short', ['a', 'b']))
+  equal(short.sections[0].lines.length, 2, 'a short section keeps every line')
+  equal(short.sections[0].truncated, false, 'and is not marked truncated')
+  equal(short.sections[0].moreLines, 0, 'with nothing dropped')
+
+  const nested = changelog.summarizeChangelog('## A\ntext\n### sub\nmore\ntail\n')
+  equal(nested.sections.length, 1, 'a `###` sub-heading does not start a section — the CLI matches `^##\\s` only')
+  equal(nested.sections[0].lines.includes('### sub'), true, 'so a sub-heading stays inside its section')
+
+  const crlf = changelog.summarizeChangelog('## A\r\none\r\ntwo\r\n')
+  equal(crlf.sections[0].heading, '## A', 'a CRLF file still yields a clean heading')
+  equal(crlf.sections[0].lines, ['one', 'two'], 'and no carriage returns survive into the body')
+
+  equal(changelog.summarizeChangelog('# just a title\ntext\n').reason, 'no-sections', 'a file with no `## ` section says so')
+  equal(changelog.summarizeChangelog('').reason, 'no-sections', 'and so does an empty file')
+  equal(changelog.firstHeadingOf('## First\ntext\n## Second\n'), '## First', 'the head reader takes the first heading only')
+  equal(changelog.firstHeadingOf('no headings here\n'), null, 'and says null when there is none')
+})
+
+await test('the changelog reader tells its own answers apart, without reading a file it refuses', async () => {
+  const { mkdir, writeFile, truncate, rm } = await import('node:fs/promises')
+  const root = join(packageRoot, 'node_modules', '.probe-56b')
+  await rm(root, { recursive: true, force: true })
+  const fresh = join(root, 'fresh')
+  const sectioned = join(root, 'sectioned')
+  const headingless = join(root, 'headingless')
+  const huge = join(root, 'huge')
+  for (const dir of [fresh, sectioned, headingless, huge]) await mkdir(dir, { recursive: true })
+  await writeFile(join(sectioned, 'CHANGELOG.md'), '# title\n\n## Round 1 — one\nalpha\n\n## Round 0 — older\nbeta\n')
+  await writeFile(join(headingless, 'CHANGELOG.md'), '# only a title\nnotes\n')
+  /*
+   * A SPARSE file: this sets the SIZE the reader's `stat` sees without writing megabytes of content,
+   * which is the point — the reader is supposed to refuse it before opening it.
+   *
+   * The size is a literal here and the module's own cap is asserted against it, rather than the file
+   * being built from the constant: a MISSING constant would otherwise make this setup throw (`truncate`
+   * with `NaN`) and the test would report a scaffolding error instead of a named failed assertion.
+   */
+  const oversize = 1024 * 1024 + 1
+  equal(changelog.CHANGELOG_MAX_BYTES, 1024 * 1024, 'the reader publishes a one-megabyte cap, and the sparse file below is one byte over it')
+  await writeFile(join(huge, 'CHANGELOG.md'), '')
+  await truncate(join(huge, 'CHANGELOG.md'), oversize)
+
+  const absent = await changelog.readChangelogAt(fresh)
+  equal(absent.ok, false, 'a package with no CHANGELOG.md is a failed read')
+  equal(absent.reason, 'no-file', 'and says which fact it is')
+
+  const oversized = await changelog.readChangelogAt(huge)
+  equal(oversized.ok, false, 'a file over the cap is refused too')
+  equal(oversized.reason, 'too-large', 'by its own reason, not as an I/O error')
+  equal('text' in oversized, false, 'and no content was produced, so it was never read')
+  contains(String(oversized.detail), String(oversize), 'the detail names the size it measured')
+
+  const read = await changelog.readChangelogAt(sectioned)
+  equal(read.ok, true, 'an ordinary file is read')
+  const summary = changelog.summarizeChangelog(read.text)
+  equal(summary.sections.length, 1, 'and summarised to its newest section')
+  equal(summary.sections[0].heading, '## Round 1 — one', 'with the heading the file actually has')
+  equal(changelog.summarizeChangelog((await changelog.readChangelogAt(headingless)).text).reason, 'no-sections', 'while a file with no `## ` section is the third answer')
+
+  await rm(root, { recursive: true, force: true })
+})
+
+await test('the changelog is fetched on demand, cached per package, and invalidated by a refresh', async () => {
+  const asked = []
+  let listings = 0
+  const payload = { schemaVersion: 1, name: 'pkg-a', reason: 'no-file', sections: [] }
+  const store = createInstalledStore({
+    request: async (path) => {
+      if (path.startsWith(installedEndpoint.CHANGELOG_PATH)) {
+        asked.push(path)
+        return payload
+      }
+      listings += 1
+      return { schemaVersion: 1, scan: { profileName: 'web', dependencies: [] } }
+    },
+  })
+
+  equal(store.changelog('pkg-a').status, 'idle', 'nothing is read until something asks')
+  await store.loadChangelog('pkg-a')
+  equal(asked.length, 1, 'asking reads once')
+  equal(store.changelog('pkg-a').status, 'ready', 'and the answer is held as a ready state')
+  equal(store.changelog('pkg-a').payload.reason, 'no-file', 'with the host reason intact: a package with no changelog is an ANSWER, not a failure')
+  await store.loadChangelog('pkg-a')
+  equal(asked.length, 1, 'asking again uses the cache')
+  await Promise.all([store.loadChangelog('pkg-b'), store.loadChangelog('pkg-b')])
+  equal(asked.length, 2, 'and two concurrent asks for one package share a single request')
+  contains(asked[1], 'name=pkg-b', 'the request names the package it asks about')
+
+  await store.refresh()
+  equal(listings, 1, 'a refresh re-reads the listing')
+  await store.loadChangelog('pkg-a')
+  equal(asked.length, 3, 'and it is the ONE invalidation point: the next ask reads again')
+
+  const failing = createInstalledStore({
+    request: async () => {
+      throw new Error('connection refused')
+    },
+  })
+  await failing.loadChangelog('pkg-a')
+  equal(failing.changelog('pkg-a').status, 'failed', 'a transport failure is a failed state, not a sentence about the package')
+  equal(failing.changelog('pkg-a').error, 'connection refused', 'with the reason the caller can render')
+
+  /*
+   * A LATE ANSWER IS DROPPED, the same rule the listing follows: a refresh means the profile may have
+   * moved, so a changelog that was already in flight describes a profile that no longer exists. The
+   * status is asserted to be `idle` rather than `ready` — the entry is forgotten so the next open
+   * re-reads, instead of being shown against the wrong listing.
+   */
+  let release
+  const gated = createInstalledStore({
+    request: (path) => {
+      if (path.startsWith(installedEndpoint.CHANGELOG_PATH)) {
+        return new Promise((resolve) => {
+          release = () => resolve({ schemaVersion: 1, name: 'pkg-a', reason: null, sections: [] })
+        })
+      }
+      return Promise.resolve({ schemaVersion: 1, scan: { profileName: 'web', dependencies: [] } })
+    },
+  })
+  const pending = gated.loadChangelog('pkg-a')
+  await gated.refresh()
+  release()
+  await pending
+  equal(
+    gated.changelog('pkg-a').status,
+    'idle',
+    'an answer that arrives after a refresh is dropped rather than shown against a profile it does not describe',
+  )
+})
+
+await test('the row folds its changelog away, and renders all three answers', () => {
+  const copy = columnCopy()
+  const scan = factsScan()
+  /*
+   * TWO SOURCES, STUBBED SEPARATELY, because they are separate facts: the collapsed summary's heading
+   * arrives with the LISTING (the host reads the first 64 KB of each package's file during the scan),
+   * while the body arrives from `store.changelog(name)` when a reader opens the row. A fixture that
+   * took both from one stub could not tell a broken summary from a broken body.
+   */
+  scan.dependencies[0].changelogHeading = '## Round 55 — newest section'
+  const section = {
+    heading: '## Round 55 — newest section',
+    lines: ['## an inner heading', 'text with <script>alert(1)</script>'],
+    truncated: true,
+    moreLines: 20,
+  }
+  const render = (changelogState) =>
+    renderSection({
+      store: {
+        state: () => ({ status: 'ready', scan }),
+        refresh: async () => {},
+        subscribe: () => () => {},
+        loadChangelog: async () => {},
+        changelog: () => changelogState,
+      },
+      t: { plugins: copy },
+      state: { status: 'ready', scan },
+      React: react,
+    })
+
+  const ready = rowOf(render({ status: 'ready', payload: { reason: null, sections: [section] } }), 'skin-pkg')
+  contains(ready, 'data-uip-changelog="skin-pkg"', 'the row folds its changelog away')
+  contains(ready, scan.dependencies[0].changelogHeading, 'and the collapsed summary already names the newest section, from the listing')
+  contains(ready, 'data-uip-changelog-body', 'while the body is its own element, so a test can find it')
+  contains(ready, '&lt;script&gt;alert(1)&lt;/script&gt;', 'whose text is escaped, not injected: a changelog is package-supplied content')
+  contains(ready, copy.changelogTruncated(20), 'and a truncated section says how much of it is missing')
+
+  const missing = rowOf(render({ status: 'ready', payload: { reason: 'no-file', sections: [] } }), 'skin-pkg')
+  contains(missing, copy.changelogNoFile, 'a package with no changelog says so')
+  equal(missing.includes('data-uip-changelog-body'), false, 'and renders no body at all')
+
+  const failed = rowOf(render({ status: 'failed', error: 'boom' }), 'skin-pkg')
+  contains(failed, copy.changelogFailed('boom'), 'a failed read names the reason')
+
+  const idle = rowOf(render({ status: 'idle' }), 'skin-pkg')
+  contains(idle, copy.changelogLoading, 'and a row nobody has opened yet says it is reading, since the body is only ever shown when opened')
+  equal(idle.includes('data-uip-changelog-body'), false, 'with no body')
+})
+
+await test('the changelog loads when a row is opened, and not when it is closed', async () => {
+  const asked = []
+  const toggle = plugin.__internals.createChangelogToggle({ loadChangelog: async (name) => asked.push(name) }, 'pkg-a')
+  toggle({ currentTarget: { parentElement: { open: false } } })
+  equal(asked, ['pkg-a'], 'a click that OPENS the row asks for the changelog')
+  toggle({ currentTarget: { parentElement: { open: true } } })
+  equal(asked.length, 1, 'a click that closes it does not ask again')
+
+  /*
+   * And the store is what makes a second open free: the handler fires both times (it cannot know the
+   * row is already cached without asking the store), and the store answers from its cache or shares
+   * the request in flight — one request for two opens.
+   */
+  let requests = 0
+  const store = createInstalledStore({
+    request: async () => {
+      requests += 1
+      return { schemaVersion: 1, name: 'pkg-a', reason: 'no-file', sections: [] }
+    },
+  })
+  const realToggle = plugin.__internals.createChangelogToggle(store, 'pkg-a')
+  realToggle({ currentTarget: { parentElement: { open: false } } })
+  realToggle({ currentTarget: { parentElement: { open: false } } })
+  await new Promise((resolve) => setImmediate(resolve))
+  equal(requests, 1, 'opening twice issues one request, because the store shares and caches it')
 })
 
 /* ── the UI Contract badge (step 9b, module 3) ─────────────────────────────── */

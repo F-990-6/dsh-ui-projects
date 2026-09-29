@@ -633,6 +633,35 @@
   gap: 6px;
 }
 
+/*
+ * §五's CHANGELOG, folded away (step 56b).
+ *
+ * The body is capped and scrollable rather than unbounded: one section can be forty lines, and forty
+ * lines of monospace dropped into a settings dialog is a wall — the cap keeps the row readable and the
+ * scroll keeps every line reachable. The summary is the fold's own control, so it gets the pointer and
+ * nothing else; the token colours come from the shipped palette like every other surface here.
+ */
+.uip-plugin-changelog > summary {
+  cursor: pointer;
+}
+
+.uip-plugin-changelogHeading {
+  margin: 8px 0 4px;
+  font-size: 13px;
+}
+
+.uip-plugin-changelog pre {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 @container (max-width: 420px) {
   .uip-plugin[data-uip-preview='gradient'],
   .uip-plugin[data-uip-preview='image'] {

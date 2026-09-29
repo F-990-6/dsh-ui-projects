@@ -206,6 +206,18 @@ export function UiPluginsSection(props) {
          * recorded rather than fixed. `na` is a judgement about the BADGE; silence was a different claim.
          */
         ContractPanel({ copy, React: React_, name: dependency.name, state: contractState, contract: dependency.contract }),
+        /*
+         * §五's CHANGELOG, folded away, and read only when a reader opens it. It sits with the contract
+         * panel because both are the package explaining itself, and above the commands because those
+         * are the action half of the row.
+         */
+        ChangelogBlock({
+          copy,
+          React: React_,
+          dependency,
+          state: typeof store.changelog === 'function' ? store.changelog(dependency.name) : undefined,
+          onToggle: createChangelogToggle(store, dependency.name),
+        }),
         ...(dependency.problems ?? []).map((problem, index) =>
           React_.createElement('p', { className: 'uip-error', key: 'problem-' + index }, problem.code + ': ' + problem.message),
         ),
@@ -237,6 +249,101 @@ export function UiPluginsSection(props) {
       ? React_.createElement('p', { className: 'uip-hint', key: 'empty' }, copy.empty)
       : React_.createElement('ul', { className: 'uip-list', key: 'list' }, rows),
   )
+}
+
+/**
+ * One row's CHANGELOG, folded away.
+ *
+ * TWO SOURCES, and they are different facts rather than one read twice: the SUMMARY's heading arrives
+ * with the listing (the host reads the first 64 KB of each package's file during the scan), while the
+ * BODY arrives from the store when a reader opens the row. A block that took both from one place could
+ * not tell a broken summary from a broken body, and the suite stubs them separately for that reason.
+ *
+ * The body is package-supplied TEXT — a changelog is not written by this project — so it is rendered as
+ * text and never as markup. React escapes it, and the suite asserts that with a `<script>` line.
+ */
+function ChangelogBlock({ copy, React, dependency, state, onToggle }) {
+  const status = state?.status ?? 'idle'
+  const payload = status === 'ready' ? state.payload : undefined
+  const sections = Array.isArray(payload?.sections) ? payload.sections : []
+  let body
+  if (status === 'failed') {
+    body = React.createElement('p', { className: 'uip-error' }, copy.changelogFailed(state.error ?? ''))
+  } else if (payload !== undefined && payload.reason !== null && payload.reason !== undefined) {
+    body = React.createElement('p', { className: 'uip-hint' }, changelogReasonText(copy, payload, dependency.name))
+  } else if (sections.length > 0) {
+    body = sections.map((section, index) =>
+      React.createElement(
+        'div',
+        { className: 'uip-plugin-changelogSection', key: 'section-' + index },
+        React.createElement('h4', { className: 'uip-plugin-changelogHeading' }, section.heading),
+        React.createElement('pre', { 'data-uip-changelog-body': dependency.name }, section.lines.join('\n')),
+        section.truncated
+          ? React.createElement('p', { className: 'uip-hint' }, copy.changelogTruncated(section.moreLines))
+          : null,
+      ),
+    )
+  } else {
+    /*
+     * Nothing has been asked for yet, or the ask is still in flight. The body is hidden until the row is
+     * opened, so this is what a reader sees when they open it faster than the host can answer.
+     */
+    body = React.createElement('p', { className: 'uip-hint' }, copy.changelogLoading)
+  }
+  const heading =
+    typeof dependency.changelogHeading === 'string' && dependency.changelogHeading.length > 0 ? dependency.changelogHeading : null
+  return React.createElement(
+    'details',
+    { className: 'uip-plugin-changelog', 'data-uip-changelog': dependency.name },
+    React.createElement(
+      'summary',
+      { className: 'uip-hint', 'data-uip-changelog-summary': dependency.name, onClick: onToggle },
+      heading === null ? copy.changelogTitle : copy.changelogTitle + ' · ' + heading,
+    ),
+    body,
+  )
+}
+
+/**
+ * The sentence for a reason code that is not a section list.
+ *
+ * The CODE is the host's, the words are this page's: `install.ps1` prints English, the settings page is
+ * bilingual, and a sentence assembled on the host could not be translated here.
+ */
+function changelogReasonText(copy, payload, name) {
+  switch (payload.reason) {
+    case 'no-file':
+      return copy.changelogNoFile
+    case 'no-sections':
+      return copy.changelogNoSections
+    case 'not-installed':
+      return copy.changelogNotInstalled(name)
+    default:
+      return copy.changelogUnreadable(payload.detail ?? '')
+  }
+}
+
+/**
+ * The click handler for a row's changelog summary.
+ *
+ * WHY `onClick` ON THE SUMMARY, and not a `toggle` listener: the `toggle` event neither bubbles nor
+ * exists as a React synthetic event, so `<details onToggle>` would be a control that looks wired and
+ * reads nothing. The summary is what a reader clicks or presses Enter on, and it is where a plain
+ * handler works.
+ *
+ * `open` is read BEFORE the browser flips it — a summary click toggles after the handler runs — so
+ * `open === false` means this click is the one that opens the row. A click that CLOSES it is ignored
+ * rather than re-asked: the store would answer from its cache anyway, but a handler that fired on every
+ * click would leave the cache as the only thing between a reader and a request per click.
+ * @param {{ loadChangelog?: (name: string) => Promise<void> }} store
+ * @param {string} name
+ */
+export function createChangelogToggle(store, name) {
+  return (event) => {
+    const details = event?.currentTarget?.parentElement
+    if (details !== undefined && details !== null && details.open === true) return
+    void store?.loadChangelog?.(name)
+  }
 }
 
 /**

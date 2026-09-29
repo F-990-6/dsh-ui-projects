@@ -449,6 +449,11 @@ module.exports = {
     createInstalledStore,
     UiPluginsSection: require('./panel-plugins.js').UiPluginsSection,
     /*
+     * The changelog toggle, exported so the suite can drive it directly: the wiring between "a reader
+     * opens a row" and "the store is asked" is one function, and a browser is not needed to check it.
+     */
+    createChangelogToggle: require('./panel-plugins.js').createChangelogToggle,
+    /*
      * The projects section, exported for the same reason its sibling is: the suite has to be able to
      * render it WITH props. The registered section is a zero-argument closure over the live store, so a
      * test that went through it could never exercise the optional `installed` prop — and the four states

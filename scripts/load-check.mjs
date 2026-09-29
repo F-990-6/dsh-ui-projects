@@ -793,7 +793,7 @@ equal(service.list().length, baseline, 'disposing the last caller leaves the tab
  * here because what is under test is OUR registration and OUR payload — and the stub records enough
  * to assert the shape the real one demands.
  */
-const { registerInstalledEndpoint, INSTALLED_PATH, INSTALLED_SCHEMA_VERSION } = await import(
+const { registerInstalledEndpoint, INSTALLED_PATH, INSTALLED_SCHEMA_VERSION, CHANGELOG_PATH } = await import(
   pathToFileURL(join(frameworkRoot, 'src', 'host', 'installed-endpoint.js')).href
 )
 
@@ -826,16 +826,31 @@ const scanFixture = {
 }
 
 const disposeEndpoint = registerInstalledEndpoint(endpointCtx, { scan: async () => scanFixture })
-equal(registeredRoutes.length, 1, 'the endpoint registers exactly one route')
-equal(registeredRoutes[0]?.path, INSTALLED_PATH, 'at the namespaced path')
+/*
+ * TWO ROUTES SINCE STEP 56b. The listing is not the only thing this row mounts any more: the CHANGELOG
+ * is read per package, on demand, through a second route on the same fence. Selected BY PATH rather
+ * than by position, because position is what a third route would silently break.
+ */
+equal(registeredRoutes.length, 2, 'the endpoint registers exactly two routes: the listing and the changelog')
 equal(
-  INSTALLED_PATH.startsWith('/api/'),
-  true,
-  'under /api, which is the only prefix the Host/Origin fence and the browser session cover',
+  registeredRoutes.map((route) => route.path).sort().join(','),
+  [INSTALLED_PATH, CHANGELOG_PATH].sort().join(','),
+  'at the two namespaced paths, and nothing else',
 )
-equal(registeredRoutes[0]?.methods?.join(','), 'GET', 'and only answers GET')
+const listingRoute = registeredRoutes.find((route) => route.path === INSTALLED_PATH)
+const changelogRoute = registeredRoutes.find((route) => route.path === CHANGELOG_PATH)
+equal(
+  [INSTALLED_PATH, CHANGELOG_PATH].every((path) => path.startsWith('/api/')),
+  true,
+  'both under /api, which is the only prefix the Host/Origin fence and the browser session cover',
+)
+equal(
+  [listingRoute, changelogRoute].map((route) => route?.methods?.join(',')).join('|'),
+  'GET|GET',
+  'and both answer GET only',
+)
 
-const okResponse = await registeredRoutes[0].fetch(new Request('http://127.0.0.1' + INSTALLED_PATH))
+const okResponse = await listingRoute.fetch(new Request('http://127.0.0.1' + INSTALLED_PATH))
 const okPayload = await okResponse.json()
 equal(okPayload.schemaVersion, INSTALLED_SCHEMA_VERSION, 'the payload carries its own version')
 equal(okPayload.scan.profileName, 'web', 'and the profile it describes, by name')
@@ -846,15 +861,41 @@ equal(
   'and NOT the absolute directories the CLI keeps for a human: the payload is a projection',
 )
 
+/*
+ * The changelog route, end to end against a REAL directory: the fixture's `dir` is this package's own
+ * source tree, which ships the 284 KB CHANGELOG.md this round was designed around. That is the one
+ * assertion no unit test can make — that the directory the scan resolved is the directory the reader
+ * opens — and it is also what proves the size cap does not get in the way of a real file.
+ */
+const changelogResponse = await changelogRoute.fetch(new Request('http://127.0.0.1' + CHANGELOG_PATH + '?name=dsh-ui-projects'))
+const changelogPayload = await changelogResponse.json()
+equal(changelogPayload.reason, null, 'the changelog route reads the directory the scan resolved')
+equal(changelogPayload.sections.length, 1, 'and answers with the newest section')
+equal(
+  String(changelogPayload.sections[0].heading).startsWith('## '),
+  true,
+  'whose heading is the file own heading line',
+)
+equal(changelogPayload.sections[0].truncated, true, 'and a 284 KB changelog has a section long enough to be capped')
+
 const failing = registerInstalledEndpoint(endpointCtx, {
   scan: async () => {
     throw new Error('no profile')
   },
 })
-const failingRoute = registeredRoutes[registeredRoutes.length - 1]
-const failPayload = await (await failingRoute.fetch(new Request('http://127.0.0.1' + INSTALLED_PATH))).json()
+const failingRoutes = registeredRoutes.slice(-2)
+const failPayload = await (
+  await failingRoutes.find((route) => route.path === INSTALLED_PATH).fetch(new Request('http://127.0.0.1' + INSTALLED_PATH))
+).json()
 equal(failPayload.error.message, 'no profile', 'a failed scan becomes a payload, not a thrown transport error')
 equal(failPayload.scan, undefined, 'and carries no scan at all')
+const failChangelog = await (
+  await failingRoutes
+    .find((route) => route.path === CHANGELOG_PATH)
+    .fetch(new Request('http://127.0.0.1' + CHANGELOG_PATH + '?name=dsh-ui-projects'))
+).json()
+equal(failChangelog.reason, 'unreadable', 'and the changelog route answers the same failure with its own reason')
+equal(failChangelog.sections.length, 0, 'carrying no sections, so the row has nothing to render but the sentence')
 failing()
 
 const withoutConnection = registerInstalledEndpoint({ get: () => undefined, logger: { warn: () => {} } }, { scan: async () => scanFixture })

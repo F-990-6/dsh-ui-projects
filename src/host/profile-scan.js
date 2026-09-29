@@ -39,6 +39,7 @@ import {
   readDeclarations,
 } from './conformance.js'
 import { CONTRACT_RULE_COUNT, CONTRACT_RULES_JUDGED, scanClientBundle } from './contract-scan.js'
+import { readFirstHeading } from './changelog.js'
 
 /**
  * How large a client bundle may be before the listing stops scanning it.
@@ -379,6 +380,17 @@ export async function scanProfile({ profileDir }) {
      * decides both the description's source and the author's shape.
      */
     const facts = packageFacts(installed.manifest, dsh)
+    /*
+     * The newest CHANGELOG heading, for the folded row in the column (step 56b).
+     *
+     * Read here, during the listing, and from a BOUNDED HEAD of the file rather than the whole of it:
+     * a row that has to name the section it will show cannot wait for a request, and one request per
+     * package on every page open is the cost the on-demand endpoint exists to avoid. A package whose
+     * changelog cannot be read simply has no heading — this is a listing field, and it must not be able
+     * to fail the listing that describes it.
+     */
+    const changelogHeading =
+      installed.resolved && typeof installed.dir === 'string' ? await readFirstHeading(installed.dir) : null
     const bundled = installed.resolved && declaresBundle(installed.manifest) && bundles.includes(name)
 
     /*
@@ -446,6 +458,7 @@ export async function scanProfile({ profileDir }) {
       description: facts.description,
       author: facts.author,
       uiProject: facts.uiProject,
+      changelogHeading,
       problems,
       contract,
     })
@@ -681,7 +694,7 @@ export function previewCommand({ action, profileName, packageName, spec, version
  * @property {string} profileDir
  * @property {string} profileName
  * @property {string} readAt
- * @property {Array<{ name: string, spec: string, resolved: boolean, version?: string, dir?: string, realDir?: string, via?: string, kind: string, bundled: boolean, projectId?: string, description: string | null, author: string | null, uiProject: { type: string | null, preview: string | null, previewLabel: string | null, perfLevel: string | null, priority: number | null, modifies: string[] | null, requires: string[] | null } | null, problems: Problem[] }>} dependencies
+ * @property {Array<{ name: string, spec: string, resolved: boolean, version?: string, dir?: string, realDir?: string, via?: string, kind: string, bundled: boolean, projectId?: string, description: string | null, author: string | null, changelogHeading: string | null, uiProject: { type: string | null, preview: string | null, previewLabel: string | null, perfLevel: string | null, priority: number | null, modifies: string[] | null, requires: string[] | null } | null, problems: Problem[] }>} dependencies
  * @property {{ all: string[], inBox: string[], fromDependencies: string[] }} bundles
  * @property {Array<{ name: string, version: string, projectId?: string }>} uiProjectPackages
  * @property {string[]} orphanedBindings
