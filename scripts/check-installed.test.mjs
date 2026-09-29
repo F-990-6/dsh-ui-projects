@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url'
 import { PROBLEM_CODES, checkUiProjectDeclaration, KNOWN_PROJECT_TYPES } from '../src/host/conformance.js'
 import { discoverProfiles, previewCommand, scanProfile, versionsDirNameOf } from '../src/host/profile-scan.js'
 import { CONTRACT_CODES, CONTRACT_LIMITS, CONTRACT_RULES, CONTRACT_RULE_COUNT, CONTRACT_RULES_JUDGED, WAI_ARIA_ROLES, scanClientBundle } from '../src/host/contract-scan.js'
+import { NAME_COLUMN_FLOOR, nameColumnWidth, pad } from './installed-columns.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const packageRoot = resolve(here, '..')
@@ -396,6 +397,57 @@ check(
   'and carries the scan’s own limits, so a clean report cannot be read as a clean plugin',
 )
 
+/*
+ * THE NAME COLUMN OF THE REPORT (56h-1).
+ *
+ * `padEnd` pads and never truncates, so a column width decided ONCE runs a long name into the field after
+ * it: `@xjl-resources/dsh-plugin-example-dialog` is 40 characters and was printed as `…-dialog1.0.0`, and
+ * `@xjl-resources/dsh-plugin-liquid-glass` is 38 and was printed as `…liquid-glassno findings`. Both were
+ * seen on a real profile and are recorded in `docs/phase2-scope.md` (group B, first item).
+ *
+ * THE PROPERTY, in one sentence: the second column of a section begins at the same offset in every row of
+ * that section, whatever the longest name in it is. The width is therefore asserted against the names and
+ * not as a number — with one exception, the floor, which is the promise that a section of short names keeps
+ * the layout it has always had instead of buying alignment with blank space no row needs.
+ *
+ * The wiring is read out of the CLI for the reason the guards above give: what can silently rot is WHICH
+ * width a section asks for, and running the report to find out is not available where this tooling runs.
+ */
+const LONG_NAME = '@xjl-resources/dsh-plugin-example-dialog'
+const SHORT_NAME = 'dsh-cost-meter'
+equal(LONG_NAME.length > NAME_COLUMN_FLOOR, true, 'the long fixture is a real scoped name, longer than the floor')
+equal(
+  nameColumnWidth([LONG_NAME]) > LONG_NAME.length,
+  true,
+  'a section holding a 40-character name is wider than that name, so the next field cannot touch it',
+)
+equal(
+  nameColumnWidth([SHORT_NAME, 'dsh-ui-projects']),
+  NAME_COLUMN_FLOOR,
+  'a section of short names keeps the column it has always had',
+)
+const dependencyRows = [LONG_NAME, SHORT_NAME].map(
+  (name) => `${pad(name, nameColumnWidth([LONG_NAME, SHORT_NAME]))}${pad('1.0.0', 10)}`,
+)
+equal(
+  dependencyRows[0].indexOf('1.0.0'),
+  dependencyRows[1].indexOf('1.0.0'),
+  'and the version column starts at the same offset whether the name is 40 characters or 14',
+)
+check(
+  cliSource.includes("from './installed-columns.mjs'"),
+  'the report takes its name column from the module this suite can test',
+)
+check(
+  !/pad\([^)]*,\s*34\s*\)/.test(cliSource),
+  'and no name column is padded to the written-down 34 that ran long names into the next field',
+)
+equal(
+  (cliSource.match(/nameColumnWidth\(/g) ?? []).length,
+  6,
+  'each of the report’s six name columns asks for its own width (dependencies, bundles, ui-project packages, the contract rows, the not-scanned rows, the unattributed directories)',
+)
+
 process.stdout.write('\n== profile discovery ==\n')
 
 const fakeHome = await mkdtemp(join(root, 'dsh-home-'))
@@ -423,7 +475,7 @@ process.stdout.write('\n== structural guards ==\n')
  * and the alternative (trusting a comment) is how a "read-only" tool grows a repair mode.
  */
 const WRITE_API = /\bwriteFile\b|\bappendFile\b|\bmkdir\b|\brm\(|\brmdir\b|\bunlink\b|\brename\b|\bcopyFile\b|\bcp\(|\btruncate\b|\bcreateWriteStream\b|\bopen\(/
-for (const relative of ['src/host/profile-scan.js', 'src/host/conformance.js', 'src/host/manifest-schema.js', 'scripts/check-installed.mjs']) {
+for (const relative of ['src/host/profile-scan.js', 'src/host/conformance.js', 'src/host/manifest-schema.js', 'scripts/check-installed.mjs', 'scripts/installed-columns.mjs']) {
   const source = await readFile(join(packageRoot, relative), 'utf8')
   check(!WRITE_API.test(source), `${relative} contains no write API`)
 }

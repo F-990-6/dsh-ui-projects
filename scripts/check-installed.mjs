@@ -19,6 +19,7 @@
 import { join, resolve } from 'node:path'
 
 import { discoverProfiles, previewCommand, scanProfile } from '../src/host/profile-scan.js'
+import { nameColumnWidth, pad } from './installed-columns.mjs'
 
 const USAGE = `usage: node scripts/check-installed.mjs [--profile <dir> | --all-profiles | --list-profiles]
        [--dsh-home <dir>] [--candidate <spec>]... [--json] [--no-preview]
@@ -174,33 +175,38 @@ if (flags.json) {
   process.exit(errors.length > 0 ? 1 : 0)
 }
 
-/** @param {unknown} text @param {number} width */
-const pad = (text, width) => String(text).padEnd(width)
-
+/*
+ * The name columns are the only columns here whose width is not a constant: they are padded through
+ * `installed-columns.mjs`, which decides each section's width from the names that land in it. That module
+ * carries the reason a written-down 34 was wrong and the property the replacement has to keep.
+ */
 for (const scan of scans) {
   process.stdout.write(`\ndsh profile: ${scan.profileName}   ${scan.profileDir}\n`)
   process.stdout.write('read-only scan — no writes, no installs, no network\n\n')
 
   process.stdout.write(`DEPENDENCIES (${scan.dependencies.length})\n`)
   if (scan.dependencies.length === 0) process.stdout.write('  (none)\n')
+  const dependencyNameWidth = nameColumnWidth(scan.dependencies.map((dependency) => dependency.name))
   for (const dependency of scan.dependencies) {
     const state = !dependency.resolved ? 'UNRESOLVED' : dependency.bundled ? 'composed' : 'not composed'
     const where = dependency.via === 'link' ? `link → ${dependency.realDir}` : 'store'
     process.stdout.write(
-      `  ${pad(dependency.name, 34)}${pad(dependency.version ?? '-', 10)}${pad(dependency.kind, 18)}${pad(state, 14)}${where}\n`,
+      `  ${pad(dependency.name, dependencyNameWidth)}${pad(dependency.version ?? '-', 10)}${pad(dependency.kind, 18)}${pad(state, 14)}${where}\n`,
     )
   }
 
   process.stdout.write(`\nBUNDLES (${scan.bundles.all.length})\n`)
+  const bundleNameWidth = nameColumnWidth(scan.bundles.all)
   for (const name of scan.bundles.all) {
     const tags = [scan.bundles.inBox.includes(name) ? '[in-box]' : '', scan.dependencies.some((d) => d.name === name) ? '[dependency]' : '']
-    process.stdout.write(`  ${pad(name, 34)}${tags.filter(Boolean).join(' ')}\n`)
+    process.stdout.write(`  ${pad(name, bundleNameWidth)}${tags.filter(Boolean).join(' ')}\n`)
   }
 
   process.stdout.write(`\nUI PROJECT PACKAGES (${scan.uiProjectPackages.length})\n`)
   if (scan.uiProjectPackages.length === 0) process.stdout.write('  (none)\n')
+  const projectNameWidth = nameColumnWidth(scan.uiProjectPackages.map((entry) => entry.name))
   for (const entry of scan.uiProjectPackages) {
-    process.stdout.write(`  ${pad(entry.name, 34)}${pad(entry.version, 10)}project id: ${entry.projectId ?? '(invalid)'}\n`)
+    process.stdout.write(`  ${pad(entry.name, projectNameWidth)}${pad(entry.version, 10)}project id: ${entry.projectId ?? '(invalid)'}\n`)
   }
 
   /*
@@ -220,10 +226,11 @@ for (const scan of scans) {
   const withFindings = scanned.filter((dependency) => (dependency.contract.findings ?? []).length > 0)
   if (scanned.length > 0) {
     process.stdout.write(`\nUI CONTRACT (${scanned.length} client bundle(s) scanned, ${withFindings.length} with findings)\n`)
+    const contractNameWidth = nameColumnWidth(scanned.map((dependency) => dependency.name))
     for (const dependency of scanned) {
       const findings = dependency.contract.findings ?? []
       process.stdout.write(
-        `  ${pad(dependency.name, 34)}${findings.length === 0 ? 'no findings' : `${findings.length} finding(s)`}\n`,
+        `  ${pad(dependency.name, contractNameWidth)}${findings.length === 0 ? 'no findings' : `${findings.length} finding(s)`}\n`,
       )
       for (const finding of findings) {
         process.stdout.write(`      ${finding.code}  (line ${finding.evidence?.line ?? '?'})\n`)
@@ -244,8 +251,9 @@ for (const scan of scans) {
   const unscanned = scan.dependencies.filter((dependency) => dependency.contract !== undefined && dependency.contract.scanned !== true)
   if (unscanned.length > 0) {
     process.stdout.write(`\nNOT SCANNED (${unscanned.length})\n`)
+    const unscannedNameWidth = nameColumnWidth(unscanned.map((dependency) => dependency.name))
     for (const dependency of unscanned) {
-      process.stdout.write(`  ${pad(dependency.name, 34)}${dependency.contract.reason ?? 'no reason given'}\n`)
+      process.stdout.write(`  ${pad(dependency.name, unscannedNameWidth)}${dependency.contract.reason ?? 'no reason given'}\n`)
     }
   }
 
@@ -267,8 +275,9 @@ for (const scan of scans) {
     process.stdout.write(
       `\nUNATTRIBUTED VERSION DIRECTORIES (${unattributed.length}) — snapshots exist, but none records which package it belongs to\n`,
     )
+    const directoryNameWidth = nameColumnWidth(unattributed.map((entry) => entry.directory))
     for (const entry of unattributed) {
-      process.stdout.write(`  ${pad(entry.directory, 34)}${entry.snapshots} snapshot(s)\n`)
+      process.stdout.write(`  ${pad(entry.directory, directoryNameWidth)}${entry.snapshots} snapshot(s)\n`)
     }
     process.stdout.write(
       '  The directory name is a spelling this project chose for a scoped package, so it is not decoded\n' +
