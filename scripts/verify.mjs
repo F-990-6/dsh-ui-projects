@@ -6951,6 +6951,41 @@ await test('the fake DOM exports no function nobody calls, and the guard that sa
   )
 })
 
+/*
+ * THE RULE COUNT IS A CLAIM, SO IT IS COUNTED (56h-6).
+ *
+ * `CONTRIBUTING.md` says how many rules it holds in the sentence that introduces them, and the ninth of them
+ * is about the edit that adds a document section — the mistake it records happened three times, each time as
+ * a heading eaten by an insertion. A count written in prose is exactly the kind of claim that goes stale
+ * silently, so the count, the word the introduction uses for it, and the three subjects the ninth rule has
+ * to name are asserted here.
+ *
+ * WHAT IS DELIBERATELY NOT LOCKED: the sentences. The documentation guard above states the reason — a guard
+ * that fails on a reworded sentence teaches the next person to edit the guard instead of the document — so
+ * this one reads structure (the numbered items of that section, in order) and the three subjects, and
+ * nothing else. `<!-- -->` is stripped first because Markdown comments are the only place a rule could be
+ * quoted without being a rule; the suite's own `stripComments` is for JavaScript and splits on `//`, which
+ * in a Markdown file would eat a URL rather than a comment.
+ */
+await test('the contributing rules are nine, and the ninth is the one about the edit itself', async () => {
+  const text = (await readFile(join(packageRoot, 'CONTRIBUTING.md'), 'utf8')).replace(/<!--[\s\S]*?-->/g, '')
+  const sectionAt = text.indexOf('## Verification discipline')
+  truthy(sectionAt > 0, 'the section the rules live in is where this guard looks for them')
+  const rest = text.slice(Math.max(sectionAt, 0))
+  const nextHeading = rest.indexOf('\n## ', 1)
+  const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading)
+  const numbered = [...section.matchAll(/^(\d+)\. \*\*/gm)].map((match) => Number(match[1]))
+  equal(numbered, [1, 2, 3, 4, 5, 6, 7, 8, 9], 'the rules are numbered 1 to 9 — no gap, no duplicate, and no tenth')
+  contains(section, 'Nine rules', 'the sentence that introduces them counts them the same way')
+  const ninthAt = section.search(/^9\. \*\*/m)
+  truthy(ninthAt > 0, 'the ninth rule is there to be read')
+  const ninthEnd = section.indexOf('\n\n', Math.max(ninthAt, 0))
+  const ninth = section.slice(Math.max(ninthAt, 0), ninthEnd === -1 ? section.length : ninthEnd)
+  for (const subject of ['anchor', '## Round', 'numstat']) {
+    contains(ninth, subject, `the ninth rule names \`${subject}\``)
+  }
+})
+
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
 if (onlyTest !== '') {
   process.stdout.write(`[filter] DSH_TEST_ONLY=${JSON.stringify(onlyTest)} skipped ${skipped} test(s)\n`)

@@ -98,7 +98,7 @@ something was not verified.
 
 ## Verification discipline
 
-Eight rules, each one learned by getting it wrong. They live here because every reader of this file touches
+Nine rules, each one learned by getting it wrong. They live here because every reader of this file touches
 one of them; the incidents that produced them, with their numbers, are in `CHANGELOG.md`.
 
 1. **Changing `src/**` means rebuilding before verifying.** The suite and the browser both load `lib/`, so a
@@ -168,6 +168,15 @@ one of them; the incidents that produced them, with their numbers, are in `CHANG
    specificity on purpose, and because the framework allows one global look at a time by policy. "What I
    believe the implementation does" is a spelling too. — Round 48 (the proxy assertion), Round 49 and Round
    50/9b (the fixtures, the counts, and the four browser assertions).
+9. **An insertion is proven by what it did not delete.** Every documentation edit here replaces a range of
+   text, and the range is chosen by an anchor — so the anchor is the boundary you are inserting at
+   **together with the whole line that follows it**, and that line comes back verbatim inside the
+   replacement. Two habits make the result checkable rather than hopeful: a pure insertion is one whose
+   `git diff --numstat` deletion column is `0`, and the count of `## Round` headings taken before and after
+   an added round entry moves by exactly `+1`. The mistake this rule exists for is an insertion that
+   consumed the heading of the round it was placed before, and it has happened three times: Round 50 ate
+   Round 49's heading, Round 55's heading went the same way, and Round 56a's heading was eaten by the entry
+   inserted above it. — Round 50, Round 55, Round 56a.
 
 Rule 4 is the same discipline as `## Tool discipline` below, applied to bytes rather than to anchors:
 mutate with the file tools, or in memory, and never leave the tree in a state only a test could have
@@ -177,7 +186,9 @@ discipline applied to the tree itself: what is not under a version control syste
 a PowerShell parameter: the type you declared is a constraint you keep, and its consequences appear one
 statement later than the mistake. Rule 8 is the same discipline applied to the assertion itself: name the
 property, not the string, count or element that currently spells it — and ask what could make this
-assertion pass while the feature is broken, then assert that instead.
+assertion pass while the feature is broken, then assert that instead. Rule 9 is the same discipline applied
+to the edit itself: the text on either side of an insertion is part of the insertion, and a heading that
+disappears is a deletion nobody asked for.
 
 ## Test the path, not the function
 
