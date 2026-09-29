@@ -4406,6 +4406,100 @@ await test('the fold styles and the copy helper hold their two promises', async 
   )
 })
 
+/*
+ * ── the hook invariant of the installed-package column (step 56c regression) ─
+ *
+ * WHAT WENT WRONG, because a guard is only worth having if its reason is written down. Step 56c added
+ * `CommandRow`, which uses `useState` — and CALLED it as a plain function from `MaintenanceBlock`. A
+ * plain call is not a component boundary, so those hooks were registered on the enclosing component,
+ * `UiPluginsSection`, four per row, inside a loop over the dependencies: the loading render had three
+ * hooks and the first render with data had 3 + 4N. React refuses that with #310, "Rendered more hooks
+ * than during the previous render", and the browser said so while every offline assertion was green.
+ *
+ * The offline suite cannot see the DYNAMIC fault: `renderToStaticMarkup` mounts once and never
+ * reconciles, so there is no previous render to compare against. What it can see is the PATTERN that
+ * produced it, and that is this guard: no hook outside a named component, and every hook-bearing
+ * function CREATED as an element rather than called.
+ *
+ * It fails against the code as 56c shipped it (four bare `CommandRow(` calls), which is the only kind
+ * of guard worth writing.
+ */
+await test('a hook lives in a component, and components are created rather than called', async () => {
+  const raw = await readFile(join(packageRoot, 'src', 'client', 'panel-plugins.js'), 'utf8')
+  /*
+   * Comments are BLANKED rather than deleted, so every line number a failure below prints is the line
+   * number in the file a reader will open. (The copy guard above strips them instead and explains why
+   * it has to; here the numbers matter more than the bytes.)
+   */
+  const code = raw
+    .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ''))
+    .split('\n')
+    .map((line) => (line.trim().startsWith('//') ? '' : line))
+    .join('\n')
+
+  const HOOK = /\b(?:useState|useEffect|useRef|useMemo|useCallback|useReducer)\s*\(/
+  const functions = []
+  let current = null
+  for (const line of code.split('\n')) {
+    const header = /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/.exec(line)
+    if (header !== null) {
+      current = { name: header[1], body: [] }
+      functions.push(current)
+      continue
+    }
+    if (current !== null && /^\}/.test(line)) {
+      current = null
+      continue
+    }
+    if (current !== null) current.body.push(line)
+  }
+  const withHooks = functions.filter((entry) => HOOK.test(entry.body.join('\n'))).map((entry) => entry.name)
+  equal(
+    withHooks,
+    ['UiPluginsSection', 'CommandRow'],
+    'exactly these two functions in this file use hooks, and the list is named rather than implied',
+  )
+
+  /**
+   * Every occurrence of `NAME` in the file, classified.
+   *
+   * The name is matched on its OWN, not as `NAME(`: `createElement(CommandRow, {…})` is followed by a
+   * comma, so a pattern that demanded a parenthesis would never see the very form this guard is asking
+   * for — which is how the first version of this guard reported zero element call sites on code that
+   * had four of them.
+   */
+  const callSitesOf = (name) => {
+    const sites = []
+    const pattern = new RegExp('\\b' + name + '\\b', 'g')
+    for (let match = pattern.exec(code); match !== null; match = pattern.exec(code)) {
+      const before = code.slice(Math.max(0, match.index - 60), match.index)
+      const called = /^\s*\(/.test(code.slice(match.index + name.length))
+      const line = code.slice(0, match.index).split('\n').length
+      const text = code.split('\n')[line - 1].trim().slice(0, 64)
+      if (/function\s+$/.test(before)) sites.push({ line, kind: 'declaration', text })
+      else if (/\.createElement\(\s*$/.test(before)) sites.push({ line, kind: 'element', text })
+      else if (called) sites.push({ line, kind: 'bare', text })
+      else sites.push({ line, kind: 'mention', text })
+    }
+    return sites
+  }
+
+  for (const name of withHooks) {
+    equal(
+      callSitesOf(name)
+        .filter((site) => site.kind === 'bare')
+        .map((site) => 'L' + site.line + ': ' + site.text),
+      [],
+      name + ' is CREATED as an element, never called as a plain function — a plain call puts its hooks on the enclosing component',
+    )
+  }
+  equal(
+    callSitesOf('CommandRow').filter((site) => site.kind === 'element').length >= 4,
+    true,
+    'and the four command rows really are elements',
+  )
+})
+
 /* ── the UI Contract badge (step 9b, module 3) ─────────────────────────────── */
 
 /*

@@ -726,9 +726,16 @@ function MaintenanceBlock({ copy, React, name }) {
      * `-Package`).
      */
     React.createElement('p', { className: 'uip-hint' }, copy.maintenanceBrief),
-    CommandRow({ copy, React, kind: 'snapshot', source: 'install.ps1 -Snapshot', hook: { 'data-uip-command-maintenance': 'snapshot' } }),
-    CommandRow({ copy, React, kind: 'update', source: 'install.ps1 -Update', hook: { 'data-uip-command-maintenance': 'update' } }),
-    CommandRow({
+    /*
+     * CREATED, NOT CALLED. A plain `CommandRow({…})` would run its `useState` on whichever component is
+     * currently rendering — this file's helpers are element factories, and a factory is not a component
+     * boundary. Step 56c shipped exactly that mistake: four hooks per row, registered on
+     * `UiPluginsSection` inside a loop over the dependencies, which React refuses with #310 as soon as
+     * the row count changes between renders. The suite's hook guard now fails on a bare call.
+     */
+    React.createElement(CommandRow, { copy, React, kind: 'snapshot', source: 'install.ps1 -Snapshot', hook: { 'data-uip-command-maintenance': 'snapshot' } }),
+    React.createElement(CommandRow, { copy, React, kind: 'update', source: 'install.ps1 -Update', hook: { 'data-uip-command-maintenance': 'update' } }),
+    React.createElement(CommandRow, {
       copy,
       React,
       kind: 'rollback',
@@ -785,7 +792,7 @@ function CommandBlock({ copy, React, name, profileName }) {
     { className: 'uip-command', 'data-uip-command': name },
     React.createElement('summary', { className: 'uip-hint', 'data-uip-fold-summary': 'uninstall' }, copy.uninstallTitle(name)),
     React.createElement('p', { className: 'uip-hint' }, copy.commandsHint),
-    CommandRow({ copy, React, kind: 'uninstall', source: command }),
+    React.createElement(CommandRow, { copy, React, kind: 'uninstall', source: command }),
     React.createElement('p', { className: 'uip-hint' }, copy.uninstallBrief),
     React.createElement(
       'details',
