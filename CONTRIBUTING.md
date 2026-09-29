@@ -98,7 +98,7 @@ something was not verified.
 
 ## Verification discipline
 
-Seven rules, each one learned by getting it wrong. They live here because every reader of this file touches
+Eight rules, each one learned by getting it wrong. They live here because every reader of this file touches
 one of them; the incidents that produced them, with their numbers, are in `CHANGELOG.md`.
 
 1. **Changing `src/**` means rebuilding before verifying.** The suite and the browser both load `lib/`, so a
@@ -139,6 +139,35 @@ one of them; the incidents that produced them, with their numbers, are in `CHANG
    (`$frameworkInfo = Get-ParameterSurface $Framework`), never the parameter's own name. — Round 49, 8e-1
    (`tools`-side `plugins/dsh-ui-projects/scripts/param-surface.ps1`; it cost that tool its first two runs,
    and the error named the wrong line both times).
+8. **Assert the property, not the spelling that currently carries it.** An assertion has to name the thing
+   it is about, and that thing is almost never the string, number or element that happens to encode it
+   today. Five times an assertion here was written against the spelling instead, and every one of them
+   either passed for the wrong reason or failed against correct code. **A proxy value:**
+   `plugins/dsh-ui-projects/scripts/verify.mjs` asserted that the framework's card is not "presented as
+   maintaining the framework" with `excludes(markup, 'dsh-ui-projects')` — a literal that ANY other mention
+   of that name trips, including the one the maintenance hint legitimately carries; it now asserts the
+   property, the card's own sentence read out of the dictionary. **A hand-built fixture:** two fixtures in
+   that same file were hand-written dictionaries holding the keys the page happened to read at the time, so
+   the day the page read an eighth key both threw `copy.contractNotScannedWhy is not a function` while the
+   shipped dictionaries were fine — a fixture is a dictionary that does not exist, and `columnCopy()` is now
+   the real dictionary with short stand-ins on top, so a key added to the page cannot leave it behind. **A
+   count that belongs to somebody else:** the 18 findings of `dsh-cost-meter` are a fact about that
+   package's current bundle, not about this suite's behaviour, so
+   `plugins/dsh-ui-projects/scripts/browser-verify.mjs` asks for `>= 1` and for the badge's number to equal
+   the number of findings the panel lists. What this project does pin — the SHA of a build artifact, the
+   framework's own two accepted findings — is a snapshot, and says so where it is pinned, so a red result
+   there means the input moved and never that the assertion was right. **The wrong element's text:** the
+   framework's contract summary was checked by parsing the first number out of the row's whole
+   `textContent`, which begins with `dsh-ui-projects@0.1.0` — the number was the version's `0`, and a
+   correct panel failed with `expected 2, got 0`; twice in that group the answer was to publish a state hook
+   and read it (`data-uip-contract-summary`, `data-uip-contract-limits`), and its sibling was a selector for
+   a hook the component had never published at all. **A mechanism, and an invented policy:** two more
+   assertions demanded that the skin's `box-shadow` WIN over a component's own stylesheet, and that
+   enabling a second project leave the first one alone; both failed against correct code, because a project
+   rule written as `:where(...)` is scoped with the marker INSIDE the `:where()` and therefore carries zero
+   specificity on purpose, and because the framework allows one global look at a time by policy. "What I
+   believe the implementation does" is a spelling too. — Round 48 (the proxy assertion), Round 49 and Round
+   50/9b (the fixtures, the counts, and the four browser assertions).
 
 Rule 4 is the same discipline as `## Tool discipline` below, applied to bytes rather than to anchors:
 mutate with the file tools, or in memory, and never leave the tree in a state only a test could have
@@ -146,7 +175,9 @@ caught. Rule 5 is the same discipline applied to what a guard is allowed to look
 discipline applied to the tree itself: what is not under a version control system is not recoverable, and
 "it is in the repository" is a claim about exactly one directory. Rule 7 is the same discipline applied to
 a PowerShell parameter: the type you declared is a constraint you keep, and its consequences appear one
-statement later than the mistake.
+statement later than the mistake. Rule 8 is the same discipline applied to the assertion itself: name the
+property, not the string, count or element that currently spells it — and ask what could make this
+assertion pass while the feature is broken, then assert that instead.
 
 ## Test the path, not the function
 

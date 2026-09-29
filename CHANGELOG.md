@@ -25,6 +25,213 @@ Verification vocabulary used below:
 
 ---
 
+## Round 50 — Step 9b: the contract scanner, the badge, the two-sided example, and four assertions that measured the wrong thing
+
+**Status: done. `suite` 840 / 0 (758 → 840), `host` 41 / 0, `load` 85 / 0, `conformance` 122 / 0
+(67 → 122 across 9a and 9b), `skeleton` 13 / 0, the skin's `check` 26 / 0 and its `suite` 237 / 0, and
+`browser` under `--no-write`: **239 assertions / 0 failing** (184 → 239) — run BY THE USER in a normal
+PowerShell, because this machine's agent sandbox refuses to launch Chrome (`the browser exited early with
+code 4294930433`, twice, before any page loaded; the same suite had run from that sandbox in earlier
+rounds). The gate's own line from that run: `[gate] settings pauses: describe ×9, mutate ×5, other ×0
+(total 14; judged writes 5, reads 9)`. `lib/client.js` is `sha256:b5eccae3678f` (Round 49 recorded
+`153df2477a82`; `lib/` is ignored by git, so the hashes this round passed through are not in the
+repository, only in the round reports), `lib/index.js` 13665 bytes (unchanged). The two example packages
+were installed into the `web` profile by the user with `dsh plugin --profile web add <path>`; `install.ps1`
+was NOT run in this round, and every browser run was `--no-write`, which refused the writes carrying the
+`settings` key and let `enabled` through (both visible in the paused-request log).**
+
+Step 9 is the step that makes the contract *checkable*: a scanner that judges a client bundle by reading
+it, two example packages that show both sides of the contract in a real page, and a badge in Settings ›
+UI plugins that tells a reader which of the two they are looking at. It ends with four browser assertions
+being wrong in four different ways, which is 9b-4.
+
+### 9a — a scanner, not a parser, and the false positives real consumers found
+
+**A scanner, because there is no parser to reach for, and that was measured rather than assumed:**
+`acorn`, `@babel/parser`, `esprima`, `meriyah`, `espree` and `typescript` all fail to resolve in this
+workspace, and the only `@babel` packages present are `code-frame`, `helper-validator-identifier` and
+`runtime`. Node exposes no public AST API, so an AST detector means a new dependency in a package that
+deliberately has exactly one — `acorn` 8.18.0 is MIT, has zero runtime dependencies, and unpacks to
+565,327 bytes in 10 files. What a parser would buy is also small here, because the four rules are not four
+syntactic shapes. The inventory this decision rests on:
+
+| bundle | raw `role=` | in code | in strings | in comments |
+| --- | --- | --- | --- | --- |
+| `dsh-ui-projects/lib/client.js` | 11 | 0 | 4 | 7 |
+| `dsh-plugin-liquid-glass/lib/client.js` | 33 | 0 | 33 (all CSS selectors) | 0 |
+
+and the skin carries 156 colour literals of which **every one** is the value of a `--*:` declaration — a
+rule that reported those would make the skin the workspace's worst "violator" for doing the one thing a
+skin is for. `src/host/contract-scan.js` therefore reads text: it blanks comments, tags strings, never
+executes the bundle, never loads it in a `vm`, never resolves an import and never throws.
+
+**Three decidable rules**, in their own code namespace (`UI_CONTRACT_*`, deliberately not
+`conformance.js`'s `PROBLEM_CODES`: those refuse a package, these advise about one), every finding
+`severity: 'warning'`, nothing refused:
+
+- rule 1 — `UI_CONTRACT_NON_STANDARD_ROLE`: the WAI-ARIA 1.2 role list, transcribed by hand (94 entries =
+  the 82 non-abstract roles of §5.3.2–5.3.4 plus the 12 abstract roles of §5.3.1, W3C Recommendation,
+  06 June 2023). The abstract ones are accepted on purpose: a warning-only instrument reports a role it
+  cannot RECOGNISE, and `role="widget"` is a real role.
+- rule 2 — `UI_CONTRACT_HARD_COLOUR`: scoped to the properties the palette owns, skipping `--*:`
+  declarations, and exempting the fallback half of a `var(--token, fallback)`.
+- rule 4 — `UI_CONTRACT_CLOSED_SHADOW_ROOT`: `attachShadow({ mode: 'closed' })` in code, not in a comment.
+- **rule 3 is not scanned, and the criterion is written down rather than implied:** "`document.body`'s
+  top-level children must carry a WAI-ARIA role. The test is whether the appended element can be
+  recognised BY role, not whether `appendChild` was called; this round scans three rules statically and
+  defers the runtime one." `CONTRACT_LIMITS` travels with every result, so a clean scan cannot be read as
+  a clean plugin.
+
+**Five false-positive classes, every one found by a real consumer** (this is the part worth keeping):
+
+| found by | what was reported | why it was wrong | the fix |
+| --- | --- | --- | --- |
+| `dsh-cost-meter` (a real third-party package) | 5 colour findings | the plugin WRITES `var(--dsw-alias-bg-hover, rgba(127,127,127,.08))` — it reads the token and names a fallback, which is the contract, not a violation | the fallback half of a `var()` whose first argument is a custom property is exempt (23 → 18 findings for that bundle) |
+| the `@xjl-resources/dsh-plugin-example-dialog` package's own `check.mjs` | a second role violation | the package's display label is the string `role="custom-dialog"`, and the first rule read any `role=` as an assignment | an assignment is an object key or a markup attribute; a role quoted inside a label is neither |
+| the 9b review | a role named in a sentence, `'foo role="custom-dialog" bar'` | "not at the start of the string" is true of a label and false of prose | inside a string, a `role=` is an attribute only if a tag is still open in front of it (`<div role="x">` yes, `'<span>see role="x"'` no) |
+| the 9a probes | 20 = 20 hits on the framework, 66 = 66 on the skin | a CSS selector `[role='dialog']` says nothing about any element's role | selectors are excluded, and `data-role` / `userRole` never match at all (`(?<![\w-])`) |
+| the 9a probes | the skin's 156 literals | they are `--*:` declarations, which is how a token comes to exist | custom-property declarations are exempt |
+
+The false positives are the reason the scanner is shaped the way it is, and each one is pinned by an
+A-layer case in `scripts/check-installed.test.mjs`, so the class cannot come back silently.
+
+**What it reports today, as a SNAPSHOT** (the layer says so in its own comments): the framework's own
+bundle **2** — `styles/core.css`'s `.uip-previewGlass` writes `border: 1px solid rgb(255 255 255 / 45%)`
+and `background: rgb(255 255 255 / 32%)`, which by the contract as written ARE hard-coded colours;
+they are recorded and accepted because changing them would move the preview's visual, and the assertion
+goes red if the pair ever becomes a different pair. The skin 0, the skeleton 0, and in the profile:
+`dsh-cost-meter` 18, `@xjl-resources/dsh-plugin-example` 0, `@xjl-resources/dsh-plugin-example-dialog` 1.
+Cost, measured: 296,614 characters in 14.52 ms, all three bundles including file reads 15.40 ms, with a
+4 MB cap that reports `scanned: false` and the size rather than pretending it looked.
+
+### 9b-1 — the two example packages
+
+`@xjl-resources/dsh-plugin-example` is a UI project package (id `example`, type `skin`, one body rule
+reading a `--dsw-alias-*` token) and `@xjl-resources/dsh-plugin-example-dialog` is a plain client plugin:
+no `dsh.uiProject`, no `peerDependencies`, no framework service — it mounts two surfaces on
+`document.body` that differ in one attribute, `role="dialog"` and `role="custom-dialog"`. That pair is the
+contract made visible: one role is a published interface a skin can select, the other is a string only its
+own author can name. Both packages are `private: true`, both are scoped, and neither ships an
+`install.ps1` — which is why the maintenance copy now says where to run the printed commands (in the
+package's own directory when it ships one, otherwise from `plugins/dsh-ui-projects` with
+`-Package <name>`), and why that hint is asserted against the dictionary's own sentence rather than
+against a literal.
+
+Each package checks itself (`16 assertions / 0` and `14 assertions / 0`), and the dialog's check is the
+one that matters: it imports the framework's REAL `scanClientBundle` from
+`plugins/dsh-ui-projects/src/host/contract-scan.js` and asserts exactly one finding whose excerpt names
+`custom-dialog`. That check is what turned the package's own display label into the second false-positive
+class above. `E:\dsh\tools\snapshot.mjs`'s `ROOTS` gained both packages, and the guard that made the
+omission visible printed the red evidence by name:
+`uncovered: ["dsh-plugin-example","dsh-plugin-example-dialog"]`.
+
+### 9b-2 — the badge, and the framework's own row
+
+Settings › UI plugins gained a fourth badge per row, four states, and a disclosure under it:
+
+- `ok` the scanner read the bundle and found nothing, `warn` it found something (the panel lists it),
+  `none` nothing was read — not installed, no client half, no bundle, over the cap — with the host's own
+  `reason`, and `na` not judged on purpose: the framework's own row.
+- The findings are the HOST'S OWN ENGLISH, rendered verbatim. They are the output of a measurement, and a
+  localized paraphrase of a measurement is a second instrument with no calibration.
+- The coverage line counts from the payload: `contractFor` is `judgeContract` plus `rules: { judged, total }`,
+  attached in ONE place rather than repeated at `judgeContract`'s six returns, with `judged` derived from
+  `Object.keys(CONTRACT_RULES).length` so adding a rule cannot leave the number stale.
+- **Two style gaps were closed on the way past:** `.uip-badge-warn` had been rendered by the "not composed"
+  badge since Round 8f and had NO rule anywhere in the stylesheet, so a warning colour nobody could see;
+  `.uip-badge-ok` did not exist. Both now use the tokens the shipped shell itself uses for the same
+  meaning, read out of the frontend bundle rather than guessed (`--dsw-alias-state-warn-primary`,
+  **not** `-warning-`), and neither may be a colour literal — this stylesheet travels inside
+  `lib/client.js`, which the framework's own scanner reads.
+- The review decision on the framework's row: keep the `na` badge AND open the panel. The first version
+  showed `na` and nothing else, which hid two findings that are in the payload and in the CLI report; a
+  reader who never opens a terminal could not see them. The row now says "the contract does not apply
+  (2 accepted)", lists them, and carries a note saying they are recorded rather than fixed in this round.
+
+### 9b-3 — the gate counts every settings pause (B.1)
+
+A gate run reported `the interceptor saw and refused at least one write (0)` and the honest reading of that
+was not available, because the interceptor logged only requests it had JUDGED to be writes: settings READS
+were continued silently, so "the page never touched the settings API" and "the page made a hundred settings
+reads" produced exactly the same output — nothing. The state around it was contradictory in a way that
+took a separate read-only pass to explain: `settings.yaml` said `ui-projects.enabled: [liquid-glass]` while
+the panel said `已开启 0 项`, and the served HTML's first frame carried
+`body[data-ui-project-liquid-glass="on"]` — painted by the HOST from the document, which is why the page
+looked skinned while the client had nothing enabled.
+
+The fix is accounting, not judgement: every paused request under `/api/settings/*` is counted before
+anything decides what it is — a total, three buckets by the request's last path segment
+(`describe` / `mutate` / `other`), a write/read split, a log capped at 20 lines per bucket with one
+rollover line, a one-line summary at the gate's close
+(`[gate] settings pauses: describe ×a, mutate ×b, other ×c (total N; judged writes W, reads R)`), and a
+CONCLUSION line when `describe = 0` and `mutate = 0`: *this page never used the settings API, so
+`--no-write` had nothing to refuse and the rule was never exercised*. In the next full run the API was in
+use and the conclusion correctly did not print — the numbers above are that line.
+
+### 9b-4 — four assertions that measured the wrong thing
+
+The first full `--no-write` run of A–F: **229 assertions / 4 failing**, every one of them a test that was
+asserting a spelling rather than a property. They are recorded here because the rule they produced
+(`CONTRIBUTING.md` rule 8) is the deliverable, not the fixes.
+
+```
+FAIL a role="dialog" surface from a third-party plugin is reached by the skin
+       with the shadow from the skin's own rule winning over the surface's stylesheet
+       ({"role":"dialog","backdropFilter":"blur(30px) saturate(1.8)","boxShadow":"none"}): expected truthy, got false
+FAIL a second project package switches independently, scoped to its own marker
+       and switching one project does not move another: expected true, got false
+FAIL the plugins column shows the four contract states, and the framework row explains its own
+       while the sentence on it counts the same number of findings the panel lists: expected 2, got 0
+FAIL a real third-party plugin shows the warning state, with its own findings and the limits
+       with the instrument's own limits under them, so a warning is never read as a verdict: expected truthy, got false
+```
+
+- **The shadow.** The skin's dialog rule is `:where([role='dialog'], [role='menu'], [role='listbox'],
+  [role='tooltip']) { … box-shadow: var(--lg-glass-shadow), var(--lg-glass-inner-highlight) }`, and
+  `scopeCss` puts the project marker INSIDE a functional `:where()`, so the scoped selector's specificity
+  is **zero** — lower than the example surface's own `.example-dialog`, whose
+  `box-shadow: var(--dsw-alias-shadow-l2, none)` therefore wins. The shipped palette has no
+  `--dsw-alias-shadow*` token at all, so that resolves to its `none` fallback, which is exactly what was
+  measured. The frost, by contrast, has no competing declaration (the shipped CSS contains no `blur(30px)`
+  and no `saturate(1.8)`), so the same zero-specificity rule applied. The assertion now measures the
+  property across the skin being off and on: the filter must change, the component's own shadow must not.
+- **The policy.** `registry.conflictIds(id)` returns the other ACTIVE skins, and `runtime.#enable` disables
+  them first ("at most one global look, so the previous one goes first"), moving `data-ui-skin` to the new
+  skin. So enabling the second project package TAKES OVER, and the assertion that demanded independence was
+  asking for the one thing the framework forbids.
+- **The count.** The framework row's summary was checked by parsing the first number out of the row's whole
+  `textContent`, which begins with `dsh-ui-projects@0.1.0` — the assertion read the version's `0` and called
+  a correct panel broken. The panel's `<summary>` and its limits list now carry hooks of their own
+  (`data-uip-contract-summary`, `data-uip-contract-limits`) and the assertion reads them.
+- **The hook that never existed.** The limits assertion selected `[data-uip-contract-limits]`, an attribute
+  the component never published — the mirror image of the same mistake, fixed by publishing the hook rather
+  than by selecting the class name.
+
+After the fixes: **239 assertions / 0 failing**, and the gate's pause summary above comes from that run.
+
+### 9b-5 — negative results, and one open question
+
+- **The sandbox cannot launch a browser here.** Twice this round `--verify-refusal`/`--no-write` died in
+  `launchChrome` with the browser exiting before it reported a port (`code 4294930433`), before any page
+  loaded. That is recorded as an environment limit, not a code failure: the suite's offline gates
+  (`--self-check`) and every other suite ran in the sandbox, and the real-browser half was run by the user.
+  The offline gate grew a companion in this round for the same reason — `--self-check` now parses every
+  top-level page expression before Chrome is launched, because an expression is a STRING and `node --check`
+  validates the file that builds it, not the string.
+- **Two self-inflicted failures, both caught before the suites ran.** A comment inside a page-expression
+  template literal contained a backtick, which ended the outer template (`node --check`:
+  `SyntaxError: missing ) after argument list`); and one careless edit deleted a line's trailing newline and
+  joined two statements, found by reading the region back. The first is a textbook instance of
+  `## Tool discipline` in `CONTRIBUTING.md`.
+- **Open question, observed and not fixed:** under the one-skin policy the RECORD can name both skins.
+  `#remember` computes the enabled list from `record.enabled` (`src/client/runtime.js`), while the conflict
+  repair that disabled the previous skin runs with `persist: false` — so the run wrote
+  `enabled: ["liquid-glass","example"]` with only one of them active, and which one wins on the next boot
+  depends on the enable order. Either `#remember` should derive the list from the runtime's active set, or
+  the conflict repair should participate in persistence. Not this round's business, and it needs a ruling.
+
+---
+
 ## Round 49 — Step 8e: the wrapper forwards what it was given, and the wait stops reporting a verdict
 
 **Status: done, in three sub-rounds. `suite` 758 assertions / 0 failing (735 → 752 in 8e-1 → 758 in
