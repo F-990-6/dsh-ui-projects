@@ -128,9 +128,10 @@ one of them; the incidents that produced them, with their numbers, are in `CHANG
    source tree twice. Adding a package is therefore three edits — the package, the roster here, and the
    snapshot roots — and `scripts/verify.mjs` asserts the third against the directory on disk, so a package
    added tomorrow cannot be forgotten. **`E:\dsh\tools` counts.** It is a `ROOTS` entry, and it holds the
-   only copy of `snapshot.mjs` and `derive-boot-css.mjs` — a tree the snapshot protected while nothing
-   protected the snapshot, until step 8e put it under git. — Round 46 (the skeleton had been uncovered
-   since it was created, and `dsh-plugin-liquid-glass` joined the workspace uncovered).
+   only copy of `snapshot.mjs` — a tree the snapshot protected while nothing protected the snapshot, until
+   step 8e put it under git. (It held `derive-boot-css.mjs` too until step 56h-5 moved that tool into the
+   package whose CSS it derives.) — Round 46 (the skeleton had been uncovered since it was created, and
+   `dsh-plugin-liquid-glass` joined the workspace uncovered).
 7. **A typed parameter creates a lifelong type constraint on its variable.** `param([string]$Framework)`
    means every later assignment to `$Framework` is silently coerced to a string — so
    `$framework = Get-ParameterSurface $Framework` leaves the variable a String, and the failure surfaces

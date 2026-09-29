@@ -2525,8 +2525,8 @@ await test('the boot page is dismissed once it is genuinely in the way', async (
  * `the first-paint predicate reads selectors the way CSS does` MOVED OUT in 8c.
  *
  * `classifyPrelude` decides which rules a first paint may carry, and it is a statement about a
- * PACKAGE's CSS — `tools/derive-boot-css.mjs` runs it over a package's stylesheets to write that
- * package's `src/host/boot.css`. This suite has no CSS of its own any more, so the twelve cases now
+ * PACKAGE's CSS — `derive-boot-css.mjs`, in the skin package, runs it over a package's stylesheets to write
+ * that package's `src/host/boot.css`. This suite has no CSS of its own any more, so the twelve cases now
  * live in `@xjl-resources/dsh-plugin-liquid-glass`, against the real sheets whose first frame they
  * decide. `scripts/boot-css-rules.mjs` and the derivation tool went with them.
  */

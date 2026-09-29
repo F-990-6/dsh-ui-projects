@@ -9,8 +9,9 @@
  * and this service is the one place it lives — a skin asks for its rows and gets them.
  *
  * WHY `bootRows` TAKES THE CSS. The first-paint stylesheet is a derived subset of each package's
- * own skin CSS (`derive-boot-css.mjs --package <dir>`), and the package that owns the CSS is the
- * only thing that can hand it over. The service formats rows; it does not know what is in them.
+ * own skin CSS (`scripts/derive-boot-css.mjs --package <dir>`, a tool that lives in the package whose
+ * sheet it derives), and the package that owns the CSS is the only thing that can hand it over. The
+ * service formats rows; it does not know what is in them.
  *
  * WHY IT IS PROVIDED UNCONDITIONALLY, even though it reads settings. An earlier sketch provided
  * it inside `ctx.inject(['settings'], …)`, which reads well until you ask what happens in a

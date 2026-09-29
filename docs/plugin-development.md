@@ -192,7 +192,8 @@ export function apply(ctx) {
 `bootRows(id)` emits the first-paint rows for that project — presence, then style, then the marker — so the
 served HTML already carries `body[data-ui-project-example="on"]` before any client bundle runs. A skin
 passes its own derived fragment as the second argument; that fragment is generated from the package's
-stylesheet by `E:\dsh\tools\derive-boot-css.mjs --package <dir>`, which keeps **body-level rules only**.
+stylesheet by `scripts/derive-boot-css.mjs` in the skin package, run with `--package <dir>`, which keeps
+**body-level rules only**.
 `PROJECT_ID` is the one value here that is not derived, and `scripts/build.mjs` asserts it against
 `package.json` → `dsh.uiProject.id`.
 

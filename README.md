@@ -396,11 +396,12 @@ This is a deliberate departure from the specification, which asks for a head scr
 removes the `localStorage` copy after its first successful write — so a script reading that key
 would find nothing on exactly the loads that matter.
 
-A package's sheet is DERIVED from its own stylesheets rather than hand-written, and the tool that
-does it (`tools/derive-boot-css.mjs --package <dir>`), the predicate it shares with the package's
-build, and the check that the sheet is exactly what the CSS implies all live with the package. There
-is nothing here to derive: this package has no CSS. The worked example, including what a first frame
-can and cannot have, is in `@xjl-resources/dsh-plugin-liquid-glass`'s README.
+A package's sheet is DERIVED from its own stylesheets rather than hand-written, and the tool that does it
+(`scripts/derive-boot-css.mjs` in `@xjl-resources/dsh-plugin-liquid-glass`, with `--package <dir>` to point
+it at another package), the predicate it shares with the package's build, and the check that the sheet is
+exactly what the CSS implies all live with the package. There is nothing here to derive: this package has
+no CSS. The worked example, including what a first frame can and cannot have, is in
+`@xjl-resources/dsh-plugin-liquid-glass`'s README.
 
 Two deviations from the specification are recorded here rather than left to be rediscovered:
 
@@ -519,14 +520,14 @@ dsh plugin --profile web add <path-to-package>   # declares the dependency and a
 ### The first paint
 
 A package's host half pushes its own stylesheet into the served `<head>`, so the first frame is already
-skinned. That sheet is derived from the package's own CSS —
-`node tools/derive-boot-css.mjs --package <dir>` — and consists of the body-level rules only, authored
-already-scoped (`body[data-ui-project-<id>="on"]…`) because the host has no scoper to run. The tool and the
-package's build share one predicate, which each package keeps in its own `scripts/boot-css-rules.mjs`, and
-that shared file is what keeps "boot.css says exactly what this package's CSS says" true in both
-directions. A package's build should RUN the derivation tool in `--check` mode before writing anything, so
-a stale sheet fails the build instead of shipping — `@xjl-resources/dsh-plugin-liquid-glass`'s
-`scripts/build.mjs` is the worked example.
+skinned. That sheet is derived from the package's own CSS by `scripts/derive-boot-css.mjs` in
+`@xjl-resources/dsh-plugin-liquid-glass` — `--package <dir>` points it at the package whose sheet is wanted —
+and it consists of the body-level rules only, authored already-scoped (`body[data-ui-project-<id>="on"]…`)
+because the host has no scoper to run. The tool and the package's build share one predicate, which each
+package keeps in its own `scripts/boot-css-rules.mjs`, and that shared file is what keeps "boot.css says
+exactly what this package's CSS says" true in both directions. A package's build should RUN the derivation
+tool in `--check` mode before writing anything, so a stale sheet fails the build instead of shipping — the
+skin's own `scripts/build.mjs` is the worked example.
 
 
 ### Writing a project's CSS
@@ -596,10 +597,11 @@ There used to be a third artefact, `lib/boot-css.js` — the first-paint stylesh
 `src/host/boot.css` after a rule-by-rule proof that the sheet was exactly what the skin emitted, in both
 directions. It is gone in step 8c, and it went with the thing it described rather than being kept empty:
 a first-paint sheet is a subset of a PACKAGE's CSS, so the sheet, the tool that derives it
-(`tools/derive-boot-css.mjs --package <dir>`), the predicate that decides what is body-level and the
-check that runs before the build writes anything all moved to the package that owns the CSS. **This
-package derives nothing, because it has no CSS**, and `node tools/derive-boot-css.mjs --check` run here
-exits 1 saying so.
+(`scripts/derive-boot-css.mjs` in the skin package, since step 56h-5), the predicate that decides what is
+body-level and the check that runs before the build writes anything all live with the package that owns the
+CSS. **This package derives nothing, because it has no CSS**, and the tool says so when it is pointed here:
+`node plugins/dsh-plugin-liquid-glass/scripts/derive-boot-css.mjs --package plugins/dsh-ui-projects --check`
+exits 1, naming the `scripts/boot-css-rules.mjs` it expected.
 
 What is worth keeping from that arrangement is the reason it was built the way it was, because it applies
 to every package that does have CSS:

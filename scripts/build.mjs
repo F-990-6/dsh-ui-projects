@@ -12,9 +12,10 @@
  * There is no fourth row any more, and that is step 8c: this package used to derive its own
  * `src/host/boot.css` into a `lib/boot-css.js` module, because it shipped a skin whose first frame
  * it had to serve. A first-paint sheet belongs to the package that owns the stylesheet, and the
- * derivation tool (`tools/derive-boot-css.mjs`), the predicate it shares with a package's build
+ * derivation tool (`scripts/derive-boot-css.mjs`), the predicate it shares with a package's build
  * (`scripts/boot-css-rules.mjs`) and the skin's own stylesheets all moved to
- * `@xjl-resources/dsh-plugin-liquid-glass`. A framework with no CSS has nothing to derive.
+ * `@xjl-resources/dsh-plugin-liquid-glass` — the predicate and the sheet in step 8c, the tool in step
+ * 56h-5, which is when it left the workspace's `tools/`. A framework with no CSS has nothing to derive.
  *
  * No bundler, no transpiler, no network: the source is written in the same plain JavaScript the
  * browser will run. `verify.mjs` re-loads the emitted bundle through a faithful
