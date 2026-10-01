@@ -9045,6 +9045,32 @@ await test('the diagnostics are built in the client, from what the page can actu
   equal(missing, [], 'and every diagnostics sentence exists in both languages, once each')
 })
 
+/* ── Step 5, the last piece: the store REPORTS a failed check, per package ───────────────────────── */
+
+/*
+ * PRECISE TO THE CALL AND THE LOOKUP, NOT TO THE SIGNATURE (measured 2026-09-30).
+ *
+ * `createInstalledStore({ …, onUpdateFailure })` names the parameter, so a bare `onUpdateFailure` check
+ * would pass the moment the signature landed — a false green for work that was not done. `deps.onUpdateFailure?.(`
+ * can only appear where the callback is INVOKED, and `payload?.results ?? []` only where the check's own
+ * answer is read; neither can match a parameter list.
+ *
+ * WHY SOURCE-LEVEL RATHER THAN BEHAVIOURAL: driving `loadUpdates` needs a fixture that feeds `payload.results`
+ * through the store, and this suite has none — inventing one here would be a bigger change than the code it
+ * tests. Stated plainly rather than dressed up.
+ */
+await test('the store reports each failed update check through the injected callback', async () => {
+  const storeSource = await readFile(join(packageRoot, 'src', 'client', 'installed.js'), 'utf8')
+  contains(storeSource, 'deps.onUpdateFailure?.(', 'the store REPORTS an update failure through the injected callback')
+  contains(storeSource, 'payload?.results ?? []', 'reading the results the check actually returned, per package')
+  contains(storeSource, 'result?.timedOut === true', 'a timed-out check counts as a failure, not as "up to date"')
+  /*
+   * AND IT IS NOT RECORDED PER CHECK: the callback is called inside the per-result loop, which only exists
+   * because one unreachable registry must not mark every package as failed.
+   */
+  equal(/catch[\s\S]{0,400}onUpdateFailure/.test(storeSource), false, 'and nothing records failures from the whole-check catch')
+})
+
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
 if (onlyTest !== '') {
   process.stdout.write(`[filter] DSH_TEST_ONLY=${JSON.stringify(onlyTest)} skipped ${skipped} test(s)\n`)

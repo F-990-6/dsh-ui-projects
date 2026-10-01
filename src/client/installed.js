@@ -363,6 +363,30 @@ export function createInstalledStore({ request, channelMap = () => ({}), onUpdat
         const payload = await request(UPDATES_PATH + channelsQuery(channelMap()))
         if (generation !== mine) return
         if (payload?.error !== undefined) throw new Error(payload.error.message ?? 'the host reported an unspecified failure')
+        /*
+         * STEP 5: RECORD WHAT FAILED, PER PACKAGE (decision 2026-09-30).
+         *
+         * PER PACKAGE, NOT PER CHECK: one unreachable registry must not mark every installed package as
+         * failed, and a package whose check answered is not recorded at all — only failures are.
+         *
+         * NOT AWAITED: recording is a side effect, and the panel must render the check's result whether or
+         * not the record was written. The callback is optional, so a composition without it behaves exactly
+         * as before.
+         *
+         * The leading `;` is required: the line above ends in `)`, and without it this would parse as a
+         * function call on that expression.
+         */
+        ;(payload?.results ?? [])
+          .filter((result) => result?.error != null || result?.timedOut === true)
+          .forEach((result) => {
+            void Promise.resolve(
+              deps.onUpdateFailure?.(result.name, {
+                at: new Date().toISOString(),
+                version: result.latest ?? null,
+                reason: result.error ?? 'timed out',
+              }),
+            ).catch(() => {})
+          })
         updatesState = { status: 'ready', payload }
       } catch (error) {
         if (generation !== mine) return
