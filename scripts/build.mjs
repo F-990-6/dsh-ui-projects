@@ -59,6 +59,13 @@ const MODULE_ORDER = [
   'persist.js',
   'settings-controller.js',
   'slot-registration.js',
+  /*
+   * BEFORE `channels.js`, which imports it: the order is a dependency order, and a client module missing
+   * from this list is bundled nowhere — measured 2026-09-30, where `checklist-items.js` was added to the
+   * client half and this list was not, so `verify` and `load-check` both died on "no such shell module"
+   * while `build` only warned.
+   */
+  'checklist-items.js',
   'channels.js',
   'boot-presence.js',
   'service.js',

@@ -61,6 +61,63 @@ export function write(record, name, value) {
 }
 
 /**
+ * The ten-item test checklist a package's per-package record carries, or `null` when nothing is recorded.
+ *
+ * SAME SHAPE AS THE CHANNEL (see `read` above), and the same strictness as the gate it feeds: only
+ * `value === true` counts, because `isComplete` in `src/host/test-checklist.js` requires exactly `true`.
+ * Being more generous here would produce the one outcome nobody could explain — a row that shows every box
+ * ticked while the gate still refuses to mark the version tested.
+ * @param {unknown} record @param {string} name
+ * @returns {Record<string, boolean> | null}
+ */
+export function readChecklist(record, name) {
+  const entry = /** @type {any} */ (record)?.settings?.[name]?.checklist
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return null
+  /** @type {Record<string, boolean>} */
+  const out = {}
+  for (const [key, value] of Object.entries(entry)) if (value === true) out[key] = true
+  return out
+}
+
+/*
+ * The checklist ids come from the client-side MIRROR (`checklist-items.js`), never from the host module:
+ * the two halves are separate bundles, and this file is part of the client one. Declared here rather than
+ * at the top only because this is where the change landed; ESM hoists imports.
+ */
+import { CHECKLIST_IDS } from './checklist-items.js'
+
+/**
+ * Confirm (or un-confirm) one checklist item, MERGING like the channel write does.
+ *
+ * `checklist` and `channel` live in the SAME per-package entry, so a write to one must not erase the
+ * other — the record is the user's data, and half of it disappearing because they ticked a box would be
+ * the kind of loss that is hard to notice and impossible to forgive.
+ * @param {any} record @param {string} name @param {string} itemId @param {boolean} checked
+ */
+export function writeChecklist(record, name, itemId, checked) {
+  /*
+   * REFUSED BY NAME, like an unknown channel (`write` above): a checkbox wired to a typo — or a caller
+   * that invented an id — must not be able to put a key in the user's record that no surface will ever
+   * read or clear. The whitelist is DERIVED from the mirror, so adding an item cannot leave it behind.
+   */
+  if (!CHECKLIST_IDS.includes(itemId)) {
+    throw new Error(
+      `unknown checklist item ${JSON.stringify(itemId)}; this build checks ${CHECKLIST_IDS.join(', ')}`,
+    )
+  }
+  if (record.settings === undefined || record.settings === null || typeof record.settings !== 'object') record.settings = {}
+  const entry = record.settings[name]
+  const kept = entry !== null && typeof entry === 'object' ? entry : {}
+  const previous =
+    kept.checklist !== null && typeof kept.checklist === 'object' && !Array.isArray(kept.checklist) ? kept.checklist : {}
+  const checklist = { ...previous }
+  if (checked === true) checklist[itemId] = true
+  else delete checklist[itemId]
+  record.settings[name] = { ...kept, checklist }
+  return record
+}
+
+/**
  * The row data: the scan's dependencies, each carrying its channel and what the registry said.
  *
  * THREE STATES, AND ONLY ONE OF THEM IS AN UPDATE. A check that answered with a newer version, a check
@@ -78,6 +135,11 @@ export function mergeUpdates(scan, record, updates) {
     ...scan,
     dependencies: (scan?.dependencies ?? []).map((dependency) => {
       const channel = read(record, dependency.name)
+      /*
+       * The checklist travels WITH the row, like the channel: the panel renders it from the row alone, and
+       * `null` means "nothing recorded yet" — a different sentence from "recorded, nothing confirmed".
+       */
+      const checklist = readChecklist(record, dependency.name)
       const found = results.get(dependency.name)
       /*
        * "I could not check" must never read as "you are up to date", so a result that is absent OR that
@@ -88,6 +150,7 @@ export function mergeUpdates(scan, record, updates) {
       return {
         ...dependency,
         channel,
+        checklist,
         update: {
           name: dependency.name,
           channel,

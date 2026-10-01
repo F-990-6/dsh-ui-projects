@@ -171,6 +171,26 @@ export const STRINGS = {
       disableProjectHint: 'You can turn the project off in the UI page; the package stays installed.',
       removePackageHint: 'To remove the package itself, run this command and restart dsh:',
       upgradeDeferredNote: 'Not ready? Keep using this dsh: nothing here breaks, and the packages above stay off until you upgrade them.',
+      /*
+       * THE TEN-ITEM TEST CHECKLIST (step 4). The ids and these keys come from `src/host/test-checklist.js`,
+       * which carries no display text at all — so a translation cannot drift away from the list it labels.
+       * Each item is a thing a person looks at, not a unit test: the checklist exists to be honest about
+       * what a human actually checked before a version is called tested.
+       */
+      checklistTitle: 'Test checklist',
+      checklistHint: 'Confirm each of the ten before marking this version tested.',
+      checklistLight: 'Light theme: the surface, the text and the borders all read correctly',
+      checklistDark: 'Dark theme: nothing turns into an unreadable patch',
+      checklistMobile: 'Narrow/mobile layout: nothing overlaps or is cut off',
+      checklistModal: 'Dialogs open, sit above everything, and close',
+      checklistDropdown: 'Dropdowns and menus open, stay anchored, and are not clipped',
+      checklistInput: 'Text inputs are usable: caret, selection, placeholder and focus ring',
+      checklistFirstFrame: 'The first frame does not flicker or flash',
+      checklistCloseResidue: 'Closing the panel leaves no residue behind',
+      checklistFocus: 'Focus states are visible, and keyboard navigation reaches every control',
+      checklistContrast: 'Contrast is enough to read, including over the blurred material',
+      checklistMarkTested: 'Mark this version as tested',
+      checklistGenerate: 'Generate CHANGELOG draft',
       contractCoverage: (judged, total) =>
         `${judged} of the contract’s ${total} rules are judged by reading the built bundle; the rest are listed below`,
       contractFindingsTitle: 'What the scan found',
@@ -424,6 +444,25 @@ export const STRINGS = {
       disableProjectHint: '你可以在界面页把它的项目关掉；包本身仍然装着。',
       removePackageHint: '要卸载包本身，执行这条命令并重启 dsh：',
       upgradeDeferredNote: '还没准备好？继续用这版 dsh：这里不会坏，上面的包在你更新它们之前保持关闭。',
+      /*
+       * 十项测试清单（第四步）。id 与这些键来自 `src/host/test-checklist.js` —— 那份模块**不带任何显示
+       * 文案**，因此译文不可能与它所标注的清单脱节。每一项都是**人去看**的东西，不是单元测试：
+       * 清单存在的意义，是在把某个版本称为"已测试"之前，对"人到底验了什么"保持诚实。
+       */
+      checklistTitle: '测试清单',
+      checklistHint: '十项逐条确认之后，才能把这一版标记为已通过测试。',
+      checklistLight: '亮色主题：表面、文字与边框都读得清',
+      checklistDark: '暗色主题：没有哪块变成读不了的补丁',
+      checklistMobile: '窄屏／移动端：没有重叠、没有被裁掉的东西',
+      checklistModal: '弹窗能打开、盖在最上层、能关掉',
+      checklistDropdown: '下拉与菜单能打开、位置不跑、不被裁切',
+      checklistInput: '输入框可用：光标、选区、占位文字与聚焦环',
+      checklistFirstFrame: '首帧不闪烁、不闪白',
+      checklistCloseResidue: '关闭面板后不留残留',
+      checklistFocus: '焦点态可见，键盘能走到每一个控件',
+      checklistContrast: '对比度足够阅读，包括压在模糊材质上的文字',
+      checklistMarkTested: '标记这一版已通过测试',
+      checklistGenerate: '生成 CHANGELOG 草稿',
       contractCoverage: (judged, total) => `契约的 ${total} 条规则中有 ${judged} 条通过读构建产物判定；其余见下方`,
       contractFindingsTitle: '扫描发现',
       contractLimitsTitle: '这次扫描看不到的东西',

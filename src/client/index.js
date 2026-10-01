@@ -447,6 +447,24 @@ function apply(ctx) {
                 channels.write(next, name, value)
                 await persist.write(next)
               },
+              /*
+               * THE CHECKLIST GOES THROUGH THE SAME DOOR (step 4). `readChecklist` is a plain read beside
+               * `read`; `writeChecklist` clones the record, sets one item through the channel store's own
+               * module (which refuses an id it does not know — `src/client/channels.js`), and hands the
+               * whole document back to the persistence adapter this plugin already owns.
+               *
+               * THAT IS THE POINT: the checklist is not a second store. It lives in the same settings
+               * document as the channel, so it is the user's data, it survives the package being removed,
+               * and it re-renders by whatever path the channel selector already uses — one mechanism, two
+               * fields.
+               */
+              readChecklist: (name) => channels.readChecklist(persist.read() ?? { settings: {} }, name),
+              writeChecklist: async (name, itemId, checked) => {
+                const current = persist.read() ?? { v: 1, initialized: false, enabled: [], settings: {}, touched: false }
+                const next = { ...current, settings: { ...(current.settings ?? {}) } }
+                channels.writeChecklist(next, name, itemId, checked)
+                await persist.write(next)
+              },
             },
           })
         },

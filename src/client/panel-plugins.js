@@ -321,6 +321,14 @@ export function UiPluginsSection(props) {
               )
             : null,
           ...UpgradeCheck({ copy, React: React_, dependencies: scan.dependencies, profileName: scan.profileName }),
+          ...ChecklistBlock({
+            copy,
+            React: React_,
+            dependency,
+            onToggle: (name, itemId, checked) => {
+              void Promise.resolve(props.channels?.writeChecklist?.(name, itemId, checked)).catch(() => {})
+            },
+          }),
           ...RowFoldFacts({ copy, React: React_, dependency, hasProject, project, mirrorAvailable: projectsLive !== undefined }),
           ...(dependency.problems ?? []).map((problem, index) =>
             React_.createElement('p', { className: 'uip-error', key: 'problem-' + index }, problem.code + ': ' + problem.message),
@@ -767,6 +775,66 @@ function UpgradeCheck({ copy, React: React_, dependencies, profileName }) {
               source: 'dsh plugin --profile ' + profileName + ' remove ' + dependency.name,
             }),
             React_.createElement('p', { className: 'uip-hint' }, copy.upgradeDeferredNote),
+          ),
+        ),
+      ),
+    ),
+  ]
+}
+
+/*
+ * The ten checklist items come from the CLIENT MIRROR, never from the host module: the two halves are
+ * separate bundles (`checklist-items.js` says so at length), and the suite holds the mirror equal to
+ * `src/host/test-checklist.js` item by item. Declared here rather than at the top only because this is
+ * where the change landed; ESM hoists imports.
+ */
+import { CHECKLIST_ITEMS } from './checklist-items.js'
+
+/**
+ * THE TEN-ITEM TEST CHECKLIST, rendered in a row's fold (`UI第三阶段.txt:51-57`).
+ *
+ * A PLAIN FUNCTION, and it MUST return an ARRAY: the caller spreads the result
+ * (`...ChecklistBlock({ … })`), and a `null` return would throw
+ * `TypeError: null is not iterable` — measured 2026-09-30, where exactly that mistake took 25 unrelated
+ * tests down with it. The file's hook-bearing functions are named and asserted
+ * (`verify.mjs:4530`: `['UiPluginsSection', 'CommandRow']`), so a list that needs no state must not take
+ * any — the state lives in the user's settings record, and a click writes it back through the adapter.
+ *
+ * `null` AND `{}` RENDER THE SAME, BY DECISION (2026-09-30): both mean "nothing is confirmed yet", and a
+ * row that distinguished "never started" from "started, zero items" would be making a distinction the
+ * person looking at it cannot act on. The count is always `confirmed/10`.
+ *
+ * EVERYTHING VISIBLE COMES FROM THE TABLE: the item ids and `labelKey`s from the mirror, the sentences
+ * from `copy` (i.e. `locale.js`, in both languages) — this function prints no literal of its own.
+ * @param {{ copy: any, React: any, dependency: any, onToggle?: (name: string, itemId: string, checked: boolean) => void }} input
+ * @returns {any[]}
+ */
+function ChecklistBlock({ copy, React: React_, dependency, onToggle }) {
+  const record = dependency?.checklist
+  const confirmed = CHECKLIST_ITEMS.filter((item) => record?.[item.id] === true).length
+  return [
+    React_.createElement(
+      'div',
+      { className: 'uip-checklist', key: 'checklist', 'data-uip-checklist': dependency?.name },
+      React_.createElement(
+        'p',
+        { className: 'uip-hint' },
+        copy.checklistTitle + ' — ' + confirmed + '/' + CHECKLIST_ITEMS.length,
+      ),
+      React_.createElement('p', { className: 'uip-hint' }, copy.checklistHint),
+      React_.createElement(
+        'ul',
+        { className: 'uip-checklist-list' },
+        CHECKLIST_ITEMS.map((item) =>
+          React_.createElement(
+            'li',
+            { key: item.id, 'data-uip-checklist-item': item.id },
+            React_.createElement('input', {
+              type: 'checkbox',
+              checked: record?.[item.id] === true,
+              onChange: (event) => onToggle?.(dependency?.name, item.id, event?.target?.checked === true),
+            }),
+            React_.createElement('span', { className: 'uip-hint' }, copy[item.labelKey]),
           ),
         ),
       ),

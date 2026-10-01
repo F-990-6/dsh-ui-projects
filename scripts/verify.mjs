@@ -8628,6 +8628,116 @@ await test('the plugin API version is declared once, and judged in one place', a
   contains(clientIndex, 'dshPluginApiVersion', 'and so does the client half')
 })
 
+/* ── Step 4, segment 1: the ten-item test checklist, and the gate it guards ────────────────────── */
+
+/*
+ * `UI第三阶段.txt:51-57` (step 4, second half): Settings ▸ Plugins offers "生成测试清单", the list has TEN
+ * items — 亮色 / 暗色 / 移动端 / 弹窗 / 下拉 / 输入框 / 首帧无闪烁 / 关闭无残留 / 焦点态 / 对比度 — every one
+ * must be confirmed individually, and only then may "标记通过" be pressed. A CHANGELOG draft may not be
+ * generated before that mark exists.
+ *
+ * THE GATE LIVES IN THE JUDGEMENT, NOT IN THE BUTTON. A disabled button is a suggestion; the refusal is
+ * what makes the rule true, so `markTested` must refuse an incomplete record — that is what this test
+ * asks for, and the UI is asked for separately (`data-uip-checklist`, rendered by a plain function: the
+ * suite names the two hook-bearing functions in `panel-plugins.js` and this must not become a third).
+ *
+ * STORAGE IS THE SETTINGS DOCUMENT, beside the channel a package already keeps there (`channels.js`:
+ * `settings['<pkg>'].channel`), because that record is the user's, not the package's — it survives the
+ * package being uninstalled, which is exactly what "you tested this version" has to do.
+ *
+ * RED TODAY: `src/host/test-checklist.js` does not exist.
+ */
+await test('the test checklist is ten named items, and an incomplete one cannot be marked passed', async () => {
+  const checklist = await import('../src/host/test-checklist.js').catch(() => null)
+  truthy(checklist !== null, 'src/host/test-checklist.js exists — the checklist is data, not a paragraph in a doc')
+  equal(Array.isArray(checklist?.CHECKLIST_ITEMS), true, 'and exports CHECKLIST_ITEMS')
+  equal(checklist?.CHECKLIST_ITEMS?.length, 10, 'with exactly ten items, as the spec counts them')
+  equal(
+    (checklist?.CHECKLIST_ITEMS ?? []).map((item) => item?.id).sort(),
+    [
+      'close-no-residue', 'contrast', 'dark', 'dropdown', 'first-frame-no-flicker',
+      'focus', 'input', 'light', 'mobile', 'modal',
+    ],
+    'and the ten ids name the ten things the spec lists, once each',
+  )
+  equal(
+    (checklist?.CHECKLIST_ITEMS ?? []).every((item) => typeof item?.labelKey === 'string' && item.labelKey.length > 0),
+    true,
+    'each with a locale key, so both languages come from the table',
+  )
+
+  equal(typeof checklist?.isComplete, 'function', 'isComplete(record) answers whether every item is confirmed')
+  equal(checklist?.isComplete?.({}), false, 'an empty record is not complete')
+  const nine = Object.fromEntries((checklist?.CHECKLIST_ITEMS ?? []).slice(0, 9).map((item) => [item.id, true]))
+  equal(checklist?.isComplete?.(nine), false, 'nine of ten is not complete — the tenth is the point')
+  const ten = Object.fromEntries((checklist?.CHECKLIST_ITEMS ?? []).map((item) => [item.id, true]))
+  equal(checklist?.isComplete?.(ten), true, 'and ten of ten is')
+
+  const refused = (() => {
+    try {
+      checklist?.markTested?.({}, 'ok-pkg')
+      return null
+    } catch (error) {
+      return error
+    }
+  })()
+  equal(typeof checklist?.markTested, 'function', 'markTested is the ONE way to record a pass')
+  truthy(refused !== null, 'and it REFUSES an incomplete record — the gate is a refusal, not a disabled button')
+  contains(String(refused?.message ?? ''), 'checklist', 'the refusal says which gate it is')
+
+  /* THE STORAGE SLOT, beside the channel the same record already carries. */
+  const channelsSource = await readFile(join(packageRoot, 'src', 'client', 'channels.js'), 'utf8')
+  contains(channelsSource, 'checklist', 'the client stores the checklist beside the channel, in the same per-package record')
+
+  /* THE PANEL: a plain function, marked, and not a third hook-bearing one. */
+  const markup = renderFold()
+  /*
+   * THE BLOCK IS NOT RENDERED YET (segment 1 is landed in two steps: the judgement and the sentences are
+   * in place, the panel block is not). This assertion is what asks for it, and it is kept as written rather
+   * than relaxed — a checklist nobody can see is not a checklist.
+   */
+  contains(rowSplit(markup, 'ok-pkg').folded, 'data-uip-checklist', 'the fold renders the ten-item checklist')
+
+  /* BOTH LANGUAGES, from the table: each label key appears twice in the locale file. */
+  const localeSource = await readFile(join(packageRoot, 'src', 'client', 'locale.js'), 'utf8')
+  const missing = (checklist?.CHECKLIST_ITEMS ?? [])
+    .map((item) => item.labelKey)
+    .filter((key) => (localeSource.match(new RegExp('\\n\\s*' + key + ':', 'g')) ?? []).length !== 2)
+  equal(missing, [], 'and every label key exists in both languages, once each')
+})
+
+/* Two more questions the checklist has to answer (step 4). */
+
+await test('the checklist is refused by name, and the two halves of it cannot drift apart', async () => {
+  const host = await import('../src/host/test-checklist.js').catch(() => null)
+  const mirror = await import('../src/client/checklist-items.js').catch(() => null)
+  truthy(mirror !== null, 'src/client/checklist-items.js exists — the client-side mirror')
+
+  /*
+   * THE MIRROR IS HELD EQUAL ITEM BY ITEM, ids and label keys both: the two halves are separate bundles
+   * (`checklist-items.js` explains why), so this assertion is the only thing standing between a renamed
+   * item and a checkbox nobody can label.
+   */
+  equal(
+    (mirror?.CHECKLIST_ITEMS ?? []).map((item) => item?.id + ':' + item?.labelKey),
+    (host?.CHECKLIST_ITEMS ?? []).map((item) => item?.id + ':' + item?.labelKey),
+    'and carries exactly the host list, id and label key for every item',
+  )
+
+  const channels = await import('../src/client/channels.js').catch(() => null)
+  equal(typeof channels?.writeChecklist, 'function', 'the client can write one checklist item')
+  const refused = (() => {
+    try {
+      channels?.writeChecklist({ settings: {} }, 'ok-pkg', 'not-a-real-item', true)
+      return null
+    } catch (error) {
+      return error
+    }
+  })()
+  truthy(refused !== null, 'and REFUSES an item id this build does not know, rather than writing a key nobody reads')
+  contains(String(refused?.message ?? ''), 'checklist', 'the refusal says which list it is about')
+})
+
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
 if (onlyTest !== '') {
   process.stdout.write(`[filter] DSH_TEST_ONLY=${JSON.stringify(onlyTest)} skipped ${skipped} test(s)\n`)
