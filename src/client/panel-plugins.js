@@ -329,10 +329,29 @@ export function UiPluginsSection(props) {
               void Promise.resolve(props.channels?.writeTestedAt?.(name, version)).catch(() => {})
             },
             onGenerateDraft: (name, version) => {
-              void Promise.resolve(store?.generateDraft?.(name, version)).catch(() => {})
+              /*
+               * THE STORE FETCHES, THE PANEL STORES (path A, decision 2026-09-30): the draft belongs in the
+               * user's record, and the `channels` adapter is its one writer — so the payload comes back
+               * here and this is where it is written.
+               */
+              void Promise.resolve(store?.generateDraft?.(name, version))
+                .then((payload) => {
+                  if (payload?.status === 'ok') {
+                    return props.channels?.writeDraft?.(name, {
+                      entries: payload.entries ?? [],
+                      suggestedBump: payload.suggestedBump ?? null,
+                      version,
+                      savedAt: new Date().toISOString(),
+                    })
+                  }
+                  return undefined
+                })
+                .catch(() => {})
             },
-            onCommitChangelog: (name) => {
-              void Promise.resolve(store?.commitChangelog?.(name)).catch(() => {})
+            onCommitChangelog: (name, entries, version) => {
+              void Promise.resolve(
+                store?.commitChangelog?.(name, entries, version, props.channels?.readChecklist?.(name) ?? null),
+              ).catch(() => {})
             },
             onToggleChecklist: (name, itemId, checked) => {
               void Promise.resolve(props.channels?.writeChecklist?.(name, itemId, checked)).catch(() => {})

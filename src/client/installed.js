@@ -166,6 +166,69 @@ export function createInstalledStore({ request, channelMap = () => ({}) }) {
   }
 
   /**
+   * ASK THE HOST FOR A CHANGELOG DRAFT (`UI第三阶段.txt:59-69`).
+   *
+   * THE STORE ONLY TALKS TO THE NETWORK. It does not write the record and does not `notify()`: the draft
+   * lives in the user's settings record, whose ONE writer is the `channels` adapter the panel already
+   * holds (`props.channels.writeDraft`). Returning the payload and letting the panel store it keeps a
+   * single write path — the reason this method takes no `channels` dependency at all (measured
+   * 2026-09-30: `createInstalledStore` receives only `request` and `channelMap`).
+   *
+   * FAILURES COME BACK AS PAYLOADS, never as throws: the panel renders what happened, and an unhandled
+   * rejection inside a click handler is a console error nobody reads.
+   * @param {string} name @param {string | null} version
+   * @returns {Promise<any>}
+   */
+  async function generateDraft(name, version) {
+    try {
+      return (
+        (await request('/api/ui-projects/changelog-draft', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ packageName: name, currentVersion: version ?? null, previousVersion: null, gitLog: null }),
+        })) ?? { status: 'insufficient', entries: [], suggestedBump: null, reason: 'the host answered nothing' }
+      )
+    } catch (error) {
+      return {
+        status: 'insufficient',
+        entries: [],
+        suggestedBump: null,
+        reason: typeof error?.message === 'string' ? error.message : String(error),
+      }
+    }
+  }
+
+  /**
+   * HAND THE CONFIRMED DRAFT TO THE ONE MODULE THAT MAY WRITE IT.
+   *
+   * `checklistRecord` is passed IN, by the panel, from the same `channels` adapter everything else uses —
+   * the host refuses an incomplete checklist regardless (`writeChangelog` owns that gate), so this
+   * parameter is what makes the refusal a second opinion rather than the only one.
+   * @param {string} name @param {Array<{ category: string, text: string }>} entries
+   * @param {string} version @param {Record<string, unknown> | null} checklistRecord
+   * @returns {Promise<any>}
+   */
+  async function commitChangelog(name, entries, version, checklistRecord) {
+    try {
+      return (
+        (await request('/api/ui-projects/changelog-write', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            packageName: name,
+            version,
+            date: new Date().toISOString(),
+            entries,
+            checklistRecord: checklistRecord ?? null,
+          }),
+        })) ?? { written: false, error: { message: 'the host answered nothing' } }
+      )
+    } catch (error) {
+      return { written: false, error: { message: typeof error?.message === 'string' ? error.message : String(error) } }
+    }
+  }
+
+  /**
    * Arm ONE deferred update check, after the first frame (D2).
    *
    * The spec asks for a check "after dsh starts" and forbids blocking the first screen
@@ -324,6 +387,8 @@ export function createInstalledStore({ request, channelMap = () => ({}) }) {
     /** @returns {typeof state} a snapshot; the panel reads this during render */
     state: () => state,
     loadChangelog,
+    generateDraft,
+    commitChangelog,
     /**
      * What is known about one package's changelog right now, for a render.
      * @param {string} name
