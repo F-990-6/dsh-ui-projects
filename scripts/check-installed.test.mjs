@@ -19,7 +19,7 @@
  * Nothing here touches `$DSH_HOME`: every fixture lives under `os.tmpdir()`.
  */
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -474,10 +474,57 @@ process.stdout.write('\n== structural guards ==\n')
  * behaviour — it is the ABSENCE of a write path. Reading the sources is the only way to assert it,
  * and the alternative (trusting a comment) is how a "read-only" tool grows a repair mode.
  */
-const WRITE_API = /\bwriteFile\b|\bappendFile\b|\bmkdir\b|\brm\(|\brmdir\b|\bunlink\b|\brename\b|\bcopyFile\b|\bcp\(|\btruncate\b|\bcreateWriteStream\b|\bopen\(/
-for (const relative of ['src/host/profile-scan.js', 'src/host/conformance.js', 'src/host/manifest-schema.js', 'scripts/check-installed.mjs', 'scripts/installed-columns.mjs']) {
+/*
+ * `truncate` IS A CALL, and `open()` IS A WRITE ONLY WHEN ITS FLAGS SAY SO.
+ *
+ * Both refinements came out of the same red (2026-09-30): the upgraded whole-directory guard flagged
+ * `src/host/changelog.js`, which only READS — `const truncated = …` is a variable, and its own
+ * `open(…, 'r')` (`changelog.js:221`) is how a reader opens a file. The first pattern could not tell
+ * either apart from a write.
+ *
+ * Removing `open(` outright would have lost the catch that matters, so the flags are part of the pattern
+ * instead: `open(p, 'w')`, `'a'`, `'r+'`, `'w+'` and `'a+'` still fail this check, and `open(p, 'r')`
+ * passes — which is what a read-only module actually does. The guard therefore ends up STRONGER, not
+ * weaker, and the red it produced was the upgrade doing its job on its first run.
+ */
+const WRITE_API = /\bwriteFile\b|\bappendFile\b|\bmkdir\b|\brm\(|\brmdir\b|\bunlink\b|\brename\b|\bcopyFile\b|\bcp\(|\btruncate\s*\(|\bcreateWriteStream\b/
+const WRITE_OPEN = /\bopen\([^)]*['"](w|a|r\+|w\+|a\+)['"]/
+const writes = (source) => WRITE_API.test(source) || WRITE_OPEN.test(source)
+
+/*
+ * THIS IS AN UPGRADE, NOT A NARROWING (decision 2026-09-30).
+ *
+ * Two lists used to be named here while the rest of the host half was unconstrained. Now the whole
+ * directory is scanned and exactly ONE module may write — `changelog-write.js`, whose entire job is
+ * appending a version section and setting `package.json`'s version
+ * (`UI第三阶段.txt:59-69`).
+ *
+ * `profile-scan.js`, `conformance.js` and `manifest-schema.js` are constrained exactly as before: they are
+ * NOT in the allowlist, so a write API appearing in any of them still fails. What changed is that a host
+ * module added TOMORROW is constrained too, without anyone remembering to add it here — forgetting now
+ * fails this check instead of quietly opening a write path (fail-closed).
+ *
+ * THE ALLOWLIST MUST ACTUALLY WRITE. A name parked in this list after its module was renamed or deleted
+ * would otherwise turn the whole exception into a ghost, so the allowlisted module is checked for the
+ * OPPOSITE property: it writes, and it is the only one that does.
+ */
+const WRITE_ALLOWLIST = ['changelog-write.js']
+const hostDir = join(packageRoot, 'src', 'host')
+for (const name of (await readdir(hostDir)).filter((entry) => entry.endsWith('.js')).sort()) {
+  const source = await readFile(join(hostDir, name), 'utf8')
+  const allowed = WRITE_ALLOWLIST.includes(name)
+  check(
+    allowed ? writes(source) : !writes(source),
+    allowed
+      ? `src/host/${name} is the one module allowed to write, and it does write`
+      : `src/host/${name} contains no write API (allowlist: ${WRITE_ALLOWLIST.join(', ')})`,
+  )
+}
+
+/* The two scripts that must stay read-only are OUTSIDE the host directory, so they keep their own loop. */
+for (const relative of ['scripts/check-installed.mjs', 'scripts/installed-columns.mjs']) {
   const source = await readFile(join(packageRoot, relative), 'utf8')
-  check(!WRITE_API.test(source), `${relative} contains no write API`)
+  check(!writes(source), `${relative} contains no write API`)
 }
 
 const constants = await readFile(join(packageRoot, 'src', 'client', 'project-constants.js'), 'utf8')

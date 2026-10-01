@@ -8804,6 +8804,88 @@ await test('a changelog draft is built from evidence, and says so when there is 
   equal(withBreaking?.suggestedBump, 'major', 'and a breaking change outranks both: the highest level present wins')
 })
 
+/* ── Step 4, segment 3: the ONE module allowed to write, behind the checklist gate ─────────────── */
+
+/*
+ * `UI第三阶段.txt:59-69`. Everything up to here produced DATA: `changelog-draft.js` classifies and
+ * suggests, the checklist records what a person confirmed. This segment is the only place in the plugin
+ * that touches a file on disk, and it exists so that "who may write" has exactly one answer:
+ * `src/host/changelog-write.js`. The read-only assertion over the whole host directory (upgraded in
+ * `scripts/check-installed.test.mjs`) names that same file as its only exception.
+ *
+ * THE GATE IS CHECKED HERE, in the module that writes — not in a button. `checklistRecord` must satisfy
+ * `isComplete` from `src/host/test-checklist.js`, or nothing is written at all. And even when it passes,
+ * this module writes exactly two files, appends rather than rewrites, and does NOT commit, publish, or go
+ * anywhere near the harness home directory: those are the user's acts, and the suite asserts the absence
+ * of each rather than trusting the prose above.
+ *
+ * RED TODAY: `src/host/changelog-write.js` does not exist.
+ */
+await test('a changelog is written only by the one module that may write, and only after the checklist passes', async () => {
+  const { mkdtemp, readFile, writeFile, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const write = await import('../src/host/changelog-write.js').catch(() => null)
+  const checklist = await import('../src/host/test-checklist.js').catch(() => null)
+
+  truthy(write !== null, 'src/host/changelog-write.js exists — the ONLY host module allowed to write files')
+  equal(typeof write?.writeChangelog, 'function', 'and exports writeChangelog(input)')
+
+  const complete = Object.fromEntries((checklist?.CHECKLIST_ITEMS ?? []).map((item) => [item.id, true]))
+  const input = {
+    packageDir: '',
+    version: '0.2.0',
+    date: '2026-09-30',
+    entries: [{ category: 'Added', text: 'the ten-item test checklist' }],
+    checklistRecord: complete,
+  }
+
+  /*
+   * THE GATE FIRST: an unconfirmed checklist writes NOTHING.
+   *
+   * AWAITED, AND THAT IS THE POINT. `writeChangelog` is async: it rejects, it does not throw, so a bare
+   * `try/catch` around the call catches nothing and the rejection escapes as an unhandled one — measured
+   * 2026-09-30, where the first version of this test crashed the run instead of asserting the refusal. The
+   * red was written before the module existed, which is exactly why the shape could not be seen then.
+   */
+  const incomplete = await (async () => {
+    try {
+      await write?.writeChangelog({ ...input, checklistRecord: {} })
+      return null
+    } catch (error) {
+      return error
+    }
+  })()
+  truthy(incomplete !== null, 'an unconfirmed checklist is REFUSED — the gate is a refusal, not a hidden button')
+  equal(incomplete instanceof TypeError, true, 'and the refusal is a TypeError, like the other refusals in this plugin')
+  contains(String(incomplete?.message ?? ''), 'checklist', 'and the refusal names the checklist')
+
+  /* THEN THE WRITE ITSELF, in a temporary directory: two files, appended, and nothing else. */
+  const dir = await mkdtemp(join(tmpdir(), 'uip-changelog-'))
+  try {
+    const before = '# Changelog\n\n## Round 9 — tidy\n\n- an older, round-based section\n'
+    await writeFile(join(dir, 'CHANGELOG.md'), before, 'utf8')
+    await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'fixture-pkg', version: '0.1.0' }, null, 2) + '\n', 'utf8')
+
+    await write?.writeChangelog({ ...input, packageDir: dir })
+
+    const changelog = await readFile(join(dir, 'CHANGELOG.md'), 'utf8')
+    contains(changelog, '## [0.2.0]', 'the version-based section is written')
+    contains(changelog, 'the ten-item test checklist', 'with the confirmed entry in it')
+    contains(changelog, 'Round 9 — tidy', 'and the older round-based section is still there: this APPENDS, it does not rewrite')
+    const manifest = JSON.parse(await readFile(join(dir, 'package.json'), 'utf8'))
+    equal(manifest.version, '0.2.0', 'and package.json carries the version the section names')
+    equal(manifest.name, 'fixture-pkg', 'with everything else in the manifest untouched')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+
+  /* WHAT THIS MODULE MUST NEVER DO, asserted on its source. */
+  const source = await readFile(join(packageRoot, 'src', 'host', 'changelog-write.js'), 'utf8').catch(() => '')
+  equal(/\bgit\s+commit\b|simple-git|child_process/.test(source), false, 'it does not commit, and it shell out to nothing')
+  equal(/npm\s+publish|publishConfig/.test(source), false, 'it does not publish')
+  equal(source.includes('19103') || source.includes('.dsh'), false, 'and it never touches the harness home directory')
+})
+
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
 if (onlyTest !== '') {
   process.stdout.write(`[filter] DSH_TEST_ONLY=${JSON.stringify(onlyTest)} skipped ${skipped} test(s)\n`)
