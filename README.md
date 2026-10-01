@@ -425,9 +425,11 @@ Two deviations from the specification are recorded here rather than left to be r
 `enabled` is the **complete** set the user wants on. Storing "what is on" rather than a
 list of overrides is what lets a project that defaults off stay on after a reload, and
 one that defaults on stay off. `initialized: false` means "no choice recorded yet — use
-each project's default". The plugin prefers the dsh settings document (read and written
-through `ctx.settingsScope`) and falls back to `localStorage` on a non-loopback page or
-in a composition without the settings service.
+each project's default". The plugin prefers the dsh settings document, read and written
+through whichever settings seam the composition provides — `ctx.settingsScope` on the web
+profile's dsh (0.1.5-rc.3), or the `remote.settings` remote underneath it, which is what the
+desktop application's dsh (0.2.0-rc.2) offers in its place — and falls back to `localStorage`
+on a non-loopback page or in a composition that provides neither.
 
 ---
 
@@ -731,14 +733,25 @@ reason: an id literally named `index` would be indistinguishable from a collapse
 
 ## Deliberate limits
 
-- **Persistence has two backends, and only one of them is authoritative.** The `ui-projects`
-  namespace is registered by the host half (`src/host/index.js`) and bound on the client through
-  `ctx.settingsScope`, so the record lives in `$DSH_HOME/settings.yaml` under `ui-projects`. That
-  is the authoritative store and what a running instance uses. `window.localStorage` remains for
-  the one case the settings document cannot serve: a page that is not loopback, where the Host
-  keeps preferences process-local and the bound scope reports `mode: 'memory'`. The client half
-  declares `settingsScope` in its `inject` list, so the adapter is chosen *after* the settings
-  transport is up rather than racing it, and `runtime.start()` waits for the document's first read
+- **Persistence has three backends, and only one of them is authoritative.** The `ui-projects`
+  namespace is registered by the host half (`src/host/index.js`) and bound on the client through the
+  settings document, so the record lives in `$DSH_HOME/settings.yaml` under `ui-projects`. That is
+  the authoritative store and what a running instance uses. TWO seams reach it: `ctx.settingsScope`
+  (0.1.5-rc.3) and, one layer lower, `ctx.remote.settings` — `describe` to read, one `update` to
+  write — which is also what the desktop application's dsh (0.2.0-rc.2) provides instead of the scope
+  (`src/client/settings-controller.js`). `window.localStorage` remains for the one case the settings
+  document cannot serve: a page that is not loopback, where the Host keeps preferences
+  process-local. The bound scope reports that as `mode: 'memory'`; the remote path asks
+  `ctx.remote.$host.isLoopback`, which is the field ui-settings itself branches on. The client half
+  declares `slots`, `remote` and `remote.settings` in its `inject` list — the seam BOTH versions
+  provide — so the adapter is chosen *after* the settings transport is up rather than racing it.
+  `settingsScope` is deliberately NOT declared (0.2.0-rc.2 does not provide it at all, and parking on
+  a service that never arrives would hide the column for ever); it is probed lazily by
+  `src/client/persist.js`, and it is preferred whenever it is already available. Two consequences,
+  stated because they are observable: on 0.1.5 the remote is up BEFORE the scope is, so the remote
+  adapter is normally the one chosen — `persist.kind` reads `settings` either way, and the two paths
+  write the same document — and `diverged` is always `false` on the remote path, because there is no
+  second copy for the record to diverge from. `runtime.start()` waits for the document's first read
   before applying a record — reading earlier would return the empty record and silently restore
   the shipped defaults. The card names the backend in use ("Saved with your dsh settings" or
   "Saved in this browser", from `persist.kind`), and the first successful write through the

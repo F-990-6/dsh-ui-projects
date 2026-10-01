@@ -34,6 +34,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 
 import { registerInstalledEndpoint } from './installed-endpoint.js'
+import { createUpdateChecker, DEFAULT_CHANNEL } from './update-check.js'
 import { UI_PROJECTS_SETTINGS_NAMESPACE, createHostService } from './service.js'
 
 export { UI_PROJECTS_SETTINGS_NAMESPACE }
@@ -169,12 +170,42 @@ export function apply(ctx) {
     return () => clearTimeout(notice)
   }, 'ui-projects: connection wait notice')
 
+  /*
+   * THE UPDATE CHECK (phase 3, step 1): which channel each package is on, read out of the same settings
+   * document this row registered a namespace for.
+   *
+   * Read ON DEMAND, per request rather than cached at mount, because the settings document is the user's
+   * data: a channel changed a second ago must be the one the next check compares against. A composition
+   * with no settings service has no channels, which reads as the default for every package — the check
+   * still runs, it just has nothing to prefer.
+   */
+  const readChannels = (packageName) => {
+    try {
+      const section = ctx.get('settings')?.get?.(UI_PROJECTS_SETTINGS_NAMESPACE)
+      const entry = section?.settings?.[packageName]
+      return typeof entry?.channel === 'string' ? entry.channel : DEFAULT_CHANNEL
+    } catch {
+      return DEFAULT_CHANNEL
+    }
+  }
+  /*
+   * ONE CHECKER for the row's lifetime, and constructing it touches nothing: no socket is opened and no
+   * request is made until the updates route is asked for, which is what makes "the first frame does no
+   * network I/O" a property of the wiring rather than a promise. Its failures go to the host log exactly
+   * once each — the "silent but recorded" the spec asks for.
+   *
+   * `fetchDistTags` is deliberately NOT named here. The registry implementation lives in
+   * `update-check.js`, so this file cannot reach a registry even by mistake, and the first-paint path is
+   * a file that does not know how.
+   */
+  const updateChecker = createUpdateChecker({ log: (line) => console.error(line) })
+
   ctx.inject(['connection'], (connectionCtx) => {
     // The registration is scoped to the CALLER's fiber, so it is withdrawn when this row unloads; the
     // returned disposer is handed back as well, because belt and braces costs nothing here.
     let dispose
     try {
-      dispose = registerInstalledEndpoint(connectionCtx, { scan })
+      dispose = registerInstalledEndpoint(connectionCtx, { scan, channels: readChannels, check: updateChecker.check })
     } catch (error) {
       /*
        * ARRIVED, BUT COULD NOT MOUNT — and this used to be the one outcome the row said nothing about:

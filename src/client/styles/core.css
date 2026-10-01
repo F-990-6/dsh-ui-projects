@@ -626,6 +626,20 @@
   font-weight: 600;
 }
 
+/*
+ * THE UPDATE DOT, and the one line under it (phase 3, step 1). The badge vocabulary already carries the
+ * warn colour and it is `currentColor`, so what is added here is only the SHAPE a reader takes in
+ * without reading a word.
+ */
+.uip-plugin [data-uip-update]::before {
+  content: '•';
+  margin-right: 0.35em;
+}
+
+.uip-update {
+  margin: 0.35rem 0 0;
+}
+
 /* §五's four project chips: the same `.uip-badge` vocabulary the cards use, laid out in a row. */
 .uip-plugin-meta {
   display: flex;

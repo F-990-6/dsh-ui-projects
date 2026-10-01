@@ -1,19 +1,21 @@
 /**
  * Where UI project state lives.
  *
- * One adapter interface, two backends, chosen once at plugin load:
+ * One adapter interface, THREE backends, chosen once at plugin load, in this order:
  *
- *  1. `settings` — the dsh settings document (`$DSH_HOME/settings.yaml`), read
- *     and written through the client's `ctx.settingsScope` service. Authoritative,
- *     and what a running instance uses: it is the project's existing settings
- *     storage, it is backed by the Host, and it survives a browser-profile reset.
- *  2. `local` — `window.localStorage`. Fallback for the one case the settings
- *     document cannot serve: a page that is not loopback, where the Host keeps
- *     preferences process-local. A bound scope reports that as `mode: 'memory'` —
- *     **`mode` is the field this file checks.** The same condition also leaves the
- *     mirror's `status` at `'unavailable'`, because ui-settings derives both from
- *     one persistence value; a reader comparing the two will see them move
- *     together, and only `mode` is load-bearing here.
+ *  1. `settingsScope` — the dsh settings document (`$DSH_HOME/settings.yaml`) through the client's
+ *     `ctx.settingsScope` service (0.1.5-rc.3, the web profile). Authoritative, backed by the Host,
+ *     and it survives a browser-profile reset.
+ *  2. `remote.settings` — the SAME document, one layer lower, for a dsh that leaves the wrapper out
+ *     (0.2.0-rc.2, the desktop application): the scope above is itself built on this remote, so one
+ *     adapter serves both versions. See `settings-controller.js`.
+ *  3. `local` — `window.localStorage`. Fallback for the one case the settings document cannot serve:
+ *     a page that is not loopback, where the Host keeps preferences process-local. The scope path
+ *     reports that as `mode: 'memory'` — **`mode` is the field this file checks for it** — and the same
+ *     condition also leaves the mirror's `status` at `'unavailable'`, because ui-settings derives both
+ *     from one persistence value; a reader comparing the two will see them move together, and only
+ *     `mode` is load-bearing there. The remote path asks `remote.$host.isLoopback` instead, which is
+ *     the field ui-settings itself branches on.
  *
  * ## The record, and why it stores what it stores
  *
@@ -31,6 +33,8 @@
  *
  * `settings` holds project-private options, keyed by project id.
  */
+
+import { createRemoteSettingsPersist } from './settings-controller.js'
 
 /** Settings namespace owned by this plugin. */
 export const SETTINGS_NS = 'ui-projects'
@@ -88,6 +92,81 @@ function sweepLegacyLocalKeys() {
 /** @returns {UiProjectRecord} */
 function emptyRecord() {
   return { v: 1, initialized: false, enabled: [], settings: {}, touched: false }
+}
+
+/*
+ * ── THE RECORD HAS TWO HOMES, AND ONLY ONE OF THEM ANSWERS ───────────────────────────────────────
+ *
+ * MEASURED, on the desktop application (0.2.0-rc.2; "branch A" in the phase-3 notes): the client's
+ * `ctx.remote.settings.update(...)` accepts a write and reports nothing, while the host half — reading
+ * through `ctx.get('settings')` at emit time — still finds no section for this plugin. Two settings
+ * surfaces in one application, with no shared document, so a preference the user expressed in the panel
+ * is forgotten by the next start. The shell report covers that divergence itself.
+ *
+ * These three functions are OUR half of the consequence, and they are deliberately PURE: no `ctx`, no
+ * module state, no I/O of their own. `storage` and `key` arrive as arguments, which is what lets the
+ * decision be tested without a browser, a document, or a running application.
+ *
+ * ABSENT IS NOT EMPTY, and this is the distinction the whole policy rests on. `coerce(undefined)`
+ * yields the empty record, whose meaning is "the user has NEVER CHOSEN ANYTHING". The remote adapter
+ * returns exactly that today for a document that does not mention this namespace at all — so
+ * `documentRecord: undefined` below means ABSENCE, and a coerced empty record means a CHOICE. Collapsing
+ * the two is precisely how a stale copy would resurrect a skin the user had turned off.
+ */
+
+/**
+ * Which home answers: the settings document, or the browser's own copy.
+ *
+ * A document that CARRIES the record outranks the copy in both directions — including when it carries
+ * `enabled: []`, which is a user who turned everything off. The copy answers SILENCE, never
+ * disagreement.
+ *
+ * @param {{ documentRecord?: UiProjectRecord, localRecord?: UiProjectRecord }} input
+ * @returns {{ source: 'document'|'local'|'empty', record: UiProjectRecord }}
+ */
+export function chooseRecord({ documentRecord, localRecord }) {
+  if (documentRecord !== undefined) return { source: 'document', record: documentRecord }
+  if (localRecord !== undefined) return { source: 'local', record: localRecord }
+  return { source: 'empty', record: emptyRecord() }
+}
+
+/**
+ * Write the browser's own copy of the record.
+ *
+ * Called after every document write, accepted or refused: when the document refuses (branch A: it
+ * accepts and keeps nothing), the copy is the only place the choice survives — and when it refuses
+ * loudly, the error still has to be reported by the DOCUMENT write, not by this one. Hence: never
+ * throws, and reports what happened in its return value.
+ *
+ * @param {{ storage?: { setItem?: (key: string, value: string) => void }, key: string, record: UiProjectRecord }} input
+ * @returns {{ stored: boolean, error?: string }}
+ */
+export function mirrorToLocal({ storage, key, record }) {
+  try {
+    if (storage === undefined || typeof storage.setItem !== 'function') {
+      return { stored: false, error: 'this page offers no storage to keep a copy in' }
+    }
+    storage.setItem(key, JSON.stringify(record))
+    return { stored: true }
+  } catch (error) {
+    return { stored: false, error: String(error?.message ?? error) }
+  }
+}
+
+/**
+ * Whether a copy adopted from the browser should be offered back to the document.
+ *
+ * ONCE, and never over a document that already carries the record: a document that keeps not taking the
+ * write must not be written to on every read, and a document that has the section is a user choice
+ * rather than silence.
+ *
+ * @param {{ documentRecord?: UiProjectRecord, localRecord?: UiProjectRecord, alreadyOffered?: boolean }} input
+ * @returns {boolean}
+ */
+export function shouldOfferBack({ documentRecord, localRecord, alreadyOffered }) {
+  if (alreadyOffered === true) return false
+  if (documentRecord !== undefined) return false
+  return localRecord !== undefined
 }
 
 /**
@@ -190,7 +269,113 @@ export function createPersist(ctx) {
 
   const fromSettings = createSettingsPersist(ctx)
   if (fromSettings !== undefined) return fromSettings
+  /*
+   * THE SECOND SETTINGS BACKEND, for a dsh that leaves the wrapper out (0.2.0-rc.2). It is tried before
+   * localStorage because a settings document the user can see beats a per-browser copy, and `undefined`
+   * from the factory means "this composition cannot host one" — not "it tried and failed".
+   */
+  const fromRemote = createRemoteSettingsPersist(ctx, { coerce })
+  if (fromRemote !== undefined) return withLocalCopy(fromRemote, { key: LOCAL_KEY })
   return createLocalPersist()
+}
+
+/*
+ * ── THE BROWSER'S COPY, FOR A DOCUMENT THAT DOES NOT ANSWER ──────────────────────────────────────
+ *
+ * MEASURED on the desktop application (0.2.0-rc.2; "branch A" in the phase-3 notes): the remote settings
+ * controller ACCEPTS a write and reports nothing, while the host half — reading through
+ * `ctx.get('settings')` at emit time — never finds our section. A preference the user expressed in the
+ * panel is therefore forgotten by the next start. The only trace of it was the in-memory record, which
+ * is why the skin worked until the window closed; no error is raised on either side, `settings.yaml` is
+ * never created by that write, and the browser's own storage is provably durable in that application
+ * (twelve third-party keys live there, and the shell writes its own).
+ *
+ * So the DOCUMENT stays the first choice and the source of truth whenever it carries the record —
+ * including when it carries `enabled: []`, which is a user who turned everything off. The COPY answers
+ * only silence, and every write is mirrored into it, so the copy is never staler than the document.
+ * Those rules live in `chooseRecord` / `mirrorToLocal` / `shouldOfferBack`, which are pure and tested on
+ * their own; this function is only the wiring, and it is deliberately narrow:
+ *
+ *   · it wraps the REMOTE adapter alone — the settings-scope backend already keeps a copy of its own and
+ *     reports `diverged` when the two disagree (`disagreesWithLocal`), and the local backend IS the copy;
+ *   · a document write that throws still throws (the runtime's visible `persistError` banner depends on
+ *     it) and is mirrored anyway, so a refused write costs durability, never the in-session state;
+ *   · the one write-back the copy is allowed is offered ONCE, from `ready()`, and its failure is logged
+ *     rather than raised: it is background repair, not part of any read.
+ *
+ * @param {PersistAdapter} adapter the document-backed adapter this wraps.
+ * @param {{ key: string, storage?: Storage }} options `storage` is injectable for tests.
+ * @returns {PersistAdapter}
+ */
+function withLocalCopy(adapter, { key, storage = localStore() }) {
+  /** One offer per instance, and an instance lives for exactly one `apply` (`createPersist` is called once). */
+  let alreadyOffered = false
+
+  const readCopy = () => {
+    if (storage === undefined) return undefined
+    try {
+      const raw = storage.getItem(key)
+      return raw === null ? undefined : coerce(JSON.parse(raw))
+    } catch (error) {
+      console.error('[dsh-ui-projects] unreadable browser copy, ignoring it', error)
+      return undefined
+    }
+  }
+
+  return {
+    kind: adapter.kind,
+    /*
+     * DIVERGENCE, now that there IS a second copy to diverge from. Conservative on purpose: a document
+     * that is silent about us is not "disagreeing" — there is nothing to disagree WITH — so this can
+     * only become true when the document carries a record and the copy says something else.
+     */
+    get diverged() {
+      if (adapter.diverged === true) return true
+      const documentRecord = adapter.read()
+      return documentRecord === undefined ? false : disagreesWithLocal(documentRecord)
+    },
+    get readiness() {
+      return adapter.readiness
+    },
+    ready: async () => {
+      await adapter.ready?.()
+      /*
+       * THE ONE OFFER: a choice that only the copy holds is handed back to the document, once. Not
+       * awaited by any caller in a way that matters, and never fatal — on the desktop the document
+       * accepts it and keeps nothing, which is precisely the case this whole file is about.
+       */
+      const documentRecord = adapter.read()
+      const localRecord = readCopy()
+      if (!shouldOfferBack({ documentRecord, localRecord, alreadyOffered })) return
+      alreadyOffered = true
+      try {
+        await adapter.write(localRecord)
+      } catch (error) {
+        console.error('[dsh-ui-projects] the browser copy could not be offered to the settings document', error)
+      }
+    },
+    read: () => chooseRecord({ documentRecord: adapter.read(), localRecord: readCopy() }).record,
+    subscribe: (listener) => (typeof adapter.subscribe === 'function' ? adapter.subscribe(listener) : () => {}),
+    write: async (next) => {
+      try {
+        await adapter.write(next)
+      } finally {
+        mirrorToLocal({ storage, key, record: { ...next, initialized: true } })
+      }
+    },
+    dispose: () => adapter.dispose?.(),
+  }
+}
+
+/** The browser's storage, or `undefined` where the page does not offer one (the same guard `hasLocalStorage` uses). */
+function localStore() {
+  try {
+    return typeof window !== 'undefined' && window.localStorage !== undefined && window.localStorage !== null
+      ? window.localStorage
+      : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**

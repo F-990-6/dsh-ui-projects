@@ -17,7 +17,7 @@
  */
 
 /** @param {{ request: (path: string) => Promise<any> }} deps */
-export function createInstalledStore({ request }) {
+export function createInstalledStore({ request, channelMap = () => ({}) }) {
   /** @type {Set<() => void>} */
   const listeners = new Set()
   /** @type {{ status: 'idle'|'loading'|'ready'|'failed', scan?: any, error?: string, fetchedAt?: string }} */
@@ -37,6 +37,17 @@ export function createInstalledStore({ request }) {
   const changelogs = new Map()
   /** @type {Map<string, Promise<void>>} one request per package, shared by concurrent asks */
   const changelogInFlight = new Map()
+  /**
+   * What the registry said, and whether it has been asked yet.
+   *
+   * NOT CACHED ACROSS A REFRESH, unlike a changelog: a changelog belongs to the installed version, while
+   * "there is a newer one" is a claim about the registry at a moment — and the refresh control exists
+   * because the profile may have moved under this page.
+   * @type {{ status: 'idle'|'loading'|'ready'|'failed', payload?: any, error?: string }}
+   */
+  let updatesState = { status: 'idle' }
+  /** @type {Promise<void> | undefined} */
+  let updatesInFlight
 
   /** Tell every listener that something they read may have changed. */
   const notify = () => {
@@ -48,6 +59,12 @@ export function createInstalledStore({ request }) {
       }
     }
   }
+
+  /** @type {{ dispose: () => void } | undefined} Armed by `deferUpdateCheck`; the idempotence keys on it. */
+  let deferral
+
+  /** What the deferred trigger saw and did — read-only diagnostics (C). Nothing reads this to decide anything. */
+  const deferralState = { schedule: 'unset', whenIdle: 'unset', hasGlobalThisSetTimeout: 'unset', fired: false }
 
   const publish = (next) => {
     state = next
@@ -73,6 +90,7 @@ export function createInstalledStore({ request }) {
      * different changelog. One place, because a second one would be a second truth.
      */
     changelogs.clear()
+    updatesState = { status: 'idle' }
     publish({ status: 'loading', scan: state.scan })
     inFlight = (async () => {
       try {
@@ -147,8 +165,162 @@ export function createInstalledStore({ request }) {
     return promise
   }
 
+  /**
+   * Arm ONE deferred update check, after the first frame (D2).
+   *
+   * The spec asks for a check "after dsh starts" and forbids blocking the first screen
+   * (`UI第三阶段.txt:23-24`). A deadline-bearing idle callback is the reconciliation: it runs when the
+   * page is quiet, and the deadline means a busy page still gets checked. THE TIMER IS THE GUARANTEE, and
+   * the idle callback only the OPPORTUNITY: measured on the desktop (2026-09-30), `requestIdleCallback`
+   * EXISTS in the renderer — `typeof requestIdleCallback` answered `"function"` — but a window that is not
+   * in the foreground starves its idle callbacks, deadline and all, so the check never ran and the user's
+   * first sight of the request was the column's own ask. A `setTimeout(fn, 0)` cannot be starved, and what
+   * it runs is a request, so no frame is blocked either. Where NEITHER scheduler exists, nothing is armed
+   * and nothing is thrown — the column's own on-demand path still works, which is what the composition had
+   * before this existed.
+   *
+   * IDEMPOTENT: the second call returns the same disposer and arms nothing. A `ctx.effect` that re-runs
+   * must not be able to stack deadlines, and a reviewer asking "what if it is called twice" deserves a
+   * property rather than a promise. (The suite pins the once-only behaviour of the CHECK itself in the
+   * test that flushes this deadline twice; this idempotence is stated here and covered by that same
+   * flush, since a second arming would be a second request.)
+   *
+   * A FIRED REQUEST IS NOT CANCELLED by the disposer: once `loadUpdates` has been called, the answer is
+   * state the column renders, and a disposal that dropped it would leave a row saying nothing.
+   * @param {{ whenIdle?: ((fn: () => void, options: { timeout: number }) => any) | null, cancelIdle?: ((handle: any) => void) | null, schedule?: ((fn: () => void, ms: number) => any) | null, cancelSchedule?: ((handle: any) => void) | null, idleTimeoutMs?: number }} [options]
+   * @returns {() => void} disposer: cancels an armed deadline, and does nothing to a fired one.
+   */
+  function deferUpdateCheck({
+    whenIdle = ambientIdle(),
+    cancelIdle = ambientCancelIdle(),
+    schedule = ambientSchedule(),
+    cancelSchedule = ambientCancelSchedule(),
+    idleTimeoutMs = IDLE_TIMEOUT_MS,
+  } = {}) {
+    if (deferral !== undefined) return deferral.dispose
+    const fire = () => {
+      deferralState.fired = true
+      console.info('[dsh-ui-projects] deferred check firing')
+      void loadUpdates()
+    }
+    /*
+     * BOTH ARE ARMED, AND THEY ARE NOT EQUALS.
+     *
+     * The timer comes first and unconditionally: it is the one that cannot be starved, so it is what makes
+     * "the check runs after startup" TRUE rather than likely. The idle callback is armed as well, purely as
+     * an EARLIER opportunity on a quiet page — never as the thing the deadline depends on, which is exactly
+     * the mistake this replaced. `fire` needs no flag of its own: `loadUpdates()` refuses once an answer has
+     * arrived, so whichever scheduler wins, the host is asked once.
+     */
+    /** @type {Array<() => void>} */
+    const cancels = []
+    /*
+     * DIAGNOSTICS (C), for the desktop application where the check never ran.
+     *
+     * The question a closed Console could not answer — "was a TIMER available to arm at all?" — is
+     * RECORDED here as well as logged, so the suite can hold it and so a later round can carry it out
+     * through a channel that is always visible (the column's own request). Recording changes no behaviour:
+     * nothing reads these fields to decide anything.
+     */
+    deferralState.schedule = typeof schedule
+    deferralState.whenIdle = typeof whenIdle
+    deferralState.hasGlobalThisSetTimeout = typeof globalThis?.setTimeout
+    console.info('[dsh-ui-projects] deferred check armed', {
+      schedule: typeof schedule,
+      whenIdle: typeof whenIdle,
+      hasGlobalThisSetTimeout: typeof globalThis?.setTimeout,
+    })
+    if (typeof schedule === 'function') {
+      const handle = schedule(fire, 0)
+      cancels.push(() => {
+        if (typeof cancelSchedule === 'function' && handle !== undefined) cancelSchedule(handle)
+      })
+    }
+    if (typeof whenIdle === 'function') {
+      const handle = whenIdle(fire, { timeout: idleTimeoutMs })
+      cancels.push(() => {
+        if (typeof cancelIdle === 'function' && handle !== undefined) cancelIdle(handle)
+      })
+    }
+    const dispose = () => {
+      for (const cancel of cancels) cancel()
+    }
+    deferral = { dispose }
+    return dispose
+  }
+
+  /**
+   * Ask the host to check the registry, once.
+   *
+   * Guarded the way `refresh()` is: concurrent calls share one request, and an answer that arrives after
+   * a newer `refresh()` is DROPPED rather than applied. A failure is a STATE with its reason, never a
+   * throw — a registry this machine cannot reach must not take the column down with it.
+   *
+   * A CLOSURE DECLARATION rather than a method on the returned object, which is what `deferUpdateCheck`
+   * needs: `fire` runs from a timer, and a method shorthand lives in the object literal, not in this
+   * scope — measured, the timer threw `ReferenceError: loadUpdates is not defined` and killed the process
+   * the suite was running in. `refresh` and `loadChangelog` are declared the same way, so this is also
+   * the file's own shape rather than a new one.
+   * @returns {Promise<void>}
+   */
+  async function loadUpdates() {
+    /*
+     * AN ANSWER ALREADY ARRIVED, SO THERE IS NOTHING TO ASK.
+     *
+     * This guard used to live in the COLUMN's caller (`src/client/panel-plugins.js:120`), which made
+     * "the check runs once" a property of that caller rather than of the check — and there are two
+     * callers now: the column, and the deferred trigger D2 adds (`deferUpdateCheck`). The policy
+     * belongs where both of them share it.
+     *
+     * `refresh()` resets the state to `idle` as a WHOLE OBJECT (the `updatesState = { status: 'idle' }`
+     * line above), so a refreshed listing can still be checked again — the guard keys on the current
+     * status, not on a flag that would outlive it.
+     */
+    if (updatesState.status !== 'idle') return updatesInFlight
+    if (updatesInFlight !== undefined) return updatesInFlight
+    const mine = generation
+    updatesState = { status: 'loading' }
+    notify()
+    updatesInFlight = (async () => {
+      try {
+        /*
+         * THE CHANNELS TRAVEL WITH THE REQUEST (B1).
+         *
+         * The host decides which npm dist-tag each package is compared against, and it reads that from
+         * the settings document — which, in the desktop application, never receives our write at all
+         * (branch A). Without this parameter the user's choice is invisible to the check and every
+         * package is compared against `stable`: measured, a dot on a package that had a newer `latest`
+         * and nothing for a package the user had switched to `beta`.
+         *
+         * Same source as the selector (`channelMap` is fed from the same record read), same route, and
+         * nothing is added when there is nothing to say — an absent parameter is today's behaviour.
+         */
+        const payload = await request(UPDATES_PATH + channelsQuery(channelMap()))
+        if (generation !== mine) return
+        if (payload?.error !== undefined) throw new Error(payload.error.message ?? 'the host reported an unspecified failure')
+        updatesState = { status: 'ready', payload }
+      } catch (error) {
+        if (generation !== mine) return
+        updatesState = {
+          status: 'failed',
+          error: typeof error?.message === 'string' ? error.message : String(error),
+        }
+      } finally {
+        updatesInFlight = undefined
+        notify()
+      }
+    })()
+    return updatesInFlight
+  }
+
   return {
     refresh,
+    deferUpdateCheck,
+    loadUpdates,
+    /** @returns {typeof deferralState} what the deferred trigger saw — diagnostics (C), read-only. */
+    deferralState: () => deferralState,
+    /** @returns {typeof updatesState} a snapshot, for a render */
+    updates: () => updatesState,
     /** @returns {typeof state} a snapshot; the panel reads this during render */
     state: () => state,
     loadChangelog,
@@ -179,9 +351,91 @@ export function createInstalledStore({ request }) {
 export const INSTALLED_PATH = '/api/ui-projects/installed.json'
 
 /**
+ * How long the deferred update check waits before it is run anyway (D2).
+ *
+ * `requestIdleCallback` WITHOUT a deadline can be starved by a busy page — which is exactly the moment a
+ * user is waiting for the column — so the trigger always passes one, and this is the value. Named, so
+ * the suite can hold it: measured on 2026-09-30, a bare `{ timeout }` in a design note is one edit away
+ * from being `undefined` in the code.
+ */
+export const IDLE_TIMEOUT_MS = 2000
+
+/** `requestIdleCallback`, or `null` where the composition has none. Never a bare global read. */
+function ambientIdle() {
+  try {
+    return typeof requestIdleCallback === 'function' ? requestIdleCallback : null
+  } catch {
+    return null
+  }
+}
+
+/** @returns {typeof cancelIdleCallback | null} */
+function ambientCancelIdle() {
+  try {
+    return typeof cancelIdleCallback === 'function' ? cancelIdleCallback : null
+  } catch {
+    return null
+  }
+}
+
+/** The fallback deadline, for a composition with no idle callback at all. */
+function ambientSchedule() {
+  try {
+    return typeof setTimeout === 'function' ? setTimeout : null
+  } catch {
+    return null
+  }
+}
+
+/** @returns {typeof clearTimeout | null} */
+function ambientCancelSchedule() {
+  try {
+    return typeof clearTimeout === 'function' ? clearTimeout : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * The second route: one package's changelog, asked for when a reader opens its row (step 56b).
  *
  * Same fence, same duplication: the host half holds the other copy, and the two are separate bundles
  * that cannot import from one another.
  */
 export const CHANGELOG_PATH = '/api/ui-projects/changelog.json'
+
+/**
+ * The third route: the on-demand update check (phase 3, step 1).
+ *
+ * Same fence, same duplication, and the same rule as the listing: NOTHING IS PERSISTED and it is asked
+ * for when the column is open — never from the first frame. What it costs is one registry query per open,
+ * which is why the page asks only after the listing has arrived.
+ */
+export const UPDATES_PATH = '/api/ui-projects/updates.json'
+
+/**
+ * The channel map as ONE query parameter, or `''` when there is nothing to carry.
+ *
+ * `?channels=<pkg>:<ch>,<pkg>:<ch>` — the same shape this file already uses for `?name=`
+ * (`CHANGELOG_PATH + '?name=' + encodeURIComponent(name)`), one parameter rather than one per package,
+ * the whole value URI-encoded because package names carry `@` and `/`. The host parses it in
+ * `src/host/installed-endpoint.js` with `URLSearchParams`, the same way it parses `?name=`; the two
+ * ends are pinned together by the suite, which asserts the exact string one side writes and the other
+ * side reads.
+ *
+ * Entries that are not a non-empty string pair are DROPPED here and validated again on the host: a
+ * malformed record must not be able to make the wire format ambiguous.
+ * @param {unknown} map
+ * @returns {string}
+ */
+export function channelsQuery(map) {
+  const pairs = []
+  if (map !== null && typeof map === 'object') {
+    for (const [name, channel] of Object.entries(map)) {
+      if (typeof name === 'string' && name !== '' && typeof channel === 'string' && channel !== '') {
+        pairs.push(`${name}:${channel}`)
+      }
+    }
+  }
+  return pairs.length === 0 ? '' : '?channels=' + encodeURIComponent(pairs.join(','))
+}

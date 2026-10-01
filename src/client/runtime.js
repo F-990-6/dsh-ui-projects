@@ -48,6 +48,108 @@ const TYPE_SKIN = 'skin'
 
 const ROOT_MARKER = 'data-ui-projects'
 
+/*
+ * ── WHEN THE MARKERS WERE WRITTEN ────────────────────────────────────────────────────────────────
+ *
+ * TWO writers stamp `data-ui-project-<id>` on the body, and only one of them can be there at first
+ * paint:
+ *
+ *   · the HOST stamps it while serving the document (`src/host/service.js`, at emit time) — present in
+ *     the first frame whenever the settings document carries the record;
+ *   · THIS runtime stamps it when it applies a project, and it does so on an ASYNC chain: `start()`
+ *     awaits `persist.ready()` (see `:262`) before `#markRoot()` (`:265`) and `#applyWanted()` (`:267`
+ *     → `#enable`) — a chain that contains a `describe()` round-trip in the desktop application.
+ *
+ * A probe taken fourteen seconds after load cannot tell which writer won: both have run. Measured on
+ * 2026-09-30: two readings, at `performance.now()` 14262 ms and 39878 ms, both `"on"` — evidence about
+ * the end state and nothing about the first frame. So the runtime records WHEN it wrote, and the number
+ * is what gets compared with the frame.
+ *
+ * FIRST WRITE WINS. A later apply re-writes the same attribute and must not overwrite the number that
+ * answers the question. And the clock is LOOKED UP, never assumed: a bundled module may reach the
+ * ambient clocks but may not require them — a bare `performance.now()` is the same trap the slot
+ * fallback hit with `setTimeout`, where a minimal sandbox threw `ReferenceError` before anything ran.
+ */
+
+/** @returns {number|null} `performance.now`, or `null` where the composition offers no clock. */
+function ambientNow() {
+  try {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now.bind(performance)
+      : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Record the first write of each marker, and say so ONCE.
+ *
+ * @param {object} [options]
+ * @param {(() => number) | null} [options.now] Injectable clock; a non-function (or an explicit `null`)
+ *   means "this composition has no clock", and then nothing is recorded rather than a number invented.
+ * @param {(timing: { rootAt: number|null, projectAt: Record<string, number> }) => void} [options.announce]
+ *   Called once, from `settle()`. Injectable so a test can hold the "once" property without a console.
+ * @returns {{ timing: { rootAt: number|null, projectAt: Record<string, number> }, root: () => void, project: (id: string) => void, settle: () => void }}
+ */
+export function markTimingRecorder({ now = ambientNow(), announce = defaultAnnounce } = {}) {
+  const clock = typeof now === 'function' ? now : null
+  const timing = { rootAt: null, projectAt: {} }
+  let announced = false
+  return {
+    timing,
+    root() {
+      if (clock === null || timing.rootAt !== null) return
+      timing.rootAt = clock()
+    },
+    project(id) {
+      if (clock === null || timing.projectAt[id] !== undefined) return
+      timing.projectAt[id] = clock()
+    },
+    /*
+     * PRINTED WHEN THE APPLY PASS ENDS, not when the second marker happens to land.
+     *
+     * `settle()` is called at the end of `#applyWanted()`, which is the one place that knows the pass
+     * is over — and it also covers the case that matters most for a diagnosis: a runtime that ran, wrote
+     * its ROOT marker and applied NOTHING prints `projectAt: {}`, which is a fact worth having rather
+     * than a line that never appears. Once per page load, never per marker.
+     */
+    settle() {
+      if (announced) return
+      announced = true
+      /*
+       * NOTHING TO SAY, NOTHING SAID. Without a clock every field is `null`/empty by construction, so
+       * a line reading `{ rootAt: null, projectAt: {} }` is pure noise — measured: two of them in every
+       * `verify` run, because the sandbox deliberately offers no `performance`.
+       */
+      if (clock === null) return
+      try {
+        /*
+         * THE COPY IS MADE HERE, NOT BY THE ANNOUNCER.
+         *
+         * The contract is what ANY announcer receives. `defaultAnnounce` spread its own copy — so the
+         * Console line was safe — but an injected announcer held the LIVE object, and the next
+         * `project()` wrote into the snapshot after the fact: measured, an assertion read
+         * `dsh-cost-meter: 900` out of a snapshot taken before that project existed. One copy, at the
+         * boundary, and the question cannot come back.
+         */
+        announce({ rootAt: timing.rootAt, projectAt: { ...timing.projectAt } })
+      } catch {
+        // A diagnostics line must never be able to break an apply.
+      }
+    },
+  }
+}
+
+/** The one line a person reads out of the Console. `settle()` hands it an already-frozen copy. */
+function defaultAnnounce(timing) {
+  console.info('[dsh-ui-projects] markers written', timing)
+}
+
+/** This page's own first-write times, exported so the diagnostics surface can show them. */
+const markerTiming = markTimingRecorder()
+export const markTiming = markerTiming.timing
+
 /**
  * The attribute carrying the effect tier in force, and the element it goes on.
  *
@@ -299,6 +401,8 @@ export class UiProjectRuntime {
     for (const id of this.registry.canonicalOrder(this.#wantedIds())) await this.#enable(id, { persist: false })
     this.#syncPerfAttribute()
     if (this.registry.activeIds().length > 0) this.#startFrameProbe()
+    // Every marker this pass was going to write has been written: say when, once.
+    markerTiming.settle()
   }
 
   /**
@@ -1363,6 +1467,8 @@ export class UiProjectRuntime {
     const root = this.rootElement
     if (root.dataset === undefined) return
     root.setAttribute?.(ROOT_MARKER, 'on')
+    // The first write only; `markTimingRecorder` ignores every later one.
+    markerTiming.root()
   }
 
   #unmarkRoot() {
@@ -1375,6 +1481,8 @@ export class UiProjectRuntime {
     // to (see `#marker`) and the element the shipped design tokens are declared on.
     this.#setAttribute(this.bodyElement(), `data-ui-project-${id}`, value)
     this.#setAttribute(this.rootElement, 'data-ui-projects-version', '1')
+    // Only the ON marker matters here: it is the one the boot fragment waits for.
+    if (value === 'on') markerTiming.project(id)
   }
 
   /** @param {string} id */

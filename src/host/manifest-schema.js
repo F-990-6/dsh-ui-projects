@@ -146,8 +146,17 @@ function checkValue(entry, value) {
       if (typeof value === 'number' && Number.isFinite(value)) return undefined
       if (entry.kind === 'apiVersion' && SUPPORTED_PLUGIN_API.includes(value)) return undefined
       if (entry.kind === 'apiVersion') {
+        /*
+         * THE REFUSAL CARRIES ITS OWN WAY OUT (E4, `UI第三阶段.txt:33-35`).
+         *
+         * The validation was already right — an unsupported API is refused, and `action` has said what to
+         * do since it was written. What a reader SEES first, though, is the `message`, and "is not
+         * supported" answers only half the question. Measured 2026-09-30: the desktop shell has no
+         * `pluginApiVersion` concept at all (an asar scan found zero occurrences), so this sentence is the
+         * whole of the guidance a user gets.
+         */
         return {
-          message: `pluginApiVersion ${JSON.stringify(value)} is not supported; this build understands ${SUPPORTED_PLUGIN_API.join(', ')}`,
+          message: `pluginApiVersion ${JSON.stringify(value)} is not supported; upgrade dsh to a version that supports pluginApiVersion ${JSON.stringify(value)}, or install a build for ${SUPPORTED_PLUGIN_API.join(', ')}`,
           action: 'rebuild the package against a supported plugin API, or upgrade the framework first',
         }
       }

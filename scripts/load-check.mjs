@@ -793,7 +793,7 @@ equal(service.list().length, baseline, 'disposing the last caller leaves the tab
  * here because what is under test is OUR registration and OUR payload — and the stub records enough
  * to assert the shape the real one demands.
  */
-const { registerInstalledEndpoint, INSTALLED_PATH, INSTALLED_SCHEMA_VERSION, CHANGELOG_PATH } = await import(
+const { registerInstalledEndpoint, INSTALLED_PATH, INSTALLED_SCHEMA_VERSION, CHANGELOG_PATH, UPDATES_PATH } = await import(
   pathToFileURL(join(frameworkRoot, 'src', 'host', 'installed-endpoint.js')).href
 )
 
@@ -825,29 +825,55 @@ const scanFixture = {
   problems: [],
 }
 
-const disposeEndpoint = registerInstalledEndpoint(endpointCtx, { scan: async () => scanFixture })
+const askedFor = []
+const disposeEndpoint = registerInstalledEndpoint(endpointCtx, {
+  scan: async () => scanFixture,
+  // The channel reader and the checker are injected here the way `src/host/index.js` injects them: the
+  // route's behaviour — which packages it asks about, and with which channel — is what this pins.
+  channels: (name) => (name === 'dsh-ui-projects' ? 'beta' : 'stable'),
+  check: async (packages) => {
+    askedFor.push(packages)
+    return { checkedAt: '2026-01-01T00:00:00.000Z', results: [] }
+  },
+})
 /*
- * TWO ROUTES SINCE STEP 56b. The listing is not the only thing this row mounts any more: the CHANGELOG
- * is read per package, on demand, through a second route on the same fence. Selected BY PATH rather
- * than by position, because position is what a third route would silently break.
+ * THREE ROUTES SINCE PHASE 3, STEP 1. The listing and the CHANGELOG were joined by the update check: the
+ * same fence, the same scan, asked for on demand and never from the boot path. Selected BY PATH rather
+ * than by position, because position is what a fourth route would silently break.
  */
-equal(registeredRoutes.length, 2, 'the endpoint registers exactly two routes: the listing and the changelog')
+equal(registeredRoutes.length, 3, 'the endpoint registers exactly three routes: the listing, the changelog and the update check')
 equal(
   registeredRoutes.map((route) => route.path).sort().join(','),
-  [INSTALLED_PATH, CHANGELOG_PATH].sort().join(','),
-  'at the two namespaced paths, and nothing else',
+  [INSTALLED_PATH, CHANGELOG_PATH, UPDATES_PATH].sort().join(','),
+  'at the three namespaced paths, and nothing else',
 )
 const listingRoute = registeredRoutes.find((route) => route.path === INSTALLED_PATH)
 const changelogRoute = registeredRoutes.find((route) => route.path === CHANGELOG_PATH)
+const updatesRoute = registeredRoutes.find((route) => route.path === UPDATES_PATH)
 equal(
-  [INSTALLED_PATH, CHANGELOG_PATH].every((path) => path.startsWith('/api/')),
+  [INSTALLED_PATH, CHANGELOG_PATH, UPDATES_PATH].every((path) => path.startsWith('/api/')),
   true,
-  'both under /api, which is the only prefix the Host/Origin fence and the browser session cover',
+  'all three under /api, which is the only prefix the Host/Origin fence and the browser session cover',
 )
 equal(
-  [listingRoute, changelogRoute].map((route) => route?.methods?.join(',')).join('|'),
-  'GET|GET',
-  'and both answer GET only',
+  [listingRoute, changelogRoute, updatesRoute].map((route) => route?.methods?.join(',')).join('|'),
+  'GET|GET|GET',
+  'and all three answer GET only',
+)
+
+/*
+ * THE UPDATE ROUTE'S OWN BEHAVIOUR, driven with stubs.
+ *
+ * ADDED AFTER the phase-3 step-1 red set, and disclosed as such: the red pinned that the route EXISTS,
+ * and this pins what it DOES — which packages it asks about and which channel it asks with. Without it,
+ * a route that answered `{results: []}` for everything would pass every other assertion here.
+ */
+const updatesPayload = await (await updatesRoute.fetch(new Request('http://127.0.0.1' + UPDATES_PATH))).json()
+equal(updatesPayload.checkedAt, '2026-01-01T00:00:00.000Z', 'the update payload says when the registry was asked')
+equal(
+  JSON.stringify(askedFor),
+  JSON.stringify([[{ name: 'dsh-ui-projects', version: '0.1.0', channel: 'beta' }]]),
+  'and the route asked about each resolved dependency, with the channel its user chose',
 )
 
 const okResponse = await listingRoute.fetch(new Request('http://127.0.0.1' + INSTALLED_PATH))
@@ -883,7 +909,7 @@ const failing = registerInstalledEndpoint(endpointCtx, {
     throw new Error('no profile')
   },
 })
-const failingRoutes = registeredRoutes.slice(-2)
+const failingRoutes = registeredRoutes.slice(-3)
 const failPayload = await (
   await failingRoutes.find((route) => route.path === INSTALLED_PATH).fetch(new Request('http://127.0.0.1' + INSTALLED_PATH))
 ).json()

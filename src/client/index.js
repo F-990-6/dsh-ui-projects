@@ -29,15 +29,25 @@
  * package's own client half, through the `uiProjects` service.
  */
 const { UiProjectRegistry } = require('./registry.js')
-const { createPersist, LOCAL_KEY, SETTINGS_NS } = require('./persist.js')
+const {
+  createPersist,
+  LOCAL_KEY,
+  SETTINGS_NS,
+  chooseRecord,
+  mirrorToLocal,
+  shouldOfferBack,
+} = require('./persist.js')
+const { createRemoteSettingsPersist } = require('./settings-controller.js')
+const { registerIntoSlot } = require('./slot-registration.js')
 const { createUiProjectsService } = require('./service.js')
 const { createInstalledStore } = require('./installed.js')
 const { readHostRowsAtBoot, bootFragmentPresent, bodyMarkerPresent } = require('./boot-presence.js')
-const { createRuntime } = require('./runtime.js')
+const { createRuntime, markTimingRecorder, markTiming } = require('./runtime.js')
 const { createStore, detectLocale, onLocaleChange } = require('./store.js')
 const { collectDiagnostics, mountDiagnostics } = require('./diagnostics.js')
 const { strings, formatStamp } = require('./locale.js')
 const { scopeCss } = require('./scope-css.js')
+const channels = require('./channels.js')
 const perf = require('./perf.js')
 const cssFilter = require('./css-filter.js')
 const coreCss = require('./styles/core.css')
@@ -110,6 +120,37 @@ function apply(ctx) {
   }, 'ui-projects: core styles')
 
   const persist = createPersist(ctx)
+
+  /*
+   * WHAT HAPPENED WHEN WE ASKED FOR A SLOT, in order, for a diagnosis to read.
+   *
+   * The interesting case is not success: it is the fallback, or a refusal. Both mean this page's shell
+   * declared `settings.section` before our bundle arrived (0.2.0 runs third-party client packages in a
+   * later application batch than its own), which is a shell behaviour no test in this repository can
+   * observe — so the evidence is kept where a person can reach it.
+   */
+  const slotOutcomes = []
+
+  /**
+   * Contribute something to `settings.section`, once, whatever order the shell loads in.
+   *
+   * ONE helper for both contributions below, because they must not be able to drift apart — and
+   * because the reason for the bounded fallback belongs in one place: `slot-registration.js`.
+   */
+  const contributeSection = (options, renderSection) => {
+    const slots = ctx.get('slots')
+    if (slots === undefined || typeof slots.inject !== 'function') {
+      console.error('[dsh-ui-projects] the client has no `slots` service; Settings › UI cannot mount')
+      return () => {}
+    }
+    return registerIntoSlot({
+      slots,
+      name: 'settings.section',
+      options,
+      render: renderSection,
+      record: (entry) => slotOutcomes.push(entry),
+    })
+  }
 
   /*
    * The registration surface every UI project package uses.
@@ -201,7 +242,7 @@ function apply(ctx) {
 
   // Published before any effect runs: `ctx.effect` invokes its callback
   // synchronously, so the live handles must exist by then.
-  LOADED_PLUGIN = { registry: target, store, runtime, persist, ready: () => ready }
+  LOADED_PLUGIN = { registry: target, store, runtime, persist, ready: () => ready, slotOutcomes, markTiming }
 
   ctx.effect(() => {
     // `start()` is asynchronous (each project may await its own persistence), so
@@ -284,34 +325,19 @@ function apply(ctx) {
   /**
    * Register the settings section.
    *
-   * Through `slots.inject`, not `slots.register` directly: `settings.section` is
-   * DECLARED by the settings shell (`ui-settings-general`), and a registration for
-   * an undeclared slot is rejected — loudly, taking the whole plugin down with it.
-   * `inject` subscribes to the declaration, so this runs once the shell is present,
-   * whatever order the composition happens to load in.
+   * Through `slots.inject`, with a bounded fallback: `settings.section` is DECLARED by the settings shell
+   * (`ui-settings-general`), a registration for an undeclared slot is rejected loudly, and 0.2.0 declares
+   * it in an EARLIER application batch than the one our bundle rides — so a subscription that never gets
+   * the declaration has to be backed by a direct registration. See `slot-registration.js`.
    */
-  ctx.effect(() => {
-    const slots = ctx.get('slots')
-    if (slots === undefined || typeof slots.inject !== 'function') {
-      console.error('[dsh-ui-projects] the client has no `slots` service; Settings › UI cannot mount')
-      return () => {}
-    }
-    const injection = slots.inject('settings.section', () => {
-      const registered = slots.register(
-        {
-          name: 'settings.section',
-          id: SECTION_ID,
-          order: SECTION_ORDER,
-          label: () => strings(detectLocale(ctx)).sectionLabel,
-        },
+  ctx.effect(
+    () =>
+      contributeSection(
+        { id: SECTION_ID, order: SECTION_ORDER, label: () => strings(detectLocale(ctx)).sectionLabel },
         render,
-      )
-      return typeof registered === 'function' ? registered : () => {}
-    })
-    return () => {
-      if (typeof injection === 'function') injection()
-    }
-  }, 'ui-projects: settings section')
+      ),
+    'ui-projects: settings section',
+  )
 
   /*
    * Settings › UI plugins: what is INSTALLED, from the host, read-only.
@@ -324,6 +350,23 @@ function apply(ctx) {
    * the host is old, so the failure is legible rather than mysterious.
    */
   const installedStore = createInstalledStore({
+    /*
+     * THE CHANNELS THE PANEL IS SHOWING, so the host can compare against the tag the user chose (B1).
+     *
+     * Read from the SAME record the selector reads (`persist.read()`), which in the desktop application
+     * is answered by the browser copy while the settings document never receives the write at all
+     * (branch A). Without this, the host compared every package against `stable`: measured, a dot on a
+     * package with a newer `latest` and nothing for a package the user had switched to `beta`.
+     */
+    channelMap: () => {
+      const record = persist.read() ?? { settings: {} }
+      /** @type {Record<string, string>} */
+      const out = {}
+      for (const [name, entry] of Object.entries(record.settings ?? {})) {
+        if (typeof entry?.channel === 'string' && channels.CHANNELS.includes(entry.channel)) out[name] = entry.channel
+      }
+      return out
+    },
     /*
      * A plain fetch to a full `/api/...` path, which is how every shipped page reaches a host route
      * (`dsh-session-log-export/client.js` builds `/api/session.export` and fetches it; the upload and
@@ -341,18 +384,25 @@ function apply(ctx) {
     },
   })
 
+  /*
+   * THE DEFERRED UPDATE CHECK (D2, `UI第三阶段.txt:23-24`).
+   *
+   * The column can ask first; this arms ONE check for after the first frame so that a session which
+   * never opens the column still learns about a newer version — which is what the spec asks for, and
+   * what "reachable only on demand" did not provide. The listing keeps its own on-demand semantics
+   * untouched: the two are separate calls in separate files, and this one never touches the listing.
+   *
+   * The store owns the idempotence and the deadline (see `installed.js`); the disposer here cancels an
+   * armed deadline that has not fired, and deliberately leaves a fired request alone.
+   */
+  ctx.effect(() => installedStore.deferUpdateCheck(), 'ui-projects: deferred update check')
+
   ctx.effect(() => {
     const slots = ctx.get('slots')
     if (slots === undefined || typeof slots.inject !== 'function') return () => {}
-    const injection = slots.inject('settings.section', () => {
-      const registered = slots.register(
-        {
-          name: 'settings.section',
-          id: PLUGINS_SECTION_ID,
-          order: PLUGINS_SECTION_ORDER,
-          label: () => strings(detectLocale(ctx)).pluginsLabel,
-        },
-        () => {
+    return contributeSection(
+      { id: PLUGINS_SECTION_ID, order: PLUGINS_SECTION_ORDER, label: () => strings(detectLocale(ctx)).pluginsLabel },
+      () => {
           // Opening the column is what asks the host, and asking twice is what the store's in-flight
           // guard prevents. A side effect in a render is a smell, and it is the only seam this slot
           // API offers: there is no mount hook, and a listing fetched at boot would be a request for
@@ -364,14 +414,31 @@ function apply(ctx) {
            * second switch. The projects page receives the installed store the same way, so this is one
            * page reading the other's snapshot rather than a new source of truth.
            */
-          return UiPluginsSection({ store: installedStore, projects: store, t: strings(detectLocale(ctx)), React: require('react') })
+          return UiPluginsSection({
+            store: installedStore,
+            projects: store,
+            t: strings(detectLocale(ctx)),
+            React: require('react'),
+            /*
+             * THE CHANNEL ADAPTER (phase 3, step 1). `record()` hands the section the settings record to
+             * merge against, and `write()` is the ONLY way a channel changes: it copies the record, sets
+             * `settings['<pkg>'].channel` through the channel store (which refuses a value it does not
+             * know), and writes it back through the persistence adapter this plugin already owns — so a
+             * channel lives in the same document as everything else the user has chosen.
+             */
+            channels: {
+              record: () => persist.read() ?? { settings: {} },
+              read: (name) => channels.read(persist.read() ?? { settings: {} }, name),
+              write: async (name, value) => {
+                const current = persist.read() ?? { v: 1, initialized: false, enabled: [], settings: {}, touched: false }
+                const next = { ...current, settings: { ...(current.settings ?? {}) } }
+                channels.write(next, name, value)
+                await persist.write(next)
+              },
+            },
+          })
         },
-      )
-      return typeof registered === 'function' ? registered : () => {}
-    })
-    return () => {
-      if (typeof injection === 'function') injection()
-    }
+    )
   }, 'ui-projects: settings plugins section')
 
 }
@@ -397,8 +464,16 @@ module.exports = {
    * park this plugin until the service is genuinely there.
    *
    * Everything else this plugin touches is optional and read with `ctx.get`.
+   *
+   * `settingsScope` IS NO LONGER DECLARED (phase 3 follow-up), and that is the same bug seen from the other
+   * side: 0.2.0-rc.2 — the dsh inside the desktop application — does not provide the service at all, so a
+   * hard dependency on it would park this plugin for ever and the column would simply not exist. What is
+   * declared instead is the seam BOTH versions have, `remote` + `remote.settings`: the 0.1.5 scope is built
+   * on that remote and names it in its own `inject` (`dsh-client-ui-settings/lib/client.js:1333`), so
+   * parking on the remote still guarantees the settings service is there before `apply` binds — and
+   * `persist.js` keeps preferring the scope whenever the composition hands it one.
    */
-  inject: ['slots', 'settingsScope'],
+  inject: ['slots', 'remote', 'remote.settings'],
   apply,
 
   /** @returns {UiProjectRegistry} the live registry, for other plugins. */
@@ -503,6 +578,47 @@ module.exports = {
      * that copied the literal inherited the same silence. Reading the constants from the module
      * that owns them is what makes a rename safe.
      */
-    persistKeys: { localKey: LOCAL_KEY, settingsNamespace: SETTINGS_NS },
+    persistKeys: { localKey: LOCAL_KEY, settingsNamespace: SETTINGS_NS, chooseRecord, mirrorToLocal, shouldOfferBack },
+    /**
+     * The update channel of a package, and the composition of a row's channel/update facts (phase 3).
+     *
+     * Exported so the suite can hold the two properties that are easiest to lose: a channel nobody chose
+     * reads as `stable`, and a check that FAILED is not an update.
+     */
+    channels,
+    mergeUpdates: channels.mergeUpdates,
+    /**
+     * The settings adapters, so the suite can hold the CHOICE itself (phase 3 follow-up: the desktop-app
+     * adaptation): which backend a composition gets, that only one is ever used, and that the remote path
+     * reads with one `describe` and writes with one `update`.
+     */
+    settingsController: { createPersist, createRemoteSettingsPersist },
+    /**
+     * The slot-contribution helper (phase-3 follow-up: the desktop application).
+     *
+     * Exported so the suite can hold the two properties a shell cannot be asked to guarantee: the
+     * declaration is subscribed to first, and a declaration that never arrives still ends in exactly one
+     * registration — recorded, never thrown, never retried.
+     *
+     * WHAT IT RECORDED IS NOT HERE. `slotOutcomes` is per-INSTANCE state and lives on the plugin handle
+     * (`LOADED_PLUGIN`) beside `registry`/`store`/`runtime`/`persist`, which is where the diagnostics
+     * overlay reads this page's live handles from. Putting it in this module-scope literal was the bug
+     * that made the bundle throw on load: the variable it named is declared inside `apply`.
+     */
+    slotRegistration: { registerIntoSlot },
+    /**
+     * The marker clock (phase-3 follow-up: the desktop application).
+     *
+     * TWO writers stamp the body marker, and only the host can be first at paint; this recorder holds
+     * WHEN the runtime wrote its own — first write wins — so a reading taken long after load can be
+     * compared with the frame instead of guessed at. Exported so the assertions can pin those two
+     * properties, and so the handle at `LOADED_PLUGIN` can carry the times themselves (step 2).
+     */
+    markTimingRecorder,
+    /**
+     * The recorded times themselves (`{ rootAt, projectAt }`), for a probe that cannot reach the plugin
+     * handle. The same object the runtime fills and the Console line prints once per page load.
+     */
+    markTiming,
   },
 }
