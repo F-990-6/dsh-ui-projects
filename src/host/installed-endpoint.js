@@ -81,6 +81,17 @@ function projectDependency(dependency) {
     author: dependency.author ?? null,
     uiProject: dependency.uiProject ?? null,
     /*
+     * STEP 5: WHERE IT CAME FROM (decision 2026-09-30). `spec` is already above; `via` is new — a `link`
+     * and a store copy are different answers, and the diagnostics say which one this is.
+     *
+     * THE VERSION HISTORY IS NOT HERE, and that is deliberate: it lives on the SCAN, not on the row, and
+     * this projection function receives only the dependency. A first attempt to look it up here read an
+     * undeclared `scan` — optional chaining does not protect an undeclared identifier, so it threw, the
+     * handler's catch turned the whole listing into an error payload, and every row lost its `uiProject`.
+     * The history must be threaded in through `projectScan`, which is where the scan is in scope.
+     */
+    via: dependency.via ?? null,
+    /*
      * The newest CHANGELOG heading, for the folded row. `null` is "there is nothing to name" — no
      * file, no `## ` section, or a file whose head could not be read — and the row then says just
      * "CHANGELOG" until it is opened. Present in both states, like everything else here.

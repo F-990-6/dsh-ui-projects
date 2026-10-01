@@ -8977,6 +8977,74 @@ await test('the author tools live behind their own fold, and every gate refuses 
   )
 })
 
+/* ── Step 5: what the page can see, and a button that copies it ─────────────────────────────────── */
+
+/*
+ * `UI第三阶段.txt:71-77` (step 5, logs and diagnostics): a reader must be able to see the installed
+ * version, where it came from, when it arrived, the update history, the error log and the CHANGELOG —
+ * and, when a plugin fails to load, an error SUMMARY with a "copy diagnostics" button.
+ *
+ * WHAT IS HONEST HERE (decisions 2026-09-30). The page can only copy what it can SEE: problems, the last
+ * scan's error, the last update check's result, the version-snapshot history. The host's own warnings go
+ * to a terminal this plugin cannot read, so nothing pretends to collect them — the diagnostic text is
+ * assembled in the CLIENT (`src/client/diagnostics.js`), from facts the panel already holds, which is
+ * also why no new endpoint is needed for it.
+ *
+ * INSTALL TIME COMES FROM A FALLBACK CHAIN — the newest snapshot's `createdAt`, else the install record,
+ * else `null` — and `null` renders as "unknown" rather than as an empty cell or a crash.
+ *
+ * RED TODAY: `src/client/diagnostics.js` does not exist, the endpoint does not send `spec`/`via`/
+ * `versions`, and the panel has no `data-uip-diagnostics` block.
+ */
+await test('the diagnostics are built in the client, from what the page can actually see', async () => {
+  const diagnostics = await import('../src/client/plugin-diagnostics.js').catch(() => null)
+  truthy(diagnostics !== null, 'src/client/plugin-diagnostics.js exists — the text is assembled where the facts are')
+  equal(typeof diagnostics?.buildDiagnostics, 'function', 'and exports buildDiagnostics(dependency, versions)')
+
+  const built = diagnostics?.buildDiagnostics?.(
+    {
+      name: 'ok-pkg',
+      version: '1.0.0',
+      spec: 'link:E:/dsh/plugins/ok-pkg',
+      via: 'link',
+      resolved: true,
+      kind: 'ui-project',
+      projectId: 'ok-project',
+      problems: [{ code: 'UI_CONTRACT_HARD_COLOUR', message: 'a hard colour' }],
+      update: { available: true, latest: '2.0.0', error: null },
+    },
+    [{ name: 'snap-1', version: '0.9.0', createdAt: '2026-09-01T00:00:00.000Z', files: 12, bytes: 4096, ours: true }],
+  )
+  equal(typeof built?.text, 'string', 'a copyable text, not only a structure')
+  equal(built?.text?.includes('\n'), true, 'which is multi-line, because it carries several facts')
+  contains(String(built?.text ?? ''), 'ok-pkg@1.0.0', 'and names the package and the version it describes')
+  contains(String(built?.text ?? ''), 'link', 'and where it came from')
+  contains(String(built?.text ?? ''), 'snap-1', 'and the update history it was given')
+  equal(Array.isArray(built?.lines), true, 'the same facts as structured lines, for the panel to render')
+
+  /* THE ENDPOINT MUST SEND WHAT THE TEXT DESCRIBES. */
+  const endpointSource = await readFile(join(packageRoot, 'src', 'host', 'installed-endpoint.js'), 'utf8')
+  contains(endpointSource, 'spec:', 'the projection carries the spec a package was installed from')
+  contains(endpointSource, 'via:', 'and how it resolved — a link and a store copy are different answers')
+  contains(endpointSource, 'versions', 'and the version-snapshot history')
+
+  /* THE PANEL: a block, a copy button, and the same fold discipline as everything else. */
+  const folded = rowSplit(renderFold(), 'ok-pkg').folded
+  contains(folded, 'data-uip-diagnostics', 'the row carries the diagnostics block')
+  contains(folded, 'data-uip-copy-diagnostics', 'with a button that copies it')
+
+  /* THE FAILURE HISTORY: kept in the user record, capped, and only for failures. */
+  const channelsSource = await readFile(join(packageRoot, 'src', 'client', 'channels.js'), 'utf8')
+  contains(channelsSource, 'updateFailures', 'the per-package record has a place for update failures')
+  contains(channelsSource, 'FAILURE_HISTORY_LIMIT', 'capped by a named limit rather than a literal in a loop')
+
+  /* BOTH LANGUAGES, from the table. */
+  const localeSource = await readFile(join(packageRoot, 'src', 'client', 'locale.js'), 'utf8')
+  const wanted = ['diagnosticsTitle', 'diagnosticsCopy', 'diagnosticsUnknown', 'diagnosticsFailures', 'diagnosticsRollbackHint']
+  const missing = wanted.filter((key) => (localeSource.match(new RegExp('\\n\\s*' + key + ':', 'g')) ?? []).length !== 2)
+  equal(missing, [], 'and every diagnostics sentence exists in both languages, once each')
+})
+
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
 if (onlyTest !== '') {
   process.stdout.write(`[filter] DSH_TEST_ONLY=${JSON.stringify(onlyTest)} skipped ${skipped} test(s)\n`)

@@ -321,6 +321,9 @@ export function UiPluginsSection(props) {
               )
             : null,
           ...UpgradeCheck({ copy, React: React_, dependencies: scan.dependencies, profileName: scan.profileName }),
+          /* The diagnostics sit in the ROW fold, not in the author's sub-fold: they are for whoever has a
+           * problem, which is not necessarily whoever authors the package. */
+          ...DiagnosticsBlock({ copy, React: React_, dependency, versions: scan.versions?.[dependency.name] ?? [] }),
           ...DevToolsBlock({
             copy,
             React: React_,
@@ -828,6 +831,12 @@ import { CHECKLIST_ITEMS, isComplete } from './checklist-items.js'
  * bundles. These are the words that end up in `CHANGELOG.md`, so the suite holds the pair equal.
  */
 import { CHANGELOG_CATEGORIES } from './changelog-categories.js'
+/*
+ * The diagnostic text builder. Imported HERE, in the same edit that uses it — the earlier lesson in this
+ * file was a block that referenced two identifiers it never imported, which throws the moment the panel
+ * renders rather than at build time.
+ */
+import { buildDiagnostics } from './plugin-diagnostics.js'
 
 /**
  * THE TEN-ITEM TEST CHECKLIST, rendered in a row's fold (`UI第三阶段.txt:51-57`).
@@ -996,6 +1005,60 @@ function DevToolsBlock({ copy, React: React_, dependency, onMarkTested, onGenera
       button('data-uip-commit-changelog', copy.commitChangelog, entries.length > 0, () => onCommitChangelog?.(dependency?.name), copy.commitChangelogDisabled),
       /* THE GIT-TAG RULE IS A SENTENCE (decision 4): reading real tags would mean running git. */
       React_.createElement('p', { className: 'uip-hint', key: 'tag-hint', 'data-uip-dev-tools-tag-hint': 'text' }, copy.devToolsTagHint),
+    ),
+  ]
+}
+
+/**
+ * WHAT A PERSON CAN PASTE WHEN SOMETHING IS WRONG (`UI第三阶段.txt:71-77`, step 5).
+ *
+ * The text itself is built by `buildDiagnostics` in `plugin-diagnostics.js` — this block only renders it
+ * and offers the copy button, which reuses `copyCommandText` (`panel-plugins.js:678`) rather than growing
+ * a second clipboard path.
+ *
+ * WHAT IT DOES NOT DO: it does not read the host's log. The host writes to a terminal this page cannot
+ * see, so the diagnostics describe exactly what the page holds — and saying "unknown" for a fact the page
+ * does not have is the honest answer, not an empty cell.
+ *
+ * A PLAIN FUNCTION, and it MUST return an ARRAY: the caller spreads it (`...DiagnosticsBlock({ … })`), and
+ * `null` would throw `TypeError: null is not iterable` — the mistake that once took 25 tests down. The
+ * file's hook-bearing functions are named and asserted (`verify.mjs:4530`), so this must not be a third.
+ * @param {{ copy: any, React: any, dependency: any, versions?: any[] | null }} input
+ * @returns {any[]}
+ */
+function DiagnosticsBlock({ copy, React: React_, dependency, versions }) {
+  const diagnosis = buildDiagnostics(dependency, versions)
+  return [
+    React_.createElement(
+      'div',
+      { className: 'uip-diagnostics', key: 'diagnostics', 'data-uip-diagnostics': dependency?.name },
+      React_.createElement('p', { className: 'uip-hint' }, copy.diagnosticsTitle),
+      React_.createElement(
+        'ul',
+        { className: 'uip-diagnostics-lines' },
+        diagnosis.lines.map((line, index) =>
+          React_.createElement(
+            'li',
+            { key: line.label + '-' + index, 'data-uip-diagnostics-line': line.label },
+            line.label + ': ' + line.value,
+          ),
+        ),
+      ),
+      React_.createElement(
+        'button',
+        {
+          type: 'button',
+          className: 'uip-button',
+          key: 'copy-diagnostics',
+          'data-uip-copy-diagnostics': 'button',
+          'data-uip-copy-source': diagnosis.text,
+          onClick: () => {
+            void copyCommandText(diagnosis.text)
+          },
+        },
+        copy.diagnosticsCopy,
+      ),
+      React_.createElement('p', { className: 'uip-hint' }, copy.diagnosticsRollbackHint),
     ),
   ]
 }

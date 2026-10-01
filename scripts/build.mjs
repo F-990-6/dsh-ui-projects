@@ -68,6 +68,9 @@ const MODULE_ORDER = [
   'checklist-items.js',
   /* Also before `panel-plugins.js`, which reads the six categories from it (separate bundles, mirrored). */
   'changelog-categories.js',
+  /* Before `panel-plugins.js`, which builds the copyable diagnostics from it. NOTE: this is NOT the
+   * existing `diagnostics.js` — that one is the instrumentation toggle and is untouched. */
+  'plugin-diagnostics.js',
   'channels.js',
   'boot-presence.js',
   'service.js',

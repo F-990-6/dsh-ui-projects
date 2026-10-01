@@ -201,6 +201,15 @@ export const STRINGS = {
       devToolsHint: 'Test, mark and draft here; a reader of this row never needs this fold.',
       /* The git-tag rule (c) is a SENTENCE, not a command: nothing here reads a tag (decision 4). */
       devToolsTagHint: 'Tag the release (e.g. v0.2.0) or write a clear commit message — it helps the next draft.',
+      /*
+       * THE DIAGNOSTICS (step 5). What the page can SEE, assembled into something a person can paste:
+       * nothing here pretends to read the terminal the host writes to.
+       */
+      diagnosticsTitle: 'Diagnostics',
+      diagnosticsCopy: 'Copy diagnostics',
+      diagnosticsUnknown: 'unknown',
+      diagnosticsFailures: 'Recent update failures',
+      diagnosticsRollbackHint: 'To roll back, run the command above and restart dsh.',
       markTested: 'Mark this version as tested',
       markTestedDisabled: 'Confirm all ten checklist items first',
       generateDraft: 'Generate CHANGELOG draft',
@@ -492,6 +501,14 @@ export const STRINGS = {
       devToolsHint: '在这里测试、标记、起草；只是读这一行的人，从不需要展开它。',
       /* git tag 规则（c 项）是一句话，不是命令：这里没有任何东西去读 tag（裁决 4）。 */
       devToolsTagHint: '发布后打 tag（如 v0.2.0）或写清楚 commit message——有助于下次生成草稿。',
+      /*
+       * 诊断（第五步）。把**页面能看到**的事实整理成一段可粘贴的文字：这里没有任何东西假装能读宿主写的终端。
+       */
+      diagnosticsTitle: '诊断信息',
+      diagnosticsCopy: '复制诊断信息',
+      diagnosticsUnknown: '未知',
+      diagnosticsFailures: '最近的更新失败',
+      diagnosticsRollbackHint: '要回滚，执行上面的命令并重启 dsh。',
       markTested: '标记这一版已通过测试',
       markTestedDisabled: '先把十项清单逐条确认完',
       generateDraft: '生成 CHANGELOG 草稿',

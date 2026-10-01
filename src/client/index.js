@@ -380,6 +380,20 @@ function apply(ctx) {
       return out
     },
     /*
+     * STEP 5: a failed update check is RECORDED, per package (decisions 2026-09-30).
+     *
+     * Written HERE against `persist`, exactly as `channelMap` above reads it — this call site's own house
+     * style, and the reason no adapter method was added for it. THE STORE ONLY TALKS TO THE NETWORK: it
+     * reports the failure through this callback and keeps no record of its own, so the settings document
+     * keeps its single writer.
+     */
+    onUpdateFailure: (name, failure) => {
+      const current = persist.read() ?? { v: 1, initialized: false, enabled: [], settings: {}, touched: false }
+      const next = { ...current, settings: { ...(current.settings ?? {}) } }
+      channels.writeUpdateFailure(next, name, failure)
+      return persist.write(next)
+    },
+    /*
      * A plain fetch to a full `/api/...` path, which is how every shipped page reaches a host route
      * (`dsh-session-log-export/client.js` builds `/api/session.export` and fetches it; the upload and
      * deliverable pages do the same). Authentication is the browser session cookie the fence

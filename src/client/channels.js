@@ -181,6 +181,52 @@ export function writeTestedAt(record, name, version, at) {
 }
 
 /**
+ * How many update failures a package's record keeps. Named rather than written into the loop below: the
+ * cap is a decision someone may revisit, and a decision is easier to revisit when it has a name.
+ */
+export const FAILURE_HISTORY_LIMIT = 5
+
+/**
+ * The update failures a package's record carries, oldest first (decision 2026-09-30).
+ *
+ * ONLY FAILURES ARE RECORDED. A successful check is the ordinary case and needs no history; recording it
+ * would bury the five lines that matter under the ones that do not.
+ * @param {unknown} record @param {string} name
+ * @returns {Array<{ at: string, version: string | null, reason: string }>}
+ */
+export function readUpdateFailures(record, name) {
+  const entry = /** @type {any} */ (record)?.settings?.[name]?.updateFailures
+  if (!Array.isArray(entry)) return []
+  return entry
+    .filter((failure) => failure !== null && typeof failure === 'object')
+    .map((failure) => ({
+      at: String(failure.at ?? ''),
+      version: typeof failure.version === 'string' ? failure.version : null,
+      reason: String(failure.reason ?? ''),
+    }))
+}
+
+/**
+ * Append one update failure, keeping only the newest `FAILURE_HISTORY_LIMIT` — MERGING like every other
+ * write in this file, so recording a failure cannot erase the checklist beside it.
+ * @param {any} record @param {string} name
+ * @param {{ at?: string, version?: string | null, reason?: unknown }} failure
+ */
+export function writeUpdateFailure(record, name, failure) {
+  if (record.settings === undefined || record.settings === null || typeof record.settings !== 'object') record.settings = {}
+  const entry = record.settings[name]
+  const kept = entry !== null && typeof entry === 'object' ? entry : {}
+  const history = readUpdateFailures(record, name)
+  history.push({
+    at: String(failure?.at ?? ''),
+    version: typeof failure?.version === 'string' ? failure.version : null,
+    reason: String(failure?.reason ?? ''),
+  })
+  record.settings[name] = { ...kept, updateFailures: history.slice(-FAILURE_HISTORY_LIMIT) }
+  return record
+}
+
+/**
  * The row data: the scan's dependencies, each carrying its channel and what the registry said.
  *
  * THREE STATES, AND ONLY ONE OF THEM IS AN UPDATE. A check that answered with a newer version, a check
