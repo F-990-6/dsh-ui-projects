@@ -8738,6 +8738,72 @@ await test('the checklist is refused by name, and the two halves of it cannot dr
   contains(String(refused?.message ?? ''), 'checklist', 'the refusal says which list it is about')
 })
 
+/* ── Step 4, segment 2: the CHANGELOG draft, built from evidence or not at all ─────────────────── */
+
+/*
+ * `UI第三阶段.txt:59-69` (step 4, first half). The flow is: collect the changes, classify them, suggest a
+ * semver bump, show a DRAFT for item-by-item confirmation, and — when the evidence is not there — say so
+ * instead of writing something plausible. Only after a person confirms does anything reach `CHANGELOG.md`
+ * and `package.json`, and even then nothing is published or committed (that is the next segment's module).
+ *
+ * THE HARD RULE IS THE EMPTY ONE: with no evidence the answer is `insufficient` and the entries are EMPTY.
+ * A generated changelog that invents entries is worse than no changelog, because it is wrong in a way the
+ * reader has no way to notice — so "invents nothing" is asserted, not merely described.
+ *
+ * Decisions taken 2026-09-30: the bump takes the HIGHEST level present (Removed ⇒ major; Added/Changed/
+ * Security ⇒ minor; Fixed/Performance ⇒ patch), and the six categories are the ones the spec lists.
+ *
+ * RED TODAY: `src/host/changelog-draft.js` does not exist.
+ */
+await test('a changelog draft is built from evidence, and says so when there is none', async () => {
+  const draft = await import('../src/host/changelog-draft.js').catch(() => null)
+  truthy(draft !== null, 'src/host/changelog-draft.js exists — the draft builder')
+  equal(typeof draft?.draftChangelog, 'function', 'and exports draftChangelog(input)')
+  equal(
+    draft?.CHANGELOG_CATEGORIES,
+    ['Added', 'Changed', 'Fixed', 'Removed', 'Security', 'Performance'],
+    'with the six categories named once, in the spec’s order',
+  )
+
+  /* NO EVIDENCE, NO DRAFT — and in particular no invented entries. */
+  const nothing = draft?.draftChangelog?.({
+    gitLog: null,
+    snapshotDiff: null,
+    currentVersion: '0.1.0',
+    previousVersion: '0.1.0',
+  })
+  equal(nothing?.status, 'insufficient', 'no evidence at all is "insufficient", not an empty changelog dressed up as one')
+  equal(nothing?.entries, [], 'and it invents nothing to fill the gap')
+  equal(nothing?.suggestedBump, null, 'with no bump suggested, because there is nothing to bump for')
+  contains(String(nothing?.reason ?? ''), 'insufficient', 'and the reason says which situation this is')
+
+  /* A LOG IS ENOUGH EVIDENCE, and the bump is the highest level it contains. */
+  const onlyFixes = draft?.draftChangelog?.({
+    gitLog: 'fix: repair the contrast of the focus ring',
+    snapshotDiff: null,
+    currentVersion: '0.1.0',
+    previousVersion: null,
+  })
+  equal(onlyFixes?.status, 'ok', 'a log that says what changed is enough evidence')
+  equal(onlyFixes?.suggestedBump, 'patch', 'and fixes alone are a patch')
+
+  const withFeature = draft?.draftChangelog?.({
+    gitLog: 'feat: add the test checklist\nfix: repair the focus ring',
+    snapshotDiff: null,
+    currentVersion: '0.1.0',
+    previousVersion: null,
+  })
+  equal(withFeature?.suggestedBump, 'minor', 'a feature anywhere makes it a minor, whatever else is in the log')
+
+  const withBreaking = draft?.draftChangelog?.({
+    gitLog: 'feat!: drop the four-state contract badge\n\nBREAKING CHANGE: the attribute changed name',
+    snapshotDiff: null,
+    currentVersion: '0.1.0',
+    previousVersion: null,
+  })
+  equal(withBreaking?.suggestedBump, 'major', 'and a breaking change outranks both: the highest level present wins')
+})
+
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
 if (onlyTest !== '') {
   process.stdout.write(`[filter] DSH_TEST_ONLY=${JSON.stringify(onlyTest)} skipped ${skipped} test(s)\n`)
