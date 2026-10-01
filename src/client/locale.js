@@ -191,6 +191,26 @@ export const STRINGS = {
       checklistContrast: 'Contrast is enough to read, including over the blurred material',
       checklistMarkTested: 'Mark this version as tested',
       checklistGenerate: 'Generate CHANGELOG draft',
+      /*
+       * THE AUTHOR'S TOOLS (step 4, last segment). They live behind their own fold because the row serves
+       * two readers: a user reads versions, updates, rollback and the changelog; an author tests, marks,
+       * drafts and writes. Every sentence here is one of those actions, or the reason it is unavailable —
+       * a disabled control with no explanation is a question the reader cannot answer.
+       */
+      devToolsTitle: 'Developer tools',
+      devToolsHint: 'Test, mark and draft here; a reader of this row never needs this fold.',
+      /* The git-tag rule (c) is a SENTENCE, not a command: nothing here reads a tag (decision 4). */
+      devToolsTagHint: 'Tag the release (e.g. v0.2.0) or write a clear commit message — it helps the next draft.',
+      markTested: 'Mark this version as tested',
+      markTestedDisabled: 'Confirm all ten checklist items first',
+      generateDraft: 'Generate CHANGELOG draft',
+      generateDraftDisabled: 'Mark this version as tested first — a draft is for a version that passed',
+      commitChangelog: 'Write CHANGELOG and version',
+      commitChangelogDisabled: 'The draft is empty; nothing to write',
+      newEntry: 'Add an entry',
+      deleteEntry: 'Delete',
+      draftEmpty: 'No draft yet. Paste a git log into the draft route, or generate from the version snapshots.',
+      draftApplied: 'Written. Commit and publish remain yours to do.',
       contractCoverage: (judged, total) =>
         `${judged} of the contract’s ${total} rules are judged by reading the built bundle; the rest are listed below`,
       contractFindingsTitle: 'What the scan found',
@@ -463,6 +483,25 @@ export const STRINGS = {
       checklistContrast: '对比度足够阅读，包括压在模糊材质上的文字',
       checklistMarkTested: '标记这一版已通过测试',
       checklistGenerate: '生成 CHANGELOG 草稿',
+      /*
+       * 作者工具（第四步最后一段）。它们待在自己的折叠里，因为这一行服务**两个读者**：用户读版本、更新、
+       * 回滚、卸载与 CHANGELOG；作者测试、标记、起草、写入。这里的每一句都是其中一个动作，
+       * 或者它**为什么不可用** —— 一个没有解释的禁用控件，是读者答不出的问题。
+       */
+      devToolsTitle: '开发者工具',
+      devToolsHint: '在这里测试、标记、起草；只是读这一行的人，从不需要展开它。',
+      /* git tag 规则（c 项）是一句话，不是命令：这里没有任何东西去读 tag（裁决 4）。 */
+      devToolsTagHint: '发布后打 tag（如 v0.2.0）或写清楚 commit message——有助于下次生成草稿。',
+      markTested: '标记这一版已通过测试',
+      markTestedDisabled: '先把十项清单逐条确认完',
+      generateDraft: '生成 CHANGELOG 草稿',
+      generateDraftDisabled: '先标记这一版已通过测试 —— 草稿是给已通过的版本写的',
+      commitChangelog: '写入 CHANGELOG 并更新版本',
+      commitChangelogDisabled: '草稿是空的，没有可写入的内容',
+      newEntry: '新增条目',
+      deleteEntry: '删除',
+      draftEmpty: '还没有草稿。可以在草稿路由里粘贴 git log，或按版本快照生成。',
+      draftApplied: '已写入。commit 与 publish 仍由你来做。',
       contractCoverage: (judged, total) => `契约的 ${total} 条规则中有 ${judged} 条通过读构建产物判定；其余见下方`,
       contractFindingsTitle: '扫描发现',
       contractLimitsTitle: '这次扫描看不到的东西',

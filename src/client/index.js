@@ -478,8 +478,38 @@ function apply(ctx) {
                 channels.writeDraft(next, name, draft)
                 await persist.write(next)
               },
-              readTestedAt: (name) => channels.readTestedAt(persist.read() ?? { settings: {} }, name),
-              writeTestedAt: async (name, version, at) => {
+              /*
+               * ONE ENTRY OF THE DRAFT, edited where it belongs. The panel asks for a change; this method
+               * reads the draft that is actually stored, applies the change to a COPY, and writes the whole
+               * draft back through the channel store — so "what the panel saw" and "what gets written" can
+               * never drift, and a stale index cannot corrupt the record.
+               *
+               * `patch` is either `{ category?, text? }` (edit those fields) or `{ remove: true }` (drop the
+               * entry). An index nobody can reach changes nothing: the panel's own list is the only source of
+               * indices, and a stale one must not delete a neighbour.
+               */
+              writeDraftEntry: async (name, index, patch) => {
+                const current = persist.read() ?? { v: 1, initialized: false, enabled: [], settings: {}, touched: false }
+                const next = { ...current, settings: { ...(current.settings ?? {}) } }
+                const draft = channels.readDraft(next, name)
+                if (draft === null) return undefined
+                const position = Number.isInteger(index) ? index : -1
+                /** @type {Array<{ category: string, text: string }>} */
+                const entries = draft.entries.map((entry) => ({ ...entry }))
+                if (patch !== null && typeof patch === 'object' && patch.remove === true) {
+                  if (position >= 0 && position < entries.length) entries.splice(position, 1)
+                } else if (patch !== null && typeof patch === 'object') {
+                  const entry = position >= 0 && position < entries.length ? entries[position] : { category: 'Changed', text: '' }
+                  if (typeof patch.category === 'string') entry.category = patch.category
+                  if (typeof patch.text === 'string') entry.text = patch.text
+                  if (position < 0 || position >= entries.length) entries.push(entry)
+                  else entries[position] = entry
+                }
+                channels.writeDraft(next, name, { ...draft, entries, savedAt: new Date().toISOString() })
+                await persist.write(next)
+                return entries
+              },
+              readTestedAt: (name) => channels.readTestedAt(persist.read() ?? { settings: {} }, name),              writeTestedAt: async (name, version, at) => {
                 const current = persist.read() ?? { v: 1, initialized: false, enabled: [], settings: {}, touched: false }
                 const next = { ...current, settings: { ...(current.settings ?? {}) } }
                 /* The stamp defaults HERE, at the edge that knows what "now" is — the store stays a plain

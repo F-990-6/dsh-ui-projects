@@ -8724,6 +8724,21 @@ await test('the checklist is refused by name, and the two halves of it cannot dr
     'and carries exactly the host list, id and label key for every item',
   )
 
+  /*
+   * THE SAME HOLD ON THE SIX CATEGORIES (step 4). These strings are not decoration: they are the words
+   * that end up in `CHANGELOG.md`, and `renderVersionSection` groups by them — a dropdown offering a
+   * category the writer does not know would produce a section nobody ever sees, silently.
+   */
+  const categories = await import('../src/client/changelog-categories.js').catch(() => null)
+  const draftModule = await import('../src/host/changelog-draft.js').catch(() => null)
+  truthy(categories !== null, 'src/client/changelog-categories.js exists — the client mirror of the six')
+  equal(
+    categories?.CHANGELOG_CATEGORIES,
+    draftModule?.CHANGELOG_CATEGORIES,
+    'and carries exactly the host list, in the same order',
+  )
+  equal(categories?.CHANGELOG_CATEGORIES?.length, 6, 'six categories, as the spec lists them')
+
   const channels = await import('../src/client/channels.js').catch(() => null)
   equal(typeof channels?.writeChecklist, 'function', 'the client can write one checklist item')
   const refused = (() => {
@@ -8945,9 +8960,21 @@ await test('the author tools live behind their own fold, and every gate refuses 
   contains(endpointSource, 'writeChangelog', 'which calls the one module allowed to write')
   contains(endpointSource, 'isComplete', 'and re-checks the checklist itself, so a hand-made request cannot skip the gate')
 
-  /* 10. THE TAG RULE IS A SENTENCE — and 11. nothing here runs a command. */
+  /*
+   * 10-11. THE TAG RULE IS A SENTENCE — and nothing here runs a command.
+   *
+   * COMMENTS ARE STRIPPED FIRST, and that is the whole fix (measured 2026-09-30): the guard used to scan
+   * the raw source, so the paragraph ABOVE the routes — which names `child_process`, `exec` and `spawn` in
+   * order to say they are absent — tripped the very check it was describing. Same family as `open(p, 'r')`
+   * in `changelog.js`: a source-scanning guard cannot tell code from prose unless it removes the prose.
+   */
   equal((localeSource.match(/\n\s*devToolsTagHint:/g) ?? []).length, 2, 'the git-tag rule is stated in both languages')
-  equal(/child_process|\bexec\(|\bspawn\(/.test(endpointSource), false, 'and no route reaches for a command runner')
+  const endpointCode = endpointSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+  equal(
+    /child_process|\bexec\(|\bspawn\(/.test(endpointCode),
+    false,
+    'and no route reaches for a command runner (comments excluded: naming a thing is not using it)',
+  )
 })
 
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)

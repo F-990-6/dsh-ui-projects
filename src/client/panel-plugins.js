@@ -321,12 +321,27 @@ export function UiPluginsSection(props) {
               )
             : null,
           ...UpgradeCheck({ copy, React: React_, dependencies: scan.dependencies, profileName: scan.profileName }),
-          ...ChecklistBlock({
+          ...DevToolsBlock({
             copy,
             React: React_,
             dependency,
-            onToggle: (name, itemId, checked) => {
+            onMarkTested: (name, version) => {
+              void Promise.resolve(props.channels?.writeTestedAt?.(name, version)).catch(() => {})
+            },
+            onGenerateDraft: (name, version) => {
+              void Promise.resolve(store?.generateDraft?.(name, version)).catch(() => {})
+            },
+            onCommitChangelog: (name) => {
+              void Promise.resolve(store?.commitChangelog?.(name)).catch(() => {})
+            },
+            onToggleChecklist: (name, itemId, checked) => {
               void Promise.resolve(props.channels?.writeChecklist?.(name, itemId, checked)).catch(() => {})
+            },
+            onToggleEntry: (name, index, patch) => {
+              void Promise.resolve(props.channels?.writeDraftEntry?.(name, index, patch)).catch(() => {})
+            },
+            onAddEntry: (name) => {
+              void Promise.resolve(props.channels?.writeDraftEntry?.(name, -1, { category: 'Changed', text: '' })).catch(() => {})
             },
           }),
           ...RowFoldFacts({ copy, React: React_, dependency, hasProject, project, mirrorAvailable: projectsLive !== undefined }),
@@ -788,7 +803,12 @@ function UpgradeCheck({ copy, React: React_, dependencies, profileName }) {
  * `src/host/test-checklist.js` item by item. Declared here rather than at the top only because this is
  * where the change landed; ESM hoists imports.
  */
-import { CHECKLIST_ITEMS } from './checklist-items.js'
+import { CHECKLIST_ITEMS, isComplete } from './checklist-items.js'
+/*
+ * The six categories, from the client MIRROR for the same reason the checklist is: the halves are separate
+ * bundles. These are the words that end up in `CHANGELOG.md`, so the suite holds the pair equal.
+ */
+import { CHANGELOG_CATEGORIES } from './changelog-categories.js'
 
 /**
  * THE TEN-ITEM TEST CHECKLIST, rendered in a row's fold (`UI第三阶段.txt:51-57`).
@@ -838,6 +858,125 @@ function ChecklistBlock({ copy, React: React_, dependency, onToggle }) {
           ),
         ),
       ),
+    ),
+  ]
+}
+
+/**
+ * THE AUTHOR'S TOOLS, behind their own fold (`UI第三阶段.txt:59-69`, decision 2026-09-30).
+ *
+ * The row serves TWO readers, and this block is the second one: a user reads versions, updates, rollback,
+ * removal and the changelog; an author tests, marks a version tested, drafts a changelog and writes it.
+ * The author's side is new, so it goes into a CLOSED sub-fold of its own rather than onto the row — a
+ * reader who never authors anything should not have to scroll past it.
+ *
+ * A PLAIN FUNCTION, and it MUST return an ARRAY: the caller spreads the result (`...DevToolsBlock({ … })`),
+ * and a `null` return would throw `TypeError: null is not iterable` — the mistake that once took 25
+ * unrelated tests down (see `UpgradeCheck`). The file's hook-bearing functions are named and asserted
+ * (`verify.mjs:4530`: `['UiPluginsSection', 'CommandRow']`), so this must not become a third.
+ *
+ * THE DISABLED BUTTONS ARE COURTESY, NOT THE GATE. Every one of them is decided here from the same
+ * strictly-`true` judgement the host applies (`isComplete`, mirrored in `checklist-items.js`), and the
+ * host refuses anyway — `writeChangelog` throws on an incomplete checklist, so a hand-made request meets
+ * the same answer a disabled button would have prevented.
+ *
+ * NOTHING HERE RUNS A COMMAND. There is no git call and no button that would make one: the log is TEXT a
+ * person pastes into the draft route, and the git-tag rule is the sentence at the foot of the fold.
+ * @param {{ copy: any, React: any, dependency: any, store?: any, onMarkTested?: Function, onGenerateDraft?: Function, onCommitChangelog?: Function, onToggleEntry?: Function, onAddEntry?: Function }} input
+ * @returns {any[]}
+ */
+function DevToolsBlock({ copy, React: React_, dependency, onMarkTested, onGenerateDraft, onCommitChangelog, onToggleEntry, onAddEntry, onToggleChecklist }) {
+  const checklist = dependency?.checklist ?? null
+  const complete = isComplete(checklist)
+  const testedAt = dependency?.testedAt ?? null
+  const version = dependency?.version ?? null
+  /* A mark that outlived a version bump is a mark about nothing (decision 3). */
+  const testedThisVersion = testedAt !== null && version !== null && testedAt.version === version
+  const draft = dependency?.changelogDraft ?? null
+  const entries = Array.isArray(draft?.entries) ? draft.entries : []
+
+  const button = (hook, label, enabled, onClick, title) =>
+    React_.createElement('button', {
+      type: 'button',
+      className: 'uip-button',
+      key: hook,
+      [hook]: 'button',
+      disabled: enabled !== true,
+      title: enabled === true ? undefined : title,
+      onClick: () => onClick?.(),
+    }, label)
+
+  return [
+    React_.createElement(
+      'details',
+      { className: 'uip-dev-tools', key: 'dev-tools', 'data-uip-dev-tools': dependency?.name, open: false },
+      React_.createElement(
+        'summary',
+        {
+          className: 'uip-hint',
+          'data-uip-dev-tools-summary': 'dev-tools',
+          /* EVERY fold carries the shared hook — the suite counts them, and a fold without it is a fold
+           * no reader-facing check can find (measured 2026-09-30: eight folds, seven hooks). */
+          'data-uip-fold-summary': 'dev-tools',
+        },
+        copy.devToolsTitle,
+      ),
+      React_.createElement('p', { className: 'uip-hint' }, copy.devToolsHint),
+      /*
+       * THE CHECKLIST MOVED IN HERE (decision 2026-09-30): it is the first thing an author does, and it is
+       * what every gate below depends on. Same block, same function, same `data-uip-checklist` marker —
+       * only its home changed, so nothing that watched it has to learn a new name.
+       */
+      ...ChecklistBlock({ copy, React: React_, dependency, onToggle: onToggleChecklist }),
+      button('data-uip-mark-tested', copy.markTested, complete, () => onMarkTested?.(dependency?.name, version), copy.markTestedDisabled),
+      button('data-uip-generate-draft', copy.generateDraft, testedThisVersion, () => onGenerateDraft?.(dependency?.name, version), copy.generateDraftDisabled),
+      React_.createElement(
+        'div',
+        { className: 'uip-changelog-draft', key: 'draft', 'data-uip-changelog-draft': dependency?.name },
+        entries.length === 0
+          ? React_.createElement('p', { className: 'uip-hint', 'data-uip-changelog-draft-empty': 'empty' }, copy.draftEmpty)
+          : React_.createElement(
+              'ul',
+              { className: 'uip-changelog-draft-list' },
+              entries.map((entry, index) =>
+                React_.createElement(
+                  'li',
+                  { key: 'entry-' + index, 'data-uip-changelog-entry': String(index) },
+                  React_.createElement(
+                    'select',
+                    {
+                      value: entry?.category ?? 'Changed',
+                      'data-uip-changelog-category': String(index),
+                      onChange: (event) => onToggleEntry?.(dependency?.name, index, { category: event?.target?.value }),
+                    },
+                    CHANGELOG_CATEGORIES.map((category) => React_.createElement('option', { key: category, value: category }, category)),
+                  ),
+                  React_.createElement('input', {
+                    type: 'text',
+                    value: String(entry?.text ?? ''),
+                    'data-uip-changelog-text': String(index),
+                    onChange: (event) => onToggleEntry?.(dependency?.name, index, { text: event?.target?.value }),
+                  }),
+                  React_.createElement('button', {
+                    type: 'button',
+                    className: 'uip-button',
+                    'data-uip-changelog-delete': String(index),
+                    onClick: () => onToggleEntry?.(dependency?.name, index, null),
+                  }, copy.deleteEntry),
+                ),
+              ),
+            ),
+        React_.createElement('button', {
+          type: 'button',
+          className: 'uip-button',
+          key: 'new-entry',
+          'data-uip-changelog-new-entry': 'button',
+          onClick: () => onAddEntry?.(dependency?.name),
+        }, copy.newEntry),
+      ),
+      button('data-uip-commit-changelog', copy.commitChangelog, entries.length > 0, () => onCommitChangelog?.(dependency?.name), copy.commitChangelogDisabled),
+      /* THE GIT-TAG RULE IS A SENTENCE (decision 4): reading real tags would mean running git. */
+      React_.createElement('p', { className: 'uip-hint', key: 'tag-hint', 'data-uip-dev-tools-tag-hint': 'text' }, copy.devToolsTagHint),
     ),
   ]
 }

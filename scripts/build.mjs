@@ -66,6 +66,8 @@ const MODULE_ORDER = [
    * while `build` only warned.
    */
   'checklist-items.js',
+  /* Also before `panel-plugins.js`, which reads the six categories from it (separate bundles, mirrored). */
+  'changelog-categories.js',
   'channels.js',
   'boot-presence.js',
   'service.js',

@@ -32,3 +32,16 @@ export const CHECKLIST_ITEMS = [
 
 /** The ids alone, for the write path's whitelist — derived, never a second list to keep in step. */
 export const CHECKLIST_IDS = CHECKLIST_ITEMS.map((item) => item.id)
+
+/**
+ * Has every item been confirmed? The CLIENT-side mirror of `isComplete` in `src/host/test-checklist.js`,
+ * with the same strictness: only `value === true` counts. The two must agree, because the panel uses this
+ * one to disable a button while the host uses that one to refuse the write — a panel that thought the
+ * checklist was complete when the host disagreed would offer an action that cannot succeed.
+ * @param {Record<string, unknown> | null | undefined} record
+ * @returns {boolean}
+ */
+export function isComplete(record) {
+  if (record === null || typeof record !== 'object') return false
+  return CHECKLIST_ITEMS.every((item) => record[item.id] === true)
+}
