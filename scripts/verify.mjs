@@ -8886,6 +8886,70 @@ await test('a changelog is written only by the one module that may write, and on
   equal(source.includes('19103') || source.includes('.dsh'), false, 'and it never touches the harness home directory')
 })
 
+/* ── Step 4, segment 4: the author's tools, behind their own fold ──────────────────────────────── */
+
+/*
+ * `UI第三阶段.txt:59-69`. The row serves TWO readers, and the decision of 2026-09-30 keeps them apart:
+ * a USER reads versions, updates, rollback, removal and the changelog — that stays where it is — while an
+ * AUTHOR tests, marks a version tested, drafts a changelog and writes it. The author's side is new, and it
+ * goes into its own sub-fold (`data-uip-dev-tools`, `open: false`) rather than onto the row.
+ *
+ * NOTHING HERE RUNS A COMMAND (decision 1). The draft takes `gitLog` as TEXT a person pastes in, falls back
+ * to the snapshot difference, and says `insufficient` when neither exists — the plugin never shells out.
+ * The git tag rule (c) is a STATIC sentence at the foot of the sub-fold: reading real tags would mean
+ * running git, which is precisely what this decision rules out.
+ *
+ * THE GATE IS CHECKED TWICE, ON PURPOSE. The panel disables the buttons, and the host refuses anyway:
+ * `writeChangelog` already throws on an incomplete checklist (segment 3), so the write route cannot be
+ * talked into writing by a hand-made request. `testedAt` carries the VERSION it was made against
+ * (decision 3), because a mark that survives a version bump is a mark about nothing.
+ *
+ * RED TODAY: the panel has no sub-fold, and the host has neither route.
+ */
+await test('the author tools live behind their own fold, and every gate refuses on the host side too', async () => {
+  const endpointSource = await readFile(join(packageRoot, 'src', 'host', 'installed-endpoint.js'), 'utf8')
+  const channelsSource = await readFile(join(packageRoot, 'src', 'client', 'channels.js'), 'utf8')
+  const panelSource = await readFile(join(packageRoot, 'src', 'client', 'panel-plugins.js'), 'utf8')
+  const localeSource = await readFile(join(packageRoot, 'src', 'client', 'locale.js'), 'utf8')
+
+  /* 1-2. THE SUB-FOLD, and the three buttons inside it. */
+  const folded = rowSplit(renderFold(), 'ok-pkg').folded
+  contains(folded, 'data-uip-dev-tools', 'the row carries the author tools as their own sub-fold')
+  /*
+   * CLOSED BY DEFAULT, asserted where it can actually be seen: not "it is in the fold" (which the line
+   * above already says) but "it is NOT in the default view". Only the second one can fail if the sub-fold
+   * is rendered open, which is the whole point of hiding the author's tools from a reader.
+   */
+  equal(
+    rowSplit(renderFold(), 'ok-pkg').visible.includes('data-uip-dev-tools'),
+    false,
+    'the dev-tools fold is CLOSED by default',
+  )
+  contains(folded, 'data-uip-mark-tested', 'the mark-tested button')
+  contains(folded, 'data-uip-generate-draft', 'the generate-draft button')
+  contains(folded, 'data-uip-commit-changelog', 'and the write-changelog button')
+
+  /* 3-5-7. THE GATES, at the panel and again at the host. */
+  contains(panelSource, 'isComplete', 'the panel consults the checklist before it offers to mark a version tested')
+  contains(channelsSource, 'testedAt', 'the mark records when it was made')
+  contains(channelsSource, 'changelogDraft', 'and the draft has a home in the same per-package record')
+  contains(panelSource, 'testedAt', 'the draft button compares that mark against the version being drafted for')
+
+  /* 6. THE DRAFT AREA: entries a person can edit, not a paragraph to accept. */
+  contains(folded, 'data-uip-changelog-draft', 'the draft area is rendered')
+  equal(/data-uip-changelog-entry/.test(panelSource), true, 'and its entries are individual, editable rows')
+
+  /* 8-9. THE TWO ROUTES, and the refusal that outlives the disabled button. */
+  contains(endpointSource, 'changelog-draft', 'the host offers the draft route')
+  contains(endpointSource, 'changelog-write', 'and the write route')
+  contains(endpointSource, 'writeChangelog', 'which calls the one module allowed to write')
+  contains(endpointSource, 'isComplete', 'and re-checks the checklist itself, so a hand-made request cannot skip the gate')
+
+  /* 10. THE TAG RULE IS A SENTENCE — and 11. nothing here runs a command. */
+  equal((localeSource.match(/\n\s*devToolsTagHint:/g) ?? []).length, 2, 'the git-tag rule is stated in both languages')
+  equal(/child_process|\bexec\(|\bspawn\(/.test(endpointSource), false, 'and no route reaches for a command runner')
+})
+
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
 if (onlyTest !== '') {
   process.stdout.write(`[filter] DSH_TEST_ONLY=${JSON.stringify(onlyTest)} skipped ${skipped} test(s)\n`)

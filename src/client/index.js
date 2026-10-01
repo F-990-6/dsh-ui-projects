@@ -465,6 +465,28 @@ function apply(ctx) {
                 channels.writeChecklist(next, name, itemId, checked)
                 await persist.write(next)
               },
+              /*
+               * THE AUTHOR'S TWO OTHER PIECES OF STATE, through the same door as the checklist: a draft and
+               * the mark that says which version was tested. Cloning the record before touching it is what
+               * keeps `channel`, `checklist`, `changelogDraft` and `testedAt` from overwriting one another
+               * — they are four fields of ONE per-package entry (`src/client/channels.js`).
+               */
+              readDraft: (name) => channels.readDraft(persist.read() ?? { settings: {} }, name),
+              writeDraft: async (name, draft) => {
+                const current = persist.read() ?? { v: 1, initialized: false, enabled: [], settings: {}, touched: false }
+                const next = { ...current, settings: { ...(current.settings ?? {}) } }
+                channels.writeDraft(next, name, draft)
+                await persist.write(next)
+              },
+              readTestedAt: (name) => channels.readTestedAt(persist.read() ?? { settings: {} }, name),
+              writeTestedAt: async (name, version, at) => {
+                const current = persist.read() ?? { v: 1, initialized: false, enabled: [], settings: {}, touched: false }
+                const next = { ...current, settings: { ...(current.settings ?? {}) } }
+                /* The stamp defaults HERE, at the edge that knows what "now" is — the store stays a plain
+                 * function of its arguments (decision 2026-09-30). */
+                channels.writeTestedAt(next, name, version, at ?? new Date().toISOString())
+                await persist.write(next)
+              },
             },
           })
         },

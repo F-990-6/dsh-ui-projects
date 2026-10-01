@@ -16,6 +16,14 @@
  */
 
 import { CHANGELOG_REASONS, readChangelogAt, summarizeChangelog } from './changelog.js'
+/*
+ * THE AUTHOR'S TOOLS RIDE THE SAME FENCE (step 4, decision 2026-09-30). `draftChangelog` is pure and
+ * takes `gitLog` as TEXT a person pasted, so this file never reaches for a command runner — the suite
+ * asserts the absence of `child_process`, `exec` and `spawn` in this very source. `writeChangelog` is the
+ * one module allowed to touch disk, and it carries the checklist gate inside it.
+ */
+import { draftChangelog } from './changelog-draft.js'
+import { writeChangelog } from './changelog-write.js'
 import { CHANNELS, DEFAULT_CHANNEL } from './update-check.js'
 
 /** The route the page asks for. Namespaced, so a future endpoint cannot collide with it. */
@@ -322,12 +330,91 @@ export function registerInstalledEndpoint(ctx, { scan, channels = () => DEFAULT_
     requestBody: 'buffered',
     fetch: createUpdatesHandler({ scan, channels, check }),
   })
+  /*
+   * THE TWO ROUTES THE AUTHOR'S TOOLS USE, registered HERE for the same reason the changelog route is
+   * (see above): "the routes this package mounts" stays one list, because a route added somewhere else is
+   * a route whose authentication nobody reviewed.
+   *
+   * POST, because both carry a body: a pasted log in one case, a confirmed draft in the other.
+   */
+  const readBody = (request) => {
+    const raw = request?.body
+    if (typeof raw === 'string') {
+      try {
+        return JSON.parse(raw)
+      } catch {
+        return {}
+      }
+    }
+    return raw !== null && typeof raw === 'object' ? raw : {}
+  }
+  /*
+   * THE DRAFT ROUTE. A failure answers with the same `insufficient` shape the pure builder uses, so the
+   * panel renders one thing whatever went wrong — and never a 500, which would say "the host is broken"
+   * about a question the host simply could not answer.
+   */
+  const disposeDraft = connection.fetch.register({
+    path: '/api/ui-projects/changelog-draft',
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: async (request) => {
+      try {
+        const body = readBody(request)
+        return jsonResponse(
+          draftChangelog({
+            gitLog: typeof body.gitLog === 'string' ? body.gitLog : null,
+            snapshotDiff: body.snapshotDiff ?? null,
+            currentVersion: String(body.currentVersion ?? ''),
+            previousVersion: typeof body.previousVersion === 'string' ? body.previousVersion : null,
+          }),
+        )
+      } catch (error) {
+        return jsonResponse({
+          status: 'insufficient',
+          entries: [],
+          suggestedBump: null,
+          reason: String(error?.message ?? error),
+        })
+      }
+    },
+  })
+  /*
+   * THE WRITE ROUTE, and the gate it cannot skip: `writeChangelog` refuses an incomplete checklist itself
+   * (`isComplete`, strictly `true`). A disabled button is a courtesy; THIS refusal is the rule, and a
+   * hand-made request meets exactly the same answer.
+   */
+  const disposeWrite = connection.fetch.register({
+    path: '/api/ui-projects/changelog-write',
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: async (request) => {
+      try {
+        const body = readBody(request)
+        return jsonResponse(
+          await writeChangelog({
+            packageDir: String(body.packageDir ?? ''),
+            version: String(body.version ?? ''),
+            date: typeof body.date === 'string' ? body.date : null,
+            entries: Array.isArray(body.entries) ? body.entries : [],
+            checklistRecord: body.checklistRecord ?? null,
+          }),
+        )
+      } catch (error) {
+        return jsonResponse({
+          written: false,
+          error: { message: typeof error?.message === 'string' ? error.message : String(error) },
+        })
+      }
+    },
+  })
   ctx.logger?.info?.(
-    `[dsh-ui-projects] installed-package listing mounted at ${INSTALLED_PATH}, ${CHANGELOG_PATH} and ${UPDATES_PATH}`,
+    `[dsh-ui-projects] installed-package listing mounted at ${INSTALLED_PATH}, ${CHANGELOG_PATH} and ${UPDATES_PATH}; the author tools at /api/ui-projects/changelog-draft and /api/ui-projects/changelog-write`,
   )
   return () => {
     void disposeInstalled?.()
     void disposeChangelog?.()
     void disposeUpdates?.()
+    void disposeDraft?.()
+    void disposeWrite?.()
   }
 }

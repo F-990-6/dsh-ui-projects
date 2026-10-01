@@ -118,6 +118,69 @@ export function writeChecklist(record, name, itemId, checked) {
 }
 
 /**
+ * The saved changelog DRAFT for a package, or `null` when there is none (step 4, decision 2).
+ *
+ * SAME SHAPE AND SAME STRICTNESS as the checklist next to it: anything that is not a draft this build can
+ * read reads as "no draft", so a hand-edited or older record cannot put a half-object in front of the
+ * confirmation UI. The shape is `{ entries, suggestedBump, version, savedAt }` — `version` included,
+ * because a draft written for 0.2.0 must not be confirmed into 0.3.0 by accident.
+ * @param {unknown} record @param {string} name
+ */
+export function readDraft(record, name) {
+  const entry = /** @type {any} */ (record)?.settings?.[name]?.changelogDraft
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return null
+  if (!Array.isArray(entry.entries)) return null
+  return {
+    entries: entry.entries.map((line) => ({ category: String(line?.category ?? 'Changed'), text: String(line?.text ?? '') })),
+    suggestedBump: typeof entry.suggestedBump === 'string' ? entry.suggestedBump : null,
+    version: typeof entry.version === 'string' ? entry.version : null,
+    savedAt: typeof entry.savedAt === 'string' ? entry.savedAt : null,
+  }
+}
+
+/**
+ * Save a draft, MERGING like every other write in this file — `channels`, `checklist` and `changelogDraft`
+ * are three fields of ONE per-package entry, and ticking a box must never erase a draft.
+ * @param {any} record @param {string} name @param {unknown} draft
+ */
+export function writeDraft(record, name, draft) {
+  if (record.settings === undefined || record.settings === null || typeof record.settings !== 'object') record.settings = {}
+  const entry = record.settings[name]
+  const kept = entry !== null && typeof entry === 'object' ? entry : {}
+  record.settings[name] = { ...kept, changelogDraft: draft }
+  return record
+}
+
+/**
+ * WHEN this version was marked tested, and WHICH version that was (decision 3).
+ *
+ * The version is the load-bearing half: a mark that outlived a version bump would be a mark about nothing,
+ * so the panel and the draft route both compare it against the version being worked on.
+ * @param {unknown} record @param {string} name
+ * @returns {{ version: string, at: string } | null}
+ */
+export function readTestedAt(record, name) {
+  const entry = /** @type {any} */ (record)?.settings?.[name]?.testedAt
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return null
+  if (typeof entry.version !== 'string' || entry.version.length === 0) return null
+  return { version: entry.version, at: typeof entry.at === 'string' ? entry.at : null }
+}
+
+/**
+ * Record that a version passed the checklist. The stamp is given rather than taken from the clock, so the
+ * caller (and the suite) decides what "now" means — the same reason `judge` takes the dsh version as an
+ * argument instead of reading a manifest itself.
+ * @param {any} record @param {string} name @param {string} version @param {string} at
+ */
+export function writeTestedAt(record, name, version, at) {
+  if (record.settings === undefined || record.settings === null || typeof record.settings !== 'object') record.settings = {}
+  const entry = record.settings[name]
+  const kept = entry !== null && typeof entry === 'object' ? entry : {}
+  record.settings[name] = { ...kept, testedAt: { version: String(version), at: String(at) } }
+  return record
+}
+
+/**
  * The row data: the scan's dependencies, each carrying its channel and what the registry said.
  *
  * THREE STATES, AND ONLY ONE OF THEM IS AN UPDATE. A check that answered with a newer version, a check

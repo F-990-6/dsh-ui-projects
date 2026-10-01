@@ -841,24 +841,33 @@ const disposeEndpoint = registerInstalledEndpoint(endpointCtx, {
  * same fence, the same scan, asked for on demand and never from the boot path. Selected BY PATH rather
  * than by position, because position is what a fourth route would silently break.
  */
-equal(registeredRoutes.length, 3, 'the endpoint registers exactly three routes: the listing, the changelog and the update check')
+equal(registeredRoutes.length, 5, 'the endpoint registers exactly five routes: the listing, the changelog, the update check, and the two author routes')
 equal(
   registeredRoutes.map((route) => route.path).sort().join(','),
-  [INSTALLED_PATH, CHANGELOG_PATH, UPDATES_PATH].sort().join(','),
-  'at the three namespaced paths, and nothing else',
+  [INSTALLED_PATH, CHANGELOG_PATH, UPDATES_PATH, '/api/ui-projects/changelog-draft', '/api/ui-projects/changelog-write'].sort().join(','),
+  'at the five namespaced paths, and nothing else',
 )
 const listingRoute = registeredRoutes.find((route) => route.path === INSTALLED_PATH)
 const changelogRoute = registeredRoutes.find((route) => route.path === CHANGELOG_PATH)
 const updatesRoute = registeredRoutes.find((route) => route.path === UPDATES_PATH)
+const draftRoute = registeredRoutes.find((route) => route.path === '/api/ui-projects/changelog-draft')
+const writeRoute = registeredRoutes.find((route) => route.path === '/api/ui-projects/changelog-write')
+/*
+ * COMPARED AS STRINGS, like the METHODS assertion below — `equal` here is strict identity, so two
+ * `['POST']` arrays that look alike are never equal to each other (measured 2026-09-30, where these two
+ * lines failed with `got ["POST"], expected ["POST"]`).
+ */
+equal(draftRoute?.methods?.join('|'), 'POST', 'the draft route answers POST')
+equal(writeRoute?.methods?.join('|'), 'POST', 'and so does the write route')
 equal(
   [INSTALLED_PATH, CHANGELOG_PATH, UPDATES_PATH].every((path) => path.startsWith('/api/')),
   true,
-  'all three under /api, which is the only prefix the Host/Origin fence and the browser session cover',
+  'all five under /api, which is the only prefix the Host/Origin fence and the browser session cover',
 )
 equal(
-  [listingRoute, changelogRoute, updatesRoute].map((route) => route?.methods?.join(',')).join('|'),
-  'GET|GET|GET',
-  'and all three answer GET only',
+  [listingRoute, changelogRoute, updatesRoute, draftRoute, writeRoute].map((route) => route?.methods?.join(',')).join('|'),
+  'GET|GET|GET|POST|POST',
+  'three read routes answer GET and the two author routes answer POST — nothing answers both',
 )
 
 /*
@@ -909,16 +918,25 @@ const failing = registerInstalledEndpoint(endpointCtx, {
     throw new Error('no profile')
   },
 })
-const failingRoutes = registeredRoutes.slice(-3)
+/*
+ * THE NEWEST REGISTRATION PER PATH, and that is the whole fix (measured 2026-09-30).
+ *
+ * `registerInstalledEndpoint` is called TWICE in this file — once with a working scan, once with a scan
+ * that throws — and the fake registry APPENDS, so by the time this block runs the array holds both sets.
+ * `filter(...)` therefore returned the healthy route first for every path, and this block was quietly
+ * fetching the working endpoint and asserting about its answers (`failPayload.error` was `undefined`).
+ *
+ * The first attempt at fixing the earlier crash introduced this one, which is why the rule here is now
+ * spelled out: pick by PATH (never by count), and among the matches take the NEWEST.
+ */
+const failingRoute = (path) => registeredRoutes.filter((route) => route.path === path).at(-1)
 const failPayload = await (
-  await failingRoutes.find((route) => route.path === INSTALLED_PATH).fetch(new Request('http://127.0.0.1' + INSTALLED_PATH))
+  await failingRoute(INSTALLED_PATH).fetch(new Request('http://127.0.0.1' + INSTALLED_PATH))
 ).json()
 equal(failPayload.error.message, 'no profile', 'a failed scan becomes a payload, not a thrown transport error')
 equal(failPayload.scan, undefined, 'and carries no scan at all')
 const failChangelog = await (
-  await failingRoutes
-    .find((route) => route.path === CHANGELOG_PATH)
-    .fetch(new Request('http://127.0.0.1' + CHANGELOG_PATH + '?name=dsh-ui-projects'))
+  await failingRoute(CHANGELOG_PATH).fetch(new Request('http://127.0.0.1' + CHANGELOG_PATH + '?name=dsh-ui-projects'))
 ).json()
 equal(failChangelog.reason, 'unreadable', 'and the changelog route answers the same failure with its own reason')
 equal(failChangelog.sections.length, 0, 'carrying no sections, so the row has nothing to render but the sentence')
