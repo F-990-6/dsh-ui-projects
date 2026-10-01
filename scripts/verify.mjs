@@ -3646,6 +3646,13 @@ await test('the column reads the dictionary it is actually given', async () => {
     'contractFindingsTitle', 'contractLimitsTitle', 'contractNotScannedWhy',
     // Phase 3, step 1: the update dot, the channel read-out and the sentence above the update command.
     'updateAvailable', 'channelLabel', 'updateHint',
+    /*
+     * Phase 3, E3: the upgrade check — its heading, the two actions it really offers (update, and turning
+     * the project off), the package-level command it offers as TEXT, and the sentence that postpones the
+     * dsh upgrade (advice, not a control: nothing here can roll back a host).
+     */
+    'upgradeCheckTitle', 'upgradeCheckHint', 'upgradeCheckIncompatible', 'upgradeCheckCurrent', 'disableProjectHint',
+    'removePackageHint', 'upgradeDeferredNote',
     // And the framework's own row, which says why the contract does not apply to it.
     'contractFramework', 'contractFrameworkNote',
     // Step 56a: the row's own facts, and the vocabularies it shares with the projects page rather than
@@ -4567,9 +4574,9 @@ await test('a hook lives in a component, and components are created rather than 
     )
   }
   equal(
-    callSitesOf('CommandRow').filter((site) => site.kind === 'element').length >= 4,
+    callSitesOf('CommandRow').filter((site) => site.kind === 'element').length >= 6,
     true,
-    'and the four command rows really are elements',
+    'and the six command rows really are elements — the four that were there, plus the two the upgrade check adds',
   )
 })
 
@@ -8464,6 +8471,99 @@ await test('an incompatible plugin API version is marked on the row, beside the 
     true,
     'and the two questions keep two attributes: the contract state is still its own',
   )
+})
+
+/* ── E3: the upgrade check — the list, and the two things a reader can do about it ─────────────── */
+
+/*
+ * THE THIRD CASE (`UI第三阶段.txt:37-40`): after a dsh upgrade, list the installed packages whose declared
+ * plugin API this build cannot run, and let a reader act — update it, or turn it off — while "postpone the
+ * dsh upgrade" stays ADVICE, because nothing in this plugin can roll back a host.
+ *
+ * WHAT CROSSES ALREADY: each row carries `uiProject.compat` (`profile-scan.js`, `unsupported` for a
+ * package this build cannot run), its `version`, and — from the update check — an `update` describing the
+ * tag and the latest version. Measured 2026-09-30: the panel renders the dot and a maintenance block, and
+ * no list that says WHY a package cannot be enabled.
+ *
+ * FIXTURE NOTE (test-side, disclosed): this test builds its own scan from `foldScan()`, giving one row a
+ * subset produced by `profileScan.uiProjectSubset` (so `compat` is real, not hand-written) and an `update`
+ * in the shape the channel tests already use (`verify.mjs:7117`:
+ * `{ name, channel, tag, latest, available, error, timedOut }`). No product semantics change with it.
+ *
+ * THE HONEST LIMIT, ASSERTED: turning a PACKAGE off is the loader's job, not this plugin's, so the row
+ * offers the project switch it can really flip and the `dsh plugin … remove` command as TEXT. The command
+ * texts are never executed — the same rule the snapshot and update rows already follow.
+ */
+await test('an incompatible package is listed with the two ways out of it, and the third is only advice', async () => {
+  /* 1. THE HOST SIDE: the incompatible rows can be aggregated from the listing alone. */
+  const endpoint = await import('../src/host/installed-endpoint.js').catch(() => null)
+  const subsetOf = (declaration) => profileScan.uiProjectSubset({ uiProject: declaration })
+  const handler = endpoint.createInstalledHandler({
+    scan: async () => ({
+      profileName: 'web',
+      dependencies: [
+        { name: 'ok-pkg', version: '1.0.0', resolved: true, kind: 'ui-project', uiProject: subsetOf({ pluginApiVersion: 1 }) },
+        { name: 'old-pkg', version: '0.9.0', resolved: true, kind: 'ui-project', uiProject: subsetOf({ pluginApiVersion: 99 }) },
+      ],
+      orphanedBindings: [],
+    }),
+  })
+  const payload = await (await handler({ url: 'https://x/api/ui-projects/installed.json' })).json()
+  const rows = payload?.scan?.dependencies ?? []
+  equal(
+    rows.filter((row) => row.uiProject?.compat === 'unsupported').map((row) => row.name),
+    ['old-pkg'],
+    'the incompatible packages can be aggregated from the rows alone — no second scan, no new endpoint',
+  )
+
+  /* 2-5. THE PANEL: the list lives in the fold, with two real actions and one sentence. */
+  const scan = foldScan()
+  scan.dependencies[0].uiProject = subsetOf({ pluginApiVersion: 99 })
+  const ready = { status: 'ready', scan }
+  const markup = renderFold({
+    state: ready,
+    store: {
+      state: () => ready,
+      refresh: async () => {},
+      changelog: () => ({ status: 'ready', payload: { reason: null, sections: [] } }),
+      loadChangelog: async () => {},
+      /*
+       * THE UPDATE COMES FROM THE UPDATES PAYLOAD, NOT FROM THE SCAN ROW (test-side correction,
+       * disclosed): `mergeUpdates` (`src/client/channels.js:89-91`) spreads every dependency and then
+       * REBUILDS `update` from what the check answered — measured 2026-09-30, where a hand-written
+       * `update` on the scan row was silently replaced, `available` came back false, and the update
+       * command never rendered. Feeding the payload is also the only honest fixture: a real panel never
+       * sees an `update` the check did not produce.
+       */
+      updates: () => ({
+        payload: {
+          results: [{ name: 'ok-pkg', channel: 'beta', tag: 'beta', latest: '2.0.0', available: true, error: null, timedOut: false }],
+        },
+      }),
+    },
+  })
+  const folded = rowSplit(markup, 'ok-pkg').folded
+  const copy = columnCopy()
+  contains(folded, 'data-uip-upgrade-check', 'the fold carries the upgrade check')
+  contains(folded, 'ok-pkg@1.0.0', 'and names the package and the version a reader would update from')
+  /*
+   * THE SENTENCE IS CHECKED AT THE SOURCE, for the reason E1b recorded: `columnCopy()` is this suite's own
+   * table (`verify.mjs:3491`), so asserting on its value would test the fixture. The key list above
+   * (`READ_KEYS`) already holds every name the component may read; this pins that the locale table really
+   * carries them, in both languages.
+   */
+  const upgradeLocale = await readFile(join(packageRoot, 'src', 'client', 'locale.js'), 'utf8')
+  equal(
+    (upgradeLocale.match(/upgradeCheckIncompatible:/g) ?? []).length,
+    2,
+    'and the sentence that says what is wrong exists in both languages, in the locale table',
+  )
+  contains(folded, 'add ok-pkg@beta', 'the update is a COMMAND, printed and never run — the channel visible in the spec')
+  contains(folded, 'data-uip-disable-project', 'turning it off offers the project switch this plugin can really flip')
+  contains(folded, 'dsh plugin', 'and names the package-level command as TEXT, because removing a package is the loader’s job')
+  contains(folded, 'remove', 'a command that really does remove')
+  contains(folded, copy.upgradeDeferredNote, 'while postponing the dsh upgrade is a sentence, not a control')
+  equal(folded.includes('data-uip-upgrade-deferred-action'), false, 'no button pretends to postpone a host upgrade')
 })
 
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)

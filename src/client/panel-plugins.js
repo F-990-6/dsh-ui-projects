@@ -320,6 +320,7 @@ export function UiPluginsSection(props) {
                 }),
               )
             : null,
+          ...UpgradeCheck({ copy, React: React_, dependencies: scan.dependencies, profileName: scan.profileName }),
           ...RowFoldFacts({ copy, React: React_, dependency, hasProject, project, mirrorAvailable: projectsLive !== undefined }),
           ...(dependency.problems ?? []).map((problem, index) =>
             React_.createElement('p', { className: 'uip-error', key: 'problem-' + index }, problem.code + ': ' + problem.message),
@@ -703,6 +704,76 @@ export function copyLabelFor(state, copy) {
  * component is a `setState` on something that no longer exists. So: one effect, one ref, one cleanup.
  * The button is never disabled — a copy button that stops accepting clicks reads as broken.
  */
+/**
+ * THE UPGRADE CHECK (`UI第三阶段.txt:37-40`): the packages this dsh cannot run, and the TWO things a
+ * reader can really do about it.
+ *
+ * A PLAIN FUNCTION, deliberately: the file's hook-bearing functions are named and asserted
+ * (`verify.mjs:4530` lists exactly `UiPluginsSection` and `CommandRow`), so a list that needs no state
+ * must not take any.
+ *
+ * WHAT IS HONEST HERE. Updating is a COMMAND, printed and never run — `dsh plugin` is a pnpm forwarder
+ * and the tag belongs in the package spec, the same rule the update row already follows. Turning a
+ * package OFF is the loader's job, so the row offers the project switch this plugin can really flip
+ * (`data-uip-disable-project`) and the `remove` command as text. Postponing the dsh upgrade is a
+ * sentence, not a button: nothing in this plugin can roll back a host, and a control that pretended to
+ * would be the one lie this block could tell.
+ *
+ * `kind` is a free string on `CommandRow` (it becomes `data-uip-copy`, `panel-plugins.js:725-726`), which
+ * is why the two new commands carry names of their own.
+ * @param {{ copy: any, React: any, dependencies: any[], profileName?: string }} input
+ * @returns {any[] | null}
+ */
+function UpgradeCheck({ copy, React: React_, dependencies, profileName }) {
+  const broken = (dependencies ?? []).filter((dependency) => dependency?.uiProject?.compat === 'unsupported')
+  /*
+   * ALWAYS AN ARRAY, never `null`: the caller spreads the result (`...UpgradeCheck({…})`), and `...null`
+   * throws `TypeError: null is not iterable` — measured 2026-09-30, where it took 25 unrelated tests down
+   * with it. An empty list is the honest empty answer.
+   */
+  if (broken.length === 0) return []
+  return [
+    React_.createElement(
+      'div',
+      { className: 'uip-upgrade-check', key: 'upgrade-check', 'data-uip-upgrade-check': 'rows' },
+      React_.createElement('p', { className: 'uip-hint' }, copy.upgradeCheckTitle),
+      React_.createElement('p', { className: 'uip-hint' }, copy.upgradeCheckHint),
+      React_.createElement(
+        'ul',
+        { className: 'uip-upgrade-list' },
+        broken.map((dependency) =>
+          React_.createElement(
+            'li',
+            { key: dependency.name, 'data-uip-upgrade-row': dependency.name },
+            dependency.name + '@' + (dependency.version ?? '?') + ' — ' + copy.upgradeCheckIncompatible,
+            dependency.update?.available === true
+              ? React_.createElement(CommandRow, {
+                  copy,
+                  React: React_,
+                  kind: 'update-package',
+                  source: 'dsh plugin --profile ' + profileName + ' add ' + dependency.name + '@' + dependency.update.tag,
+                })
+              : React_.createElement('span', { className: 'uip-hint' }, copy.upgradeCheckCurrent),
+            React_.createElement(
+              'span',
+              { className: 'uip-hint', 'data-uip-disable-project': dependency.projectId ?? dependency.name },
+              copy.disableProjectHint,
+            ),
+            React_.createElement('p', { className: 'uip-hint' }, copy.removePackageHint),
+            React_.createElement(CommandRow, {
+              copy,
+              React: React_,
+              kind: 'remove-package',
+              source: 'dsh plugin --profile ' + profileName + ' remove ' + dependency.name,
+            }),
+            React_.createElement('p', { className: 'uip-hint' }, copy.upgradeDeferredNote),
+          ),
+        ),
+      ),
+    ),
+  ]
+}
+
 function CommandRow({ copy, React, kind, source, hook }) {
   const [state, setState] = React.useState('idle')
   const timer = React.useRef(undefined)

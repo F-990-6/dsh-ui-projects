@@ -157,6 +157,20 @@ export const STRINGS = {
        * first one is `unsupported`.
        */
       apiUnsupported: 'plugin API not supported',
+      /*
+       * THE UPGRADE CHECK (E3, `UI第三阶段.txt:37-40`). After a dsh upgrade a reader gets a list of the
+       * packages this build cannot run, and TWO things they can really do about it: update the package, or
+       * turn its project off. Removing a package is the loader's job, so that is offered as a COMMAND —
+       * and postponing the dsh upgrade is a sentence rather than a control, because nothing here can roll
+       * back a host.
+       */
+      upgradeCheckTitle: 'After the upgrade',
+      upgradeCheckHint: 'These packages declare a plugin API this dsh cannot run.',
+      upgradeCheckIncompatible: 'declares a plugin API this dsh cannot run',
+      upgradeCheckCurrent: 'this package is fine',
+      disableProjectHint: 'You can turn the project off in the UI page; the package stays installed.',
+      removePackageHint: 'To remove the package itself, run this command and restart dsh:',
+      upgradeDeferredNote: 'Not ready? Keep using this dsh: nothing here breaks, and the packages above stay off until you upgrade them.',
       contractCoverage: (judged, total) =>
         `${judged} of the contract’s ${total} rules are judged by reading the built bundle; the rest are listed below`,
       contractFindingsTitle: 'What the scan found',
@@ -398,6 +412,18 @@ export const STRINGS = {
        * 行上用两个属性分别承载，这一句是第一个答案为 `unsupported` 时读者看到的话。
        */
       apiUnsupported: '插件 API 不受支持',
+      /*
+       * 升级检查（E3，《UI第三阶段》37–40 行）。dsh 升级之后，读者拿到一份"本构建跑不了"的包清单，
+       * 以及两件**真能做**的事：更新该包，或把它的项目关掉。卸包是加载器的职责，所以只给**命令文本**；
+       * 而"暂缓升级 dsh"是一句话而不是控件 —— 这里没有任何东西能把宿主回滚。
+       */
+      upgradeCheckTitle: '升级之后',
+      upgradeCheckHint: '这些包声明的 plugin API 本 dsh 跑不了。',
+      upgradeCheckIncompatible: '声明的 plugin API 本 dsh 跑不了',
+      upgradeCheckCurrent: '这个包没问题',
+      disableProjectHint: '你可以在界面页把它的项目关掉；包本身仍然装着。',
+      removePackageHint: '要卸载包本身，执行这条命令并重启 dsh：',
+      upgradeDeferredNote: '还没准备好？继续用这版 dsh：这里不会坏，上面的包在你更新它们之前保持关闭。',
       contractCoverage: (judged, total) => `契约的 ${total} 条规则中有 ${judged} 条通过读构建产物判定；其余见下方`,
       contractFindingsTitle: '扫描发现',
       contractLimitsTitle: '这次扫描看不到的东西',
