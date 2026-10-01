@@ -9069,6 +9069,16 @@ await test('the store reports each failed update check through the injected call
    * because one unreachable registry must not mark every package as failed.
    */
   equal(/catch[\s\S]{0,400}onUpdateFailure/.test(storeSource), false, 'and nothing records failures from the whole-check catch')
+
+  /*
+   * AND THE ROW CARRIES THEM (step 5, the last line). The record is the user's, so the scan projection
+   * cannot carry it: without this field the diagnostics render an empty failure list, which reads as
+   * "nothing ever failed" rather than as "this build does not show it". Precise to the FIELD NAME for the
+   * same reason the assertions above are: `readUpdateFailures` is a function name that the unit tests
+   * already exercise, and a bare mention of it would pass without the row ever carrying anything.
+   */
+  const channelsForRow = await readFile(join(packageRoot, 'src', 'client', 'channels.js'), 'utf8')
+  contains(channelsForRow, 'updateFailures: readUpdateFailures(record, dependency.name)', 'the row carries the failures the record holds')
 })
 
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)

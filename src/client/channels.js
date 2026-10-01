@@ -260,6 +260,13 @@ export function mergeUpdates(scan, record, updates) {
         ...dependency,
         channel,
         checklist,
+        /*
+         * STEP 5, and the same shape as `checklist` above: this comes from the USER'S RECORD, not from the
+         * scan — the projection has no reason to know it, and a failed check is a fact about this browser's
+         * history rather than about the installed package. Without this line the diagnostics render an
+         * empty failure list, which reads as "nothing ever failed".
+         */
+        updateFailures: readUpdateFailures(record, dependency.name),
         update: {
           name: dependency.name,
           channel,
