@@ -578,6 +578,18 @@ class FakeTimers {
   }
 
   /**
+   * The periods of the deadlines still armed.
+   *
+   * The same question `runningPeriods` answers for intervals, and for the same reason: a bare COUNT
+   * cannot tell "the marking retry stopped" from "something else armed a deadline". Measured on
+   * 2026-09-30, when the deferred update check (D2) added a legitimate 0ms deadline and made a total of
+   * one into a total of two.
+   */
+  get pendingPeriods() {
+    return [...this.timeouts.values()].map((entry) => entry.ms)
+  }
+
+  /**
    * The periods of the intervals still running.
    *
    * A bare count cannot tell "the marking retry stopped" from "some other loop took its place";
@@ -1071,20 +1083,28 @@ function renderPanel(plugin) {
 
 process.stdout.write(`\ndsh-ui-projects verification\nbundle: ${origin}\n\n`)
 
-await test('the bundle registers one plugin with the two hard dependencies it needs', () => {
+await test('the hard dependencies it needs, which both dsh versions provide', () => {
   equal(plugin.name, 'ui-projects', 'plugin name')
   /*
-   * `settingsScope` is a TIMING dependency rather than a functional one: the plugin degrades to
-   * localStorage without it, so nothing here fails loudly when it is missing. But it binds the
-   * scope synchronously in `apply`, while the provider appears only after the host handshake — so
-   * leaving it out meant the bind always ran first and always lost, and the switch silently
-   * persisted per-browser while the settings document kept a stale copy.
+   * THE HARD DEPENDENCIES ARE ONLY WHAT BOTH dsh VERSIONS PROVIDE (phase 3 follow-up): `slots`, plus
+   * the settings seam the desktop application's dsh (0.2.0-rc.2) leaves behind — `remote` and
+   * `remote.settings`. The older dsh (0.1.5-rc.3) has that remote too, and it is what the scope is
+   * built on: `@deepseek-ai/dsh-client-ui-settings/lib/client.js:1333` declares
+   * `inject = ["remote", "remote.settings"]`, so parking on the remote still guarantees the settings
+   * service is there before `apply` binds.
+   *
+   * `settingsScope` IS DELIBERATELY ABSENT. It stayed a TIMING dependency rather than a functional
+   * one — the plugin degrades from the settings document to localStorage without it, so nothing
+   * fails loudly when it is missing — but 0.2.0-rc.2 does not provide it AT ALL, and a hard
+   * dependency on a service that never arrives parks this plugin for ever: the column would simply
+   * not exist. `persist.js:212` probes for it lazily with `ctx.get`, and prefers it whenever the
+   * composition hands one over.
    *
    * The list is asserted, not described, because a missing declaration is invisible to every
    * behavioural test in this file: `boot()` calls `plugin.apply(ctx)` directly, which bypasses
    * exactly the parking the declaration controls.
    */
-  equal(plugin.inject, ['slots', 'settingsScope'], 'inject list')
+  equal(plugin.inject, ['slots', 'remote', 'remote.settings'], 'inject list')
   equal(typeof plugin.apply, 'function', 'apply')
   equal(typeof plugin.ready, 'function', 'ready() exposes the applied-state settlement')
   equal(plugin.section, undefined, 'nothing is published before the plugin is applied')
@@ -1689,7 +1709,7 @@ await test('the entry module loads without touching React or a project', () => {
   const { entry: probe } = materializeEntry(bundleSource, strict)
   equal(requested, [], 'the entry module requests nothing from the shell at load time')
   equal(typeof probe.apply, 'function', 'it still exports a usable plugin')
-  equal(probe.inject, ['slots', 'settingsScope'], 'and still declares its service dependencies')
+  equal(probe.inject, ['slots', 'remote', 'remote.settings'], 'and still declares its service dependencies')
 })
 
 await test('the project modules register only once the settings slot is declared', async () => {
@@ -2171,7 +2191,17 @@ await test('the column-marking retry stops once it succeeds, and the observer re
     '500',
     'and ONLY the boot-page watch is left — the 250ms poll is gone for the rest of the session',
   )
-  equal(harness.timers.pendingTimeouts, 1, 'the marking deadline went with it; one deadline remains')
+  /*
+   * BY PERIOD, not by total (D2). What this assertion has always been asking is whether the 250ms
+   * marking poll is gone — and a total cannot answer that: the deferred update check legitimately arms a
+   * 0ms deadline of its own, which made a total of one into a total of two. Same instrument the interval
+   * assertions above use, and the same reasoning `runningPeriods` documents.
+   */
+  equal(
+    harness.timers.pendingPeriods.filter((ms) => ms === 250).length,
+    0,
+    'the marking deadline went with it; no 250ms poll remains',
+  )
 
   /*
    * A re-render replaces the frame's children with new elements that carry no attribute. This is
@@ -3614,6 +3644,8 @@ await test('the column reads the dictionary it is actually given', async () => {
     // Step 9b: the UI Contract badge, its four states, and the panel that explains a state.
     'contractOk', 'contractWarn', 'contractNotScanned', 'contractNotApplicable', 'contractCoverage',
     'contractFindingsTitle', 'contractLimitsTitle', 'contractNotScannedWhy',
+    // Phase 3, step 1: the update dot, the channel read-out and the sentence above the update command.
+    'updateAvailable', 'channelLabel', 'updateHint',
     // And the framework's own row, which says why the contract does not apply to it.
     'contractFramework', 'contractFrameworkNote',
     // Step 56a: the row's own facts, and the vocabularies it shares with the projects page rather than
@@ -3692,7 +3724,7 @@ await test('displayAuthor renders every npm author shape, and refuses to invent 
   equal(profileScan.displayAuthor(['Ada']), null, 'and neither is a list')
 })
 
-await test('the uiProject subset carries exactly the seven fields the row reads', () => {
+await test('the uiProject subset carries the fields the row reads and nothing else', () => {
   const subset = profileScan.uiProjectSubset({
     uiProject: {
       schemaVersion: 1, pluginApiVersion: 1, id: 'x', name: 'X', description: 'the project description',
@@ -3701,10 +3733,23 @@ await test('the uiProject subset carries exactly the seven fields the row reads'
       previewLabel: 'X preview', perfLevel: 'medium', priority: 3, modifies: ['center', 'overlay'], requires: ['y'],
     },
   })
+  /*
+   * THE DOCUMENTED SET, not a count. `profile-scan.js:256-257` names what a subset may carry and what it
+   * must DROP (`id`, `name`, `description`, `scope`, `supports`, `testItems`, `controls`, the two version
+   * numbers) — the count was a proxy for that sentence, and it broke twice: once when it was first
+   * written, and once when the API version and its verdict were added by decision (`pluginApiVersion`,
+   * `compat`). Measured 2026-09-30.
+   */
+  const ALLOWED = ['compat', 'modifies', 'perfLevel', 'pluginApiVersion', 'preview', 'previewLabel', 'priority', 'requires', 'type']
   equal(
-    Object.keys(subset).sort(),
-    ['modifies', 'perfLevel', 'preview', 'previewLabel', 'priority', 'requires', 'type'],
-    'exactly seven keys cross: the projection does not leak the manifest it read',
+    Object.keys(subset).sort().filter((key) => !ALLOWED.includes(key)),
+    [],
+    'nothing outside the documented set crosses: the projection does not leak the manifest it read',
+  )
+  equal(
+    ALLOWED.every((key) => key in subset),
+    true,
+    'and nothing the row reads is missing — the other half of the same sentence',
   )
   equal(subset.type, 'enhancement', 'the type travels, because it decides whether priority applies')
   equal(subset.priority, 3, 'priority as a number')
@@ -3755,7 +3800,12 @@ await test('the wire projection carries the row facts, and null is not the same 
         name: 'with-facts', spec: 'link:./x', resolved: true, version: '1.0.0', kind: 'ui-project', bundled: true,
         projectId: 'the-skin', problems: [], contract: null,
         description: 'A translucent skin.', author: 'Ada <ada@example.com>',
-        uiProject: { type: 'skin', preview: 'linear-gradient(#fff, #000)', previewLabel: 'P', perfLevel: 'high', priority: null, modifies: ['center'], requires: null },
+        /*
+         * THROUGH THE SUBSET, like the real pipeline: a hand-written object here would let this wire test
+         * pass while the scan produced something else — measured 2026-09-30, when the API-version fields
+         * were added and a hand-written fixture silently lacked them.
+         */
+        uiProject: profileScan.uiProjectSubset({ uiProject: { type: 'skin', preview: 'linear-gradient(#fff, #000)', previewLabel: 'P', perfLevel: 'high', priority: null, modifies: ['center'], requires: null, pluginApiVersion: 1 } }),
       },
       {
         name: 'without-facts', spec: '^1', resolved: true, version: '1.0.0', kind: 'library', bundled: false,
@@ -3775,10 +3825,20 @@ await test('the wire projection carries the row facts, and null is not the same 
   equal('uiProject' in second, true, 'and the project subset')
   equal(first.description, 'A translucent skin.', 'the description crosses as declared')
   equal(first.author, 'Ada <ada@example.com>', 'the normalised author crosses as a string')
+  /*
+   * THE WIRE CARRIES THE SAME DOCUMENTED SET (`profile-scan.js:256-257`, plus the API version and its
+   * verdict). By set, not by count: a count broke twice — see the subset test above for the dates.
+   */
+  const WIRE_ALLOWED = ['compat', 'modifies', 'perfLevel', 'pluginApiVersion', 'preview', 'previewLabel', 'priority', 'requires', 'type']
   equal(
-    Object.keys(first.uiProject).sort(),
-    ['modifies', 'perfLevel', 'preview', 'previewLabel', 'priority', 'requires', 'type'],
-    'and the subset crosses with exactly seven keys',
+    Object.keys(first.uiProject).sort().filter((key) => !WIRE_ALLOWED.includes(key)),
+    [],
+    'and the subset crosses with nothing outside the documented set',
+  )
+  equal(
+    WIRE_ALLOWED.every((key) => key in first.uiProject),
+    true,
+    'and with every field a row reads present',
   )
   equal(second.description, null, 'a package with no description crosses as null')
   equal(second.author, null, 'with no author')
@@ -7007,6 +7067,1403 @@ await test('the contributing rules are nine, and the ninth is the one about the 
   for (const subject of ['anchor', '## Round', 'numstat']) {
     contains(ninth, subject, `the ninth rule names \`${subject}\``)
   }
+})
+
+/*
+ * THE UPDATE CHANNEL AND THE ASYNC UPDATE CHECK (phase 3, step 1).
+ *
+ * Four claims, each with its own way of being wrong, and none of them is a document's job:
+ *
+ *   1. the CHECK runs on the host, on an INJECTED clock and an INJECTED fetch — a registry that
+ *      answers, a registry that refuses and a registry that never answers are three testable
+ *      branches rather than one hopeful `await fetch`;
+ *   2. a package's CHANNEL lives in the settings record (`settings['<pkg>'].channel`), defaults to
+ *      `stable`, and refuses a value it does not know — the channel decides WHICH dist-tag an update
+ *      is compared against, so a typo in it is a wrong answer and not a cosmetic one;
+ *   3. the COLUMN shows the update as a dot and as a COMMAND — never as an action;
+ *   4. the FIRST FRAME touches none of it: the boot path answers `webserver/index-inject` and writes
+ *      rows, and the check is reachable only when the updates route is asked for.
+ *
+ * THE TWO-WAY HALF MATTERS HERE. Claim 4's `excludes` assertions pass trivially while nothing exists,
+ * which is why claim 1 and claim 4's first assertion are stated first: they fail until the checker and
+ * its route are real, and only then does "the boot path never mentions it" mean anything.
+ */
+await test('the update check asks the registry on the host, on an injected clock, and a failure is recorded once', async () => {
+  const updateCheck = await import('../src/host/update-check.js').catch(() => null)
+  truthy(updateCheck !== null, 'src/host/update-check.js exists — the host half of the update check')
+  truthy(
+    updateCheck.UPDATE_TIMEOUT_MS >= 3000 && updateCheck.UPDATE_TIMEOUT_MS <= 5000,
+    `the timeout sits in the 3-5s band the spec asks for (found ${updateCheck.UPDATE_TIMEOUT_MS})`,
+  )
+  equal(updateCheck.CHANNELS, ['stable', 'beta', 'canary'], 'the three channels are named once, in order')
+  equal(
+    updateCheck.DIST_TAG_OF,
+    { stable: 'latest', beta: 'beta', canary: 'canary' },
+    'and each channel says which npm dist-tag it means',
+  )
+
+  const asked = []
+  const answering = updateCheck.createUpdateChecker({
+    timeoutMs: 20,
+    fetchDistTags: async (name) => {
+      asked.push(name)
+      return { latest: '2.0.0', beta: '2.1.0-beta.1', canary: '2.2.0-canary.1' }
+    },
+  })
+  equal(asked, [], 'constructing the checker asks the registry nothing — the query is the check, not the wiring')
+  const answered = await answering.check([{ name: 'a-pkg', version: '1.0.0', channel: 'beta' }])
+  equal(
+    answered.results,
+    [{ name: 'a-pkg', channel: 'beta', tag: 'beta', latest: '2.1.0-beta.1', available: true, error: null, timedOut: false }],
+    'a package on beta is compared against the beta tag, and says which version that tag holds',
+  )
+  equal(answered.logs, [], 'an answer that arrives is not a log line')
+
+  const offlineLogs = []
+  const offline = updateCheck.createUpdateChecker({
+    timeoutMs: 20,
+    log: (line) => offlineLogs.push(line),
+    fetchDistTags: async () => {
+      throw new Error('registry unreachable')
+    },
+  })
+  const refused = await offline.check([{ name: 'a-pkg', version: '1.0.0', channel: 'stable' }])
+  equal(refused.results[0].available, false, 'a registry that refuses reports no update rather than inventing one')
+  equal(refused.results[0].error, 'registry unreachable', 'and carries the reason, so a record can name it')
+  equal(offlineLogs.length, 1, 'the failure is recorded exactly once')
+
+  const stalledLogs = []
+  const stalled = updateCheck.createUpdateChecker({
+    timeoutMs: 20,
+    log: (line) => stalledLogs.push(line),
+    fetchDistTags: () => new Promise(() => {}),
+  })
+  const timedOut = await stalled.check([{ name: 'a-pkg', version: '1.0.0', channel: 'stable' }])
+  equal(timedOut.results[0].timedOut, true, 'a registry that never answers settles as a timeout, not as a hang')
+  equal(timedOut.results[0].error, 'timeout', 'with `timeout` as the reason')
+  equal(stalledLogs.length, 1, 'and the timeout is recorded once too')
+})
+
+await test('a package channel lives in the settings record, defaults to stable, and refuses what it does not know', () => {
+  const channels = plugin.__internals.channels
+  truthy(
+    channels !== undefined && typeof channels.write === 'function',
+    'the client exposes the channel store (plugin.__internals.channels)',
+  )
+  equal(channels.CHANNELS, ['stable', 'beta', 'canary'], 'with the same three names the host half uses')
+  const record = { v: 1, initialized: true, enabled: [], settings: {}, touched: true }
+  equal(channels.read(record, 'some-pkg'), 'stable', 'a package nobody has chosen for reads as stable')
+  channels.write(record, 'some-pkg', 'beta')
+  equal(record.settings['some-pkg'], { channel: 'beta' }, 'and choosing one writes it at settings[<pkg>].channel')
+  equal(channels.read(record, 'some-pkg'), 'beta', 'which reads back')
+  const refused = (() => {
+    try {
+      channels.write(record, 'some-pkg', 'nightly')
+      return null
+    } catch (error) {
+      return String(error?.message ?? error)
+    }
+  })()
+  truthy(refused !== null && refused.includes('nightly'), `an unknown channel is refused BY NAME (got ${JSON.stringify(refused)})`)
+  equal(channels.read(record, 'some-pkg'), 'beta', 'and the record keeps the value it had')
+})
+
+await test('the plugins column shows an update as a dot and as a command, and never as an action', () => {
+  /*
+   * THE FIXTURE CHANGED WHEN THE MERGE ARRIVED (phase 3, step 1, second red). A row's channel and update
+   * are now COMPOSED — the scan, the settings record and the registry answer — so feeding a pre-merged
+   * `dependency.update` would be a fixture no production path can produce, and the dot would be green for
+   * a reason that does not exist. The property this test checks is unchanged.
+   */
+  const scan = { profileName: 'web', dependencies: [{ ...foldScan().dependencies[0], version: '1.0.0' }], orphanedBindings: [] }
+  const state = { status: 'ready', scan }
+  const record = { v: 1, initialized: true, enabled: [], settings: { 'ok-pkg': { channel: 'beta' } }, touched: true }
+  const channels = {
+    record: () => record,
+    read: (name) => plugin.__internals.channels.read(record, name),
+    write: (name, value) => plugin.__internals.channels.write(record, name, value),
+  }
+  const storeFor = (results) => ({
+    state: () => state,
+    updates: () => ({ status: 'ready', payload: { schemaVersion: 1, checkedAt: 'x', results } }),
+    refresh: async () => {},
+    loadUpdates: async () => {},
+    changelog: () => ({ status: 'idle' }),
+    loadChangelog: async () => {},
+  })
+  const available = [{ name: 'ok-pkg', channel: 'beta', tag: 'beta', latest: '2.0.0', available: true, error: null, timedOut: false }]
+  const markup = renderFold({ state, store: storeFor(available), channels })
+  truthy(markup.includes('data-uip-update="ok-pkg"'), 'the row that has an update carries the dot hook (data-uip-update)')
+  truthy(markup.includes('data-uip-channel="ok-pkg"'), 'and the channel it is on (data-uip-channel)')
+  truthy(markup.includes('data-uip-value="beta"'), 'with the channel readable out of the hook the meta chips already use')
+  truthy(
+    markup.includes('dsh plugin --profile web add ok-pkg@beta'),
+    'the update is offered as a COMMAND, spelled with the package and the tag',
+  )
+  truthy(
+    markup.includes('data-uip-copy-source="dsh plugin --profile web add ok-pkg@beta"'),
+    'through the copy mechanism every other command in this column uses',
+  )
+
+  const stale = [{ name: 'ok-pkg', channel: 'beta', tag: 'beta', latest: null, available: false, error: 'registry unreachable', timedOut: false }]
+  const plain = renderFold({ state, store: storeFor(stale), channels })
+  excludes(plain, 'data-uip-update=', 'and a row whose check failed carries no dot at all')
+})
+
+await test('the data layer composes a channel and an update, and a check that failed is not an update', () => {
+  const mergeUpdates = plugin.__internals.mergeUpdates
+  truthy(
+    typeof mergeUpdates === 'function',
+    'the client composes row data from the scan, the channel record and the update results (plugin.__internals.mergeUpdates)',
+  )
+  const scan = {
+    profileName: 'web',
+    dependencies: [
+      { name: 'a-pkg', version: '1.0.0' },
+      { name: 'b-pkg', version: '2.0.0' },
+      { name: 'c-pkg', version: '3.0.0' },
+    ],
+    orphanedBindings: [],
+  }
+  const record = { v: 1, initialized: true, enabled: [], settings: { 'b-pkg': { channel: 'beta' } }, touched: true }
+  const updates = {
+    results: [
+      { name: 'a-pkg', channel: 'stable', tag: 'latest', latest: '1.1.0', available: true, error: null, timedOut: false },
+      { name: 'b-pkg', channel: 'beta', tag: 'beta', latest: null, available: false, error: 'registry unreachable', timedOut: false },
+    ],
+  }
+  const merged = mergeUpdates(scan, record, updates)
+  equal(
+    merged.dependencies.map((dependency) => [dependency.name, dependency.channel, dependency.update.available]),
+    [
+      ['a-pkg', 'stable', true],
+      ['b-pkg', 'beta', false],
+      ['c-pkg', 'stable', false],
+    ],
+    'three rows: one update, one failed check, one nobody asked the registry about',
+  )
+  equal(
+    merged.dependencies[1].update.error,
+    'registry unreachable',
+    'and a check that failed keeps its reason instead of reading as "up to date"',
+  )
+})
+
+await test('the first frame touches no network, and the update check is deferred until after the first frame', async () => {
+  const hostIndex = stripComments(await readFile(join(packageRoot, 'src', 'host', 'index.js'), 'utf8'))
+  const endpoint = await readFile(join(packageRoot, 'src', 'host', 'installed-endpoint.js'), 'utf8')
+  const clientIndex = stripComments(await readFile(join(packageRoot, 'src', 'client', 'index.js'), 'utf8'))
+  truthy(endpoint.includes('updates'), 'the endpoint registers the on-demand updates route')
+  excludes(hostIndex, 'fetchDistTags', 'the boot file never names the registry query — it hands the checker to the route instead')
+  excludes(hostIndex, 'node:https', 'and carries no network call of its own')
+  excludes(hostIndex, '.check(', 'and never starts the check at boot: only the route handler asks for it')
+  /*
+   * D2 (the spec's `启动后异步查询`, `UI第三阶段.txt:23`). The check is no longer reachable ONLY on
+   * demand: the client ARMS a deferred trigger, and the first frame still asks nothing — the two facts
+   * are asserted apart, because "deferred" is a weaker claim than "never", and the weaker one is now
+   * the true one.
+   */
+  contains(clientIndex, 'deferUpdateCheck', 'and the client arms that deferred check instead of firing it at the first frame')
+})
+
+/*
+ * THE WIRING (phase 3, step 1 — the SECOND red).
+ *
+ * The first red pinned the parts: a checker, a channel store, a merge function, a dot hook. Between them
+ * there was no PATH — nothing asked the host for the update check, nothing called the merge, and the
+ * channel was a read-out rather than a control — which a suite cannot see, because every part was green.
+ * These four assertions are about the path: the store asks, the section merges, the control writes, and
+ * the first frame still asks for nothing.
+ */
+await test('the installed store asks for the update check on demand, and a failed check leaves the listing alone', async () => {
+  const { createInstalledStore } = plugin.__internals
+  const asked = []
+  const store = createInstalledStore({
+    request: async (path) => {
+      asked.push(path)
+      if (path.includes('/updates.json')) {
+        return {
+          schemaVersion: 1,
+          checkedAt: '2026-01-01T00:00:00.000Z',
+          results: [{ name: 'a-pkg', channel: 'stable', tag: 'latest', latest: '2.0.0', available: true, error: null, timedOut: false }],
+        }
+      }
+      return { schemaVersion: 1, scan: { profileName: 'web', dependencies: [{ name: 'a-pkg', version: '1.0.0', resolved: true }], orphanedBindings: [] } }
+    },
+  })
+  equal(asked, [], 'constructing the store asks the host nothing')
+  await store.loadUpdates()
+  equal(asked.length, 1, 'the update check is exactly one request')
+  truthy(
+    asked[0].startsWith('/api/ui-projects/') && asked[0].endsWith('/updates.json'),
+    `and it goes to the namespaced updates path under /api (${asked[0]})`,
+  )
+  equal(store.updates().status, 'ready', 'and lands as a state the column can render')
+  equal(store.updates().payload.results.length, 1, 'carrying the registry answer')
+
+  const failing = createInstalledStore({
+    request: async () => {
+      throw new Error('registry unreachable')
+    },
+  })
+  await failing.loadUpdates()
+  equal(failing.updates().status, 'failed', 'a check that cannot run is a state, not a throw')
+  equal(failing.updates().error, 'registry unreachable', 'with its reason')
+  equal(failing.state().status, 'idle', 'and it did not touch the listing it was never asked for')
+})
+
+const channelsFixture = () => {
+  const record = { v: 1, initialized: true, enabled: [], settings: { 'ok-pkg': { channel: 'beta' } }, touched: true }
+  return {
+    record: () => record,
+    read: (name) => plugin.__internals.channels.read(record, name),
+    write: (name, value) => plugin.__internals.channels.write(record, name, value),
+  }
+}
+const updatesFixture = () => ({
+  status: 'ready',
+  payload: {
+    schemaVersion: 1,
+    checkedAt: '2026-01-01T00:00:00.000Z',
+    results: [
+      { name: 'ok-pkg', channel: 'beta', tag: 'beta', latest: '2.0.0', available: true, error: null, timedOut: false },
+      { name: 'bare-pkg', channel: 'stable', tag: 'latest', latest: null, available: false, error: 'registry unreachable', timedOut: false },
+    ],
+  },
+})
+const phase3Scan = () => ({
+  profileName: 'web',
+  dependencies: [
+    { ...foldScan().dependencies[0], version: '1.0.0' },
+    { ...foldScan().dependencies[1], version: '1.0.0' },
+  ],
+  orphanedBindings: [],
+})
+const phase3Store = () => {
+  const scan = phase3Scan()
+  return { state: () => ({ status: 'ready', scan }), updates: updatesFixture, refresh: async () => {}, loadUpdates: async () => {}, changelog: () => ({ status: 'idle' }), loadChangelog: async () => {} }
+}
+
+await test('the section merges the channel record and the update results itself, and a failed check shows no dot', () => {
+  const channels = channelsFixture()
+  const store = phase3Store()
+  const markup = renderFold({ store, state: store.state(), channels })
+  truthy(
+    markup.includes('data-uip-update="ok-pkg"'),
+    'the row whose channel holds something newer carries the dot — merged from the raw scan, the settings record and the registry answer',
+  )
+  truthy(markup.includes('data-uip-value="beta"'), 'and the channel it is on comes out of the settings record')
+  excludes(markup, 'data-uip-update="bare-pkg"', 'while a row whose check FAILED shows no dot at all')
+})
+
+await test('the channel control offers the three channels, shows the chosen one, and writes a choice back into the record', () => {
+  const channels = channelsFixture()
+  const store = phase3Store()
+  const fake = fakeReact()
+  /*
+   * THE COMPONENT IS CALLED DIRECTLY, not through `renderSection`: with a stand-in React the tree is plain
+   * objects, and handing those to `react-dom/server` makes React render them as children — "Objects are
+   * not valid as a React child" — which says nothing about the control under test.
+   */
+  const tree = UiPluginsSection({
+    store,
+    t: { plugins: columnCopy() },
+    state: store.state(),
+    channels,
+    React: fake.React,
+  })
+  const control = walk(tree).find((node) => node?.props?.['data-uip-channel'] === 'ok-pkg')
+  truthy(control !== undefined, 'the row carries a channel CONTROL rather than a read-out (data-uip-channel)')
+  equal(control.type, 'select', 'and it is a select, so a user can change it')
+  equal(control.props.defaultValue, 'beta', 'showing the channel the settings record holds')
+  equal(
+    (control.children ?? []).map((option) => option?.props?.value),
+    ['stable', 'beta', 'canary'],
+    'offering exactly the three channels the host half knows',
+  )
+  control.props.onChange({ target: { value: 'canary' } })
+  equal(channels.record().settings['ok-pkg'].channel, 'canary', 'and choosing one writes it at settings[<pkg>].channel')
+})
+
+await test('the first frame asks for the listing and never for the update check', async () => {
+  const { createInstalledStore } = plugin.__internals
+  const scan = phase3Scan()
+  const asked = []
+  const real = createInstalledStore({
+    request: async (path) => {
+      asked.push(path)
+      if (path.includes('/updates.json')) return { schemaVersion: 1, checkedAt: 'x', results: [] }
+      return { schemaVersion: 1, scan }
+    },
+  })
+  renderFold({ store: real, state: real.state(), channels: channelsFixture() })
+  equal(asked.filter((path) => path.includes('/updates.json')).length, 0, 'the first frame asks for the listing, never for the registry')
+  await real.refresh()
+  renderFold({ store: real, state: real.state(), channels: channelsFixture() })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  equal(
+    asked.filter((path) => path.includes('/updates.json')).length,
+    1,
+    'and once the listing is there the update check is asked for exactly once',
+  )
+})
+
+/*
+ * THE SETTINGS SEAM (phase 3 follow-up: the desktop-app adaptation).
+ *
+ * 0.2.0-rc.2 removed the client `settingsScope` wrapper and left the seam underneath it: `ctx.remote.settings`
+ * — `describe` to read, one `update(ns, patch, revision)` to write, revision optional — plus
+ * `ctx.remote.$host.isLoopback` for the non-loopback decision. 0.1.5-rc.3 carries BOTH: its `settingsScope`
+ * is itself built on `remote.settings` (`dsh-client-ui-settings\lib\client.js:1333` declares
+ * `inject = ["remote", "remote.settings"]`), so ONE adapter can serve both versions — provided nothing
+ * assumes a shape the composition did not hand it.
+ *
+ * The document shape is not invented here: `dsh-api-settings-controller\lib\index.js:275-287` projects one
+ * descriptor as `{ ns, schema, value, applies, secrets, revision }`, and `describe` answers a LIST that the
+ * controller itself searches by `candidate.ns` (`:544`) — which is why the fixtures below are arrays.
+ *
+ * RED FIRST: every test names the seam it needs in its first line, because the seam does not exist yet.
+ */
+const settingsNamespace = plugin.__internals.persistKeys.settingsNamespace
+
+await test('the client chooses its settings adapter by what the composition provides, and never mixes two', () => {
+  const seam = plugin.__internals.settingsController
+  truthy(seam !== undefined, 'the client exposes its settings adapters (plugin.__internals.settingsController)')
+  const called = []
+  const scope = {
+    bind: () => {
+      called.push('scope.bind')
+      return {
+        getSnapshot: () => ({ mode: 'host', revision: 'r1', value: {} }),
+        subscribe: () => () => {},
+        set: async () => {},
+        dispose: () => {},
+      }
+    },
+  }
+  const remote = {
+    settings: {
+      describe: async () => {
+        called.push('remote.describe')
+        return []
+      },
+      update: async () => {
+        called.push('remote.update')
+        return {}
+      },
+    },
+    $host: { isLoopback: true },
+  }
+  const either = (services) => ({ get: (name) => services[name], remote: services.remote })
+
+  const withScope = seam.createPersist(either({ settingsScope: scope, remote }))
+  truthy(withScope !== undefined, 'a composition offering both seams still yields exactly one adapter')
+  equal(called, ['scope.bind'], 'and the scope is the one used, with the remote left untouched')
+
+  called.length = 0
+  const withRemote = seam.createPersist(either({ remote }))
+  truthy(withRemote !== undefined, 'a composition offering only the remote still yields an adapter')
+  equal(called, [], 'and building it asks the registry for nothing')
+})
+
+await test('with no settings service at all the page still reads and writes its own record', async () => {
+  const seam = plugin.__internals.settingsController
+  truthy(seam !== undefined, 'the client exposes its settings adapters (plugin.__internals.settingsController)')
+  /*
+   * NO SETTINGS SERVICE AT ALL, and that means no `remote` either.
+   *
+   * The first version of this test handed the composition a WORKING remote while asserting that no
+   * remote was consulted — so it could not fail the way its name promised, and it did fail the way
+   * its fixture demanded: with a remote in hand `createPersist` chooses it, correctly
+   * (`persist.js:195-204`). The assertions below are picked to DISCRIMINATE instead: `kind` is the
+   * backend's own name for itself, and the read-back is what "not silently dropped" means for a
+   * record that has no document to land in.
+   */
+  const adapter = seam.createPersist({ get: () => undefined })
+  truthy(adapter !== undefined, 'a composition with neither seam still yields an adapter')
+  equal(adapter.kind, 'local', 'and the backend chosen is the browser-local one')
+  for (const field of ['read', 'write', 'subscribe', 'readiness']) {
+    truthy(field in adapter || typeof adapter[field] === 'function', `and still offers ${field}, the interface every caller uses`)
+  }
+  /*
+   * What this proves, exactly: the IN-MEMORY record moved and reads back. Durability is the
+   * localStorage adapter's own business and is covered by the tests that give the sandbox a storage —
+   * a harness without one is a supported composition, not a failure, so nothing here may depend on a
+   * write reaching a disk.
+   */
+  await adapter.write({ v: 1, initialized: true, enabled: [], settings: {}, touched: true })
+  equal(adapter.read().initialized, true, 'and the write lands in the record this adapter reads back')
+})
+
+await test('the remote settings adapter reads our section with describe and writes it back in one update', async () => {
+  const seam = plugin.__internals.settingsController
+  truthy(seam !== undefined, 'the client exposes its settings adapters (plugin.__internals.settingsController)')
+  truthy(typeof seam.createRemoteSettingsPersist === 'function', 'including the remote adapter factory')
+  const calls = []
+  const section = { v: 1, initialized: true, enabled: ['ok-pkg'], settings: { 'ok-pkg': { channel: 'beta' } }, touched: true }
+  const remote = {
+    settings: {
+      describe: async () => {
+        calls.push(['describe'])
+        return [{ ns: settingsNamespace, value: section, revision: 'r7' }]
+      },
+      update: async (...args) => {
+        calls.push(['update', ...args])
+        return { revision: 'r8' }
+      },
+    },
+    $host: { isLoopback: true },
+  }
+  const adapter = seam.createRemoteSettingsPersist({ get: (name) => ({ remote })[name], remote })
+  equal(calls, [], 'building the adapter asks the host for nothing')
+  /*
+   * `read()` is SYNCHRONOUS by interface — `persist.js`'s own model is "`undefined` means not told yet",
+   * with `ready()` as the way to wait — so the fill is awaited here. AMENDED DURING IMPLEMENTATION and
+   * disclosed: the red as captured read straight after construction, which no adapter with a synchronous
+   * read can satisfy. The property this test exists for (one describe, one update, optional revision) is
+   * unchanged.
+   */
+  await adapter.ready()
+  const record = adapter.read()
+  equal(calls, [['describe']], 'a read is exactly one describe')
+  equal(record.enabled, ['ok-pkg'], 'and it comes out of our own namespace')
+  calls.length = 0
+  await adapter.write({ ...section, enabled: ['ok-pkg', 'other-pkg'] })
+  equal(calls.length, 1, 'a write is exactly ONE remote call, not one per field')
+  equal(calls[0][0], 'update', 'and that call is update')
+  equal(calls[0][1], settingsNamespace, 'against our namespace')
+  equal(calls[0][2], { ...section, enabled: ['ok-pkg', 'other-pkg'] }, 'carrying the whole record as the patch')
+  truthy(calls[0][3] === 'r7' || calls[0][3] === undefined, 'and the revision that was read, or none at all')
+})
+
+await test('a non-loopback page keeps its preferences process-local instead of writing them into the settings document', () => {
+  const seam = plugin.__internals.settingsController
+  truthy(seam !== undefined, 'the client exposes its settings adapters (plugin.__internals.settingsController)')
+  truthy(typeof seam.createRemoteSettingsPersist === 'function', 'including the remote adapter factory')
+  const calls = []
+  const remote = {
+    settings: {
+      describe: async () => {
+        calls.push('describe')
+        return []
+      },
+      update: async () => {
+        calls.push('update')
+        return {}
+      },
+    },
+    $host: { isLoopback: false },
+  }
+  const adapter = seam.createRemoteSettingsPersist({ get: (name) => ({ remote })[name], remote })
+  equal(adapter, undefined, 'a page that is not on the loopback keeps no remote adapter')
+  equal(calls, [], 'so nothing in the settings document is read or written from here')
+})
+
+/* ── the slot contribution, and a read that cannot hang ───────────────────── */
+
+/*
+ * THE SLOT CONTRIBUTION (phase-3 follow-up: the desktop application).
+ *
+ * Four facts from the desktop application, in order of how much they explain:
+ *
+ *   1. the shell's OWN settings sections register with the same call we use —
+ *      `ctx.slots.inject("settings.section", () => ctx.slots.register({ name, id, order, label }, C))`
+ *      (0.1.5's `dsh-client-ui-settings-plugins/lib/client.js:1761-1762`, and 0.2.0's own
+ *      `agent-presets` / `account` / `general` / `models`, all four identical in shape);
+ *   2. `settings.section` is DECLARED by `ui-settings-general`, which rides the FIRST application
+ *      batch (57 entries in the desktop);
+ *   3. OUR two packages ride the SECOND application batch (11 entries) — the last one;
+ *   4. our inject callback never ran: the section never registered, and there was no `slots` error,
+ *      because that error is printed only when the SERVICE is missing.
+ *
+ * That is a strong inference, not a direct reading of the shell's implementation: an inject
+ * subscription in 0.2.0 does not appear to replay a declaration that has already happened. The
+ * remedy does not depend on which of the two it is — register through `inject`, and if the callback
+ * has not arrived by a bounded deadline, register directly ONCE, recording a refusal rather than
+ * throwing.
+ *
+ * WHY THE FALLBACK IS SAFE IN BOTH WORLDS: by the time it fires the slot IS declared (that is the
+ * case it exists for), so a plain registration is accepted. And when `inject` does fire — 0.1.5, or
+ * a future shell that replays — the settle flag makes the second path a no-op, so the section can
+ * never be contributed twice.
+ */
+
+/** A `slots` stub that records what was asked of it, plus a scheduler whose deadline a test can run. */
+const slotStub = ({ fireInject = true, registerThrows = false } = {}) => {
+  const calls = []
+  let deadline
+  return {
+    calls,
+    runDeadline: () => deadline?.(),
+    slots: {
+      inject: (name, callback) => {
+        calls.push(['inject', name])
+        if (fireInject) callback()
+        return () => calls.push(['inject-dispose'])
+      },
+      register: (options) => {
+        calls.push(['register', options.name, options.id])
+        if (registerThrows) throw new Error('the slot is not declared')
+        return () => calls.push(['register-dispose'])
+      },
+    },
+    schedule: (fn) => {
+      deadline = fn
+      return 'timer'
+    },
+    cancel: () => calls.push(['cancel']),
+  }
+}
+
+const registerSection = (stub, record) =>
+  plugin.__internals.slotRegistration.registerIntoSlot({
+    slots: stub.slots,
+    name: 'settings.section',
+    options: { id: 'ui-projects', order: 40 },
+    render: () => null,
+    schedule: stub.schedule,
+    cancel: stub.cancel,
+    record,
+  })
+
+await test('the settings section registers through inject when the shell declares the slot', () => {
+  const seam = plugin.__internals.slotRegistration
+  truthy(seam !== undefined, 'the client exposes the slot-registration helper (plugin.__internals.slotRegistration)')
+  const stub = slotStub({ fireInject: true })
+  const records = []
+  const dispose = registerSection(stub, (entry) => records.push(entry))
+  equal(
+    stub.calls.map((call) => call.slice(0, 2)),
+    [['inject', 'settings.section'], ['register', 'settings.section']],
+    'the declaration is subscribed to first, and the registration follows it',
+  )
+  equal(records, [{ source: 'inject', ok: true }], 'and the outcome is recorded once, from the inject path')
+  dispose()
+  equal(
+    stub.calls.slice(2),
+    [['cancel'], ['register-dispose'], ['inject-dispose']],
+    'and disposal withdraws the registration, the subscription, and the pending deadline',
+  )
+})
+
+await test('and registers directly once when the declaration never arrives', () => {
+  const seam = plugin.__internals.slotRegistration
+  truthy(seam !== undefined, 'the client exposes the slot-registration helper (plugin.__internals.slotRegistration)')
+  const stub = slotStub({ fireInject: false })
+  const records = []
+  registerSection(stub, (entry) => records.push(entry))
+  equal(
+    stub.calls.map((call) => call.slice(0, 2)),
+    [['inject', 'settings.section']],
+    'nothing is registered while the subscription is still pending — the shell may yet answer',
+  )
+  stub.runDeadline()
+  equal(
+    stub.calls.map((call) => call.slice(0, 2)),
+    [['inject', 'settings.section'], ['register', 'settings.section']],
+    'and the deadline registers directly, once the declaration has been missed',
+  )
+  equal(records, [{ source: 'fallback', ok: true }], 'recorded as the fallback path, so a diagnosis can tell the two apart')
+})
+
+await test('the fallback never produces a second registration', () => {
+  const stub = slotStub({ fireInject: true })
+  registerSection(stub, () => {})
+  stub.runDeadline()
+  equal(
+    stub.calls.filter((call) => call[0] === 'register').length,
+    1,
+    'a deadline after the declaration — or a declaration after the deadline — still contributes one section',
+  )
+})
+
+await test('a refused registration is recorded, never swallowed, and never retried', () => {
+  const seam = plugin.__internals.slotRegistration
+  truthy(seam !== undefined, 'the client exposes the slot-registration helper (plugin.__internals.slotRegistration)')
+  const stub = slotStub({ fireInject: false, registerThrows: true })
+  const records = []
+  const escaped = (() => {
+    try {
+      registerSection(stub, (entry) => records.push(entry))
+      stub.runDeadline()
+      return false
+    } catch {
+      return true
+    }
+  })()
+  equal(escaped, false, 'a refused registration does not escape into the caller')
+  equal(records.length, 1, 'the refusal is recorded exactly once')
+  equal(records[0]?.ok, false, 'as a failure')
+  contains(String(records[0]?.message ?? ''), 'the slot is not declared', 'carrying the shell error verbatim, so it is diagnosable')
+  equal(
+    stub.calls.filter((call) => call[0] === 'register').length,
+    1,
+    'and it is not retried: a second attempt cannot succeed where the first was refused',
+  )
+})
+
+await test('an adapter that never answers cannot stall the runtime for ever', async () => {
+  const seam = plugin.__internals.settingsController
+  truthy(seam !== undefined, 'the client exposes its settings adapters (plugin.__internals.settingsController)')
+  truthy(typeof seam.createRemoteSettingsPersist === 'function', 'including the remote adapter factory')
+  const remote = {
+    settings: {
+      // The desktop's `describe` can hang: the same custom-protocol transport that left the probe's
+      // plain `fetch` pending, run against this very application.
+      describe: () => new Promise(() => {}),
+      update: async () => ({}),
+    },
+    $host: { isLoopback: true },
+  }
+  const adapter = seam.createRemoteSettingsPersist(
+    { get: (name) => ({ remote })[name], remote },
+    { describeTimeoutMs: 5, namespace: plugin.__internals.persistKeys.settingsNamespace },
+  )
+  const outcome = await Promise.race([
+    adapter.ready().then(() => 'settled'),
+    new Promise((resolve) => setTimeout(() => resolve('stalled'), 250)),
+  ])
+  equal(outcome, 'settled', 'a describe that never answers still lets ready() settle')
+  equal(adapter.readiness, 'error', 'and the outcome is an error state rather than a silent success')
+  equal(adapter.read(), undefined, 'and no empty record is invented from a read that never happened')
+})
+
+/* ── the record's two homes (phase-3 follow-up: the desktop application) ───── */
+
+/*
+ * THE DECISION THIS BLOCK PINS (branch A, measured on the desktop application).
+ *
+ * `ctx.remote.settings.update(...)` accepts a write and reports nothing — and the host half, reading
+ * through `ctx.get('settings')`, still finds no section for us: two settings surfaces in one
+ * application that do not share a document. The shell report covers that divergence itself. These
+ * tests cover OUR half of the consequence: the choice the client has to make when the document is
+ * silent, so that a preference the user expressed survives a restart instead of being forgotten.
+ *
+ * TWO RULES, and the second is the one that can hurt somebody:
+ *
+ *   1. ABSENT IS NOT EMPTY. `coerce(undefined)` yields the empty RECORD — "the user has never chosen
+ *      anything" — which is exactly what the remote adapter returns today for a document that carries
+ *      no section for us (`src/client/persist.js:157-158`; `runtime.js:250-253` explains why the
+ *      difference matters). The two must be told apart before any fallback is allowed: the adapter has
+ *      to hand the policy `documentRecord: undefined` for a document that does not mention us.
+ *   2. A DOCUMENT THAT CARRIES THE RECORD OUTRANKS THE COPY, ALWAYS — including when it carries
+ *      `enabled: []`. That is a user who turned the skin OFF, and a stale browser copy must not turn
+ *      it back on. The copy answers silence, never disagreement.
+ *
+ * The three helpers below do not exist yet. They are the seam the fix adds to `src/client/persist.js`
+ * (exported through `plugin.__internals.persistKeys`, beside the key names it already exposes), and
+ * these assertions are what "the fix is done" will mean.
+ */
+
+/** The record shape `coerce` produces, for fixtures that only care about what is enabled. */
+const recordFixture = (enabled) => ({ v: 1, initialized: true, enabled, settings: {}, touched: true })
+
+const recordSeam = () => plugin.__internals.persistKeys
+
+await test("a document that does not carry the record yields the browser's own copy", () => {
+  const seam = recordSeam()
+  truthy(
+    typeof seam?.chooseRecord === 'function',
+    'persist.js exposes the choice between the document and the copy (plugin.__internals.persistKeys.chooseRecord)',
+  )
+  const local = recordFixture(['liquid-glass'])
+  const fromCopy = seam.chooseRecord({ documentRecord: undefined, localRecord: local })
+  equal(fromCopy?.source, 'local', 'a document silent about us lets the browser copy answer')
+  equal(fromCopy?.record?.enabled, ['liquid-glass'], 'with the copy’s own content')
+  const fromNowhere = seam.chooseRecord({ documentRecord: undefined, localRecord: undefined })
+  equal(fromNowhere?.source, 'empty', 'and with no copy either, the answer is the empty record — never a guess')
+  equal(fromNowhere?.record?.enabled, [], 'so nothing is enabled that the user never enabled')
+})
+
+await test("a document that carries the record outranks the browser's own copy", () => {
+  const seam = recordSeam()
+  truthy(
+    typeof seam?.chooseRecord === 'function',
+    'persist.js exposes the choice between the document and the copy (plugin.__internals.persistKeys.chooseRecord)',
+  )
+  const chosen = seam.chooseRecord({ documentRecord: recordFixture([]), localRecord: recordFixture(['liquid-glass']) })
+  equal(chosen?.source, 'document', 'a document that carries the section is the source of truth')
+  equal(
+    chosen?.record?.enabled,
+    [],
+    'and an EMPTY enabled list in it is a choice — the user turned the skin off — not silence to be filled in',
+  )
+  equal(
+    seam.chooseRecord({ documentRecord: recordFixture(['liquid-glass']), localRecord: recordFixture([]) })?.record?.enabled,
+    ['liquid-glass'],
+    'the same in the other direction: the copy cannot switch a skin off either',
+  )
+})
+
+await test("every accepted document write also updates the browser's copy", () => {
+  const seam = recordSeam()
+  truthy(
+    typeof seam?.mirrorToLocal === 'function',
+    'persist.js exposes the copy writer (plugin.__internals.persistKeys.mirrorToLocal)',
+  )
+  const store = new Map()
+  const storage = {
+    setItem: (key, value) => store.set(key, value),
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+  }
+  const written = seam.mirrorToLocal({ storage, key: 'dsh.ui-projects.v1', record: recordFixture(['liquid-glass']) })
+  equal(written?.stored, true, 'the copy is written')
+  equal(
+    JSON.parse(store.get('dsh.ui-projects.v1'))?.enabled,
+    ['liquid-glass'],
+    'and it is the record itself that was written, readable straight back out of the store',
+  )
+  const refusing = {
+    setItem: () => {
+      throw new Error('QuotaExceededError: the store is full')
+    },
+  }
+  const failed = seam.mirrorToLocal({ storage: refusing, key: 'dsh.ui-projects.v1', record: recordFixture(['liquid-glass']) })
+  equal(failed?.stored, false, 'a store that refuses the copy says so')
+  contains(String(failed?.error ?? ''), 'QuotaExceededError', 'in the browser’s own words, so it is diagnosable')
+  truthy(
+    (() => {
+      try {
+        seam.mirrorToLocal({ storage: refusing, key: 'dsh.ui-projects.v1', record: recordFixture(['liquid-glass']) })
+        return true
+      } catch {
+        return false
+      }
+    })(),
+    'and never by throwing: a full store must not take the page down — the DOCUMENT write is the one whose failure has to be reported, and it already is',
+  )
+})
+
+await test('a copy adopted from the browser is offered back to the document once', () => {
+  const seam = recordSeam()
+  truthy(
+    typeof seam?.shouldOfferBack === 'function',
+    'persist.js exposes the one-shot write-back decision (plugin.__internals.persistKeys.shouldOfferBack)',
+  )
+  const local = recordFixture(['liquid-glass'])
+  equal(
+    seam.shouldOfferBack({ documentRecord: undefined, localRecord: local, alreadyOffered: false }),
+    true,
+    'a copy the document is missing is offered to it',
+  )
+  equal(
+    seam.shouldOfferBack({ documentRecord: undefined, localRecord: local, alreadyOffered: true }),
+    false,
+    'exactly once: no write loop against a document that keeps not taking it',
+  )
+  equal(
+    seam.shouldOfferBack({ documentRecord: recordFixture([]), localRecord: local, alreadyOffered: false }),
+    false,
+    'and never when the document already carries the section — that is a user choice, not silence',
+  )
+})
+
+/* ── when the runtime writes the markers (phase-3 follow-up: the desktop application) ───────── */
+
+/*
+ * WHY A CLOCK IS RECORDED AT ALL.
+ *
+ * There are TWO writers of the body marker, and only one of them can be there at first paint:
+ *
+ *   · the HOST writes it while serving the document — `src/host/service.js` stamps
+ *     `data-ui-project-<id>` and `data-ui-skin` at emit time, so with a document that carries the
+ *     record it is present in the first frame;
+ *   · the RUNTIME writes it when it applies a project — `runtime.js`'s `#markProject` / `#markRoot`,
+ *     which sit on an ASYNC chain: `start()` awaits `persist.ready()` (`runtime.js:262`) before
+ *     `#markRoot()` (`:265`) and `#applyWanted()` (`:267` → `#enable`, `:581`). In the desktop
+ *     application that chain contains a `describe()` round-trip.
+ *
+ * A probe taken fourteen seconds after load cannot tell which writer won: both have run by then.
+ * Measured on 2026-09-30, exactly that: two readings at `performance.now()` 14262 ms and 39878 ms,
+ * both `"on"` — evidence about the end state, and nothing about the first frame.
+ *
+ * The honest instrument is for the runtime to record WHEN it wrote, so that number can be compared
+ * with the frame. `markTimingRecorder` is that instrument, and these assertions pin its two
+ * properties: the FIRST write wins (a later apply must not overwrite the number that matters), and it
+ * survives a composition with no clock at all — the same trap the slot fallback hit with `setTimeout`,
+ * since a bundled module may reach the ambient clocks but may not require them.
+ */
+
+await test('the runtime records when it writes the body marker, once per project', () => {
+  const seam = plugin.__internals
+  truthy(
+    typeof seam?.markTimingRecorder === 'function',
+    'runtime.js exposes the marker-timing recorder (plugin.__internals.markTimingRecorder)',
+  )
+  let clock = 100
+  const recorder = seam.markTimingRecorder({ now: () => clock })
+  equal(recorder.timing.projectAt, {}, 'nothing is recorded before a project is applied')
+  recorder.project('liquid-glass')
+  equal(recorder.timing.projectAt['liquid-glass'], 100, "the first write of a project's marker is timestamped")
+  clock = 250
+  recorder.project('liquid-glass')
+  equal(
+    recorder.timing.projectAt['liquid-glass'],
+    100,
+    'and a later write does not overwrite it — the first frame is the whole question',
+  )
+  recorder.project('dsh-cost-meter')
+  equal(recorder.timing.projectAt['dsh-cost-meter'], 250, 'each project carries its own first-write time')
+})
+
+await test('the runtime records when it writes the root marker, once per apply', () => {
+  const seam = plugin.__internals
+  truthy(
+    typeof seam?.markTimingRecorder === 'function',
+    'runtime.js exposes the marker-timing recorder (plugin.__internals.markTimingRecorder)',
+  )
+  let clock = 10
+  const recorder = seam.markTimingRecorder({ now: () => clock })
+  equal(recorder.timing.rootAt, null, 'nothing is recorded before the root is marked')
+  recorder.root()
+  equal(recorder.timing.rootAt, 10, 'the first root write is timestamped')
+  clock = 900
+  recorder.root()
+  equal(recorder.timing.rootAt, 10, 'and it is not overwritten when a later apply re-writes the same attribute')
+  const clockless = seam.markTimingRecorder({ now: null })
+  truthy(
+    (() => {
+      try {
+        clockless.root()
+        clockless.project('liquid-glass')
+        return true
+      } catch {
+        return false
+      }
+    })(),
+    'a composition with no clock records nothing and throws nothing',
+  )
+  equal(clockless.timing.rootAt, null, 'leaving the root field untouched rather than inventing a number')
+  equal(clockless.timing.projectAt, {}, 'and the same for every project')
+})
+
+/* ── the marker clock says its piece once (and only when it has one) ──────────────────────────── */
+
+/*
+ * WHY THIS IS AN ASSERTION AND NOT JUST A LOG LINE.
+ *
+ * `settle()` prints once per page load so that a person can read WHEN the runtime wrote its markers
+ * (see `docs/known-limitations.md`). Three properties make that line worth reading, and the third is
+ * the one this block was written for:
+ *
+ *   1. ONCE. `settle()` is called from `#applyWanted()`, which also runs from `#reconcile()`, so
+ *      without a flag every later reconcile would print again and the first line — the one that
+ *      answers the question — would be buried under later ones.
+ *   2. A COPY. The announced `projectAt` must not be a live reference: the recorder keeps writing into
+ *      it as projects are applied, and a Console line that changes under its reader is worse than none.
+ *   3. NOTHING TO SAY, NOTHING SAID. A composition with no clock records nothing, so a line reading
+ *      `{ rootAt: null, projectAt: {} }` is pure noise. Measured on 2026-09-30: exactly two of them in
+ *      every `verify` run, because the sandbox deliberately offers no `performance` — which is also
+ *      what proves the "no clock" path is real rather than theoretical.
+ */
+
+await test('the marker clock announces once, and only when it has something to say', () => {
+  const seam = plugin.__internals
+  truthy(
+    typeof seam?.markTimingRecorder === 'function',
+    'runtime.js exposes the marker-timing recorder (plugin.__internals.markTimingRecorder)',
+  )
+  const said = []
+  let clock = 5
+  const recorder = seam.markTimingRecorder({ now: () => clock, announce: (timing) => said.push(timing) })
+  recorder.root()
+  clock = 60
+  recorder.project('liquid-glass')
+  recorder.settle()
+  equal(said.length, 1, 'the pass says its piece exactly once')
+  equal(said[0]?.rootAt, 5, 'with the first root write')
+  equal(said[0]?.projectAt?.['liquid-glass'], 60, 'and the first write of each project')
+  recorder.settle()
+  clock = 900
+  recorder.project('dsh-cost-meter')
+  recorder.settle()
+  equal(said.length, 1, 'and never again — a later reconcile must not bury the first line')
+  equal(
+    said[0]?.projectAt?.['dsh-cost-meter'],
+    undefined,
+    'the announced snapshot is a COPY: what the recorder writes afterwards is not in it',
+  )
+  const quiet = []
+  const clockless = seam.markTimingRecorder({ now: null, announce: (timing) => quiet.push(timing) })
+  clockless.root()
+  clockless.project('liquid-glass')
+  clockless.settle()
+  equal(quiet.length, 0, 'a composition with no clock announces nothing at all — that line could only say "null"')
+})
+
+/* ── B1: the channel the panel shows must reach the host ──────────────────────────────────────── */
+
+/*
+ * THE DEFECT THIS BLOCK PINS (measured on the desktop application, 2026-09-30).
+ *
+ * The channel selector writes `settings['<pkg>'].channel` into the record, and the HOST decides which
+ * npm dist-tag to compare against by reading the settings DOCUMENT (`src/host/index.js:182-190`). In
+ * the desktop application that document never receives the write (branch A), so the host compares every
+ * package against `stable` no matter what the user chose — and the user sees exactly that: a dot on
+ * `dsh-cost-meter` (newer on `latest`) and nothing on a package they had switched to `beta`.
+ *
+ * The fix is not to move the store: the choice IS durable (the browser copy), and the host cannot read
+ * browser storage in any case — it is a Node process. The host needs the channels to TRAVEL WITH THE
+ * REQUEST, and the precedence is:
+ *
+ *     the request  →  the settings document  →  the default (`stable`)
+ *
+ * Backwards compatible by construction: no parameter, or one this build does not understand, behaves
+ * exactly as today. The wire format follows the house precedent for a query parameter on this very
+ * route family — `?name=` in `src/host/installed-endpoint.js:147/160` — with one parameter carrying
+ * comma-separated `package:channel` pairs, the whole value URI-encoded by the client
+ * (`src/client/installed.js:137` does exactly that for `?name=`).
+ *
+ * These two tests pin the format from both ends: the client produces `pkg:beta`, the host parses it.
+ */
+
+await test('the update check carries the channels the panel is showing', async () => {
+  const seam = plugin.__internals
+  truthy(
+    typeof seam?.createInstalledStore === 'function',
+    'the client exposes the installed-store factory (plugin.__internals.createInstalledStore)',
+  )
+  const asked = []
+  const store = seam.createInstalledStore({
+    request: async (path) => {
+      asked.push(path)
+      return { schemaVersion: 1, checkedAt: null, results: [] }
+    },
+    channelMap: () => ({ '@xjl-resources/dsh-plugin-liquid-glass': 'beta' }),
+  })
+  await store.loadUpdates()
+  equal(asked.length, 1, 'the column asks the host once')
+  truthy(
+    String(asked[0]).startsWith('/api/ui-projects/updates.json'),
+    'and the request stays on the route the Host/Origin fence protects',
+  )
+  equal(
+    new URL(String(asked[0]), 'http://localhost').searchParams.get('channels'),
+    '@xjl-resources/dsh-plugin-liquid-glass:beta',
+    'the channels the panel is showing travel with the request',
+  )
+  const quiet = []
+  const bare = seam.createInstalledStore({
+    request: async (path) => {
+      quiet.push(path)
+      return { schemaVersion: 1, checkedAt: null, results: [] }
+    },
+    channelMap: () => ({}),
+  })
+  await bare.loadUpdates()
+  equal(
+    new URL(String(quiet[0]), 'http://localhost').searchParams.has('channels'),
+    false,
+    'a record with no channels sends none — nothing is invented for the host to compare against',
+  )
+})
+
+await test('a channel sent with the request outranks the document, and the document still answers alone', async () => {
+  const endpoint = await import('../src/host/installed-endpoint.js').catch(() => null)
+  truthy(endpoint !== null, 'src/host/installed-endpoint.js exists — the host half of the updates route')
+  const seen = []
+  const handler = endpoint.createUpdatesHandler({
+    scan: async () => ({
+      dependencies: [
+        { name: 'pkg-a', version: '1.0.0', resolved: true },
+        { name: 'pkg-b', version: '2.0.0', resolved: true },
+      ],
+    }),
+    channels: () => 'stable',
+    check: async (packages) => {
+      seen.push(packages)
+      return { checkedAt: 1, results: [] }
+    },
+  })
+  const ask = (url) => handler({ url })
+  await ask('https://x/api/ui-projects/updates.json?channels=' + encodeURIComponent('pkg-a:beta'))
+  equal(
+    seen[0].map((entry) => [entry.name, entry.channel]),
+    [['pkg-a', 'beta'], ['pkg-b', 'stable']],
+    'the request decides for the package it mentions, and the document answers for the rest',
+  )
+  await ask('https://x/api/ui-projects/updates.json')
+  equal(
+    seen[1].map((entry) => entry.channel),
+    ['stable', 'stable'],
+    'with nothing sent, the document answers alone — the behaviour of every existing caller',
+  )
+  await ask('https://x/api/ui-projects/updates.json?channels=' + encodeURIComponent('pkg-a:nightly'))
+  equal(
+    seen[2].map((entry) => entry.channel),
+    ['stable', 'stable'],
+    'a channel this build does not know is ignored rather than adopted, and nothing is thrown',
+  )
+})
+
+/* ── D2: the check also runs once, after the first frame ──────────────────────────────────────── */
+
+/*
+ * THE SPEC'S WORDING, AND THE ONE THING IT MUST NOT COST.
+ *
+ * `UI第三阶段.txt:23` asks for a check "after dsh starts", and `:101` repeats it in the acceptance list;
+ * `:24` asks that it not block the first screen. The reconciliation is a DEFERRED trigger: armed at
+ * apply, fired after the first frame, once. The listing keeps its own on-demand semantics
+ * (`src/client/index.js`'s section render closure), and the two are separate calls in separate files —
+ * measured: the listing asks when the SECTION renders, the check asks when the COLUMN body renders
+ * (`src/client/panel-plugins.js:120-122`), so a deferred check does not touch the listing at all.
+ *
+ * TWO DETAILS THIS BLOCK PINS, both raised before the red was written:
+ *
+ *   1. THE DEADLINE IS A NAMED VALUE. `requestIdleCallback` with no `timeout` can be starved by a busy
+ *      page — which is exactly when a user is waiting for it — so the trigger passes one, and the value
+ *      is a constant the suite can hold. It is injectable for the same reason the other schedulers in
+ *      this codebase are.
+ *   2. ONCE MEANS ONCE, AND THE STORE OWNS THAT. `loadUpdates()` shares an IN-FLIGHT request, but it has
+ *      no guard for an answer that already ARRIVED: the `idle` check lives in the column's caller, so a
+ *      second caller — this new one — would ask the host again. The guard therefore moves into the store,
+ *      where both callers share it. Measured before writing this: `src/client/installed.js:173` shares
+ *      in-flight, and `src/client/installed.js:87` resets the state on `refresh()` — so a guard on the
+ *      current status keeps a refresh-driven re-check working while making a duplicate ask impossible.
+ */
+
+await test('the update check runs once after the first frame, and only once', async () => {
+  const clientModule = await import('../src/client/installed.js').catch(() => null)
+  truthy(clientModule !== null, 'src/client/installed.js exists — the store that owns the deferred check')
+  equal(clientModule.IDLE_TIMEOUT_MS, 2000, 'the idle deadline is a named value, not an accident')
+  const { createInstalledStore } = plugin.__internals
+  const asked = []
+  const idleArmed = []
+  const timerArmed = []
+  const updateRequests = () => asked.filter((path) => path.includes('/updates.json')).length
+  const store = createInstalledStore({
+    request: async (path) => {
+      asked.push(path)
+      return { schemaVersion: 1, checkedAt: 'x', results: [] }
+    },
+  })
+  truthy(typeof store.deferUpdateCheck === 'function', 'the store exposes the deferred trigger (store.deferUpdateCheck)')
+  /*
+   * THE TIMER IS THE GUARANTEE (A′, measured on the desktop, 2026-09-30).
+   *
+   * `requestIdleCallback` EXISTS in the desktop renderer — `typeof requestIdleCallback` answered
+   * `"function"` — but the window sat in the background while DevTools held the foreground, and Chromium
+   * starves idle callbacks there: the deadline did not rescue it, the check never ran, the column's own
+   * ask still found `idle`, and the request only appeared when the column was opened. An idle callback is
+   * an OPPORTUNITY; the guarantee has to be a timer, and `setTimeout(fn, 0)` costs no frame because what
+   * it runs is a request.
+   */
+  store.deferUpdateCheck({
+    schedule: (fn, ms) => {
+      timerArmed.push({ fn, ms })
+      return 'timer-handle'
+    },
+    cancelSchedule: () => {},
+    whenIdle: (fn, options) => {
+      idleArmed.push({ fn, options })
+      return 'idle-handle'
+    },
+    cancelIdle: () => {},
+  })
+  equal(timerArmed.length, 1, 'the deadline is armed on a TIMER, unconditionally — a guarantee, not an opportunity')
+  equal(timerArmed[0]?.ms, 0, 'for the next macrotask: what it runs is a request, so no frame is blocked')
+  equal(idleArmed.length, 1, 'and an idle callback is armed too, purely as an earlier opportunity')
+  equal(idleArmed[0]?.options?.timeout, 2000, 'still carrying the pinned deadline, so a busy page is covered as well')
+  /*
+   * THE DIAGNOSTIC FIELDS (C). Measured on the desktop, 2026-09-30: the check never ran, and a Console
+   * that was not open at that moment could not say why. These fields are what the answer may have to
+   * travel in next — a channel the column can always show — so they are held here rather than trusted.
+   */
+  truthy(typeof store.deferralState === 'function', 'the deferred trigger exposes what it saw (store.deferralState)')
+  equal(store.deferralState()?.schedule, 'function', 'and records whether a TIMER was available to arm — the desktop question')
+  equal(store.deferralState()?.whenIdle, 'function', 'and whether an idle callback was')
+  equal(store.deferralState()?.fired, false, 'and that nothing has fired yet')
+  equal(updateRequests(), 0, 'and the first frame is over before anything is asked')
+  await timerArmed[0].fn()
+  equal(updateRequests(), 1, 'the timer alone runs the check exactly once')
+  equal(store.deferralState()?.fired, true, 'and firing is recorded, so a Console that was closed is not the only witness')
+  await idleArmed[0].fn()
+  equal(updateRequests(), 1, 'and the idle callback firing later changes nothing: an answer has already arrived')
+  const bareAsked = []
+  const bare = createInstalledStore({
+    request: async (path) => {
+      bareAsked.push(path)
+      return { schemaVersion: 1, checkedAt: 'x', results: [] }
+    },
+  })
+  truthy(
+    (() => {
+      try {
+        bare.deferUpdateCheck({ whenIdle: null, schedule: null })
+        return true
+      } catch {
+        return false
+      }
+    })(),
+    'a composition with no idle scheduler and no fallback arms nothing and throws nothing',
+  )
+  equal(bareAsked.length, 0, 'and asks nothing at all')
+})
+
+/* ── E4: the refusal says which way out of it exists ──────────────────────────────────────────── */
+
+/*
+ * THE SPEC'S SECOND CASE, WORDED (`UI第三阶段.txt:33-35`): the install-time check must refuse an
+ * unsupported `pluginApiVersion` and tell the reader to upgrade dsh first — and `UI第三阶段.txt:101`
+ * repeats it in the acceptance list.
+ *
+ * The VALIDATION was already there (`manifest-schema.js` returns a problem for an unsupported API, and
+ * `conformance.js` reports `unsupported-plugin-api`). What a reader sees FIRST is the `message`, and it
+ * used to answer only half the question ("is not supported") while the `action` field held the way out.
+ * Measured on 2026-09-30: the desktop shell has no `pluginApiVersion` concept of its own — an asar scan
+ * found ZERO occurrences of `pluginApiVersion`, `dshPluginApiVersion`, `SUPPORTED_PLUGIN_API` and
+ * `unsupported-plugin-api` — so this sentence is the whole guidance a user gets.
+ *
+ * Host messages are English throughout this file, which is why the guidance is English here; the PANEL's
+ * Chinese wording belongs in `locale.js`, with the badge that renders it (E1 — added there rather than
+ * here so no unused key lands first).
+ *
+ * PINNED AT THE SOURCE, not through the validator's API: the check lives inside a field-validation
+ * function this test does not construct, and E1/E2 will touch that path anyway. Pinning the words is what
+ * this step is for; a behavioural pin would be a claim this test cannot make yet.
+ */
+
+await test('an unsupported pluginApiVersion tells the reader what to do about it', async () => {
+  const schema = await import('../src/host/manifest-schema.js').catch(() => null)
+  truthy(schema !== null, 'src/host/manifest-schema.js exists — the manifest validator')
+  const source = await readFile(join(packageRoot, 'src', 'host', 'manifest-schema.js'), 'utf8')
+  contains(
+    source,
+    'upgrade dsh to a version that supports pluginApiVersion',
+    'the refusal names the first way out: upgrade dsh to a version that supports it',
+  )
+  contains(source, 'or install a build for', 'and the second: install a build for the API this dsh reads')
+})
+
+/* ── E1a: the row a panel needs to say "incompatible" ─────────────────────────────────────────── */
+
+/*
+ * THE FIRST CASE OF THE COMPATIBILITY MATRIX (`UI第三阶段.txt:29-31`): a newer dsh meeting an older
+ * plugin must MARK it incompatible. The verdict rule already exists on the host —
+ * `SUPPORTED_PLUGIN_API = [1]` (`src/host/manifest-schema.js:30`) and the `unsupported-plugin-api`
+ * problem code (`src/host/conformance.js:43/117-121`) — and the scan already reads every installed
+ * manifest (`src/host/profile-scan.js`), so what is missing is the FEW FIELDS THAT CROSS THE WIRE:
+ * measured 2026-09-30, `uiProjectSubset` carries `type`/`preview`/`perfLevel`/`priority`/`modifies`/
+ * `requires` and NOT the API version, and the endpoint projects an even narrower set
+ * (`src/host/installed-endpoint.js:222` sends `{ name, version, channel }`).
+ *
+ * A panel cannot mark what it never receives, so this test asks the WIRE question: does an installed
+ * row carry the API version and a verdict the column can render?
+ *
+ * The verdict is one of `ok` (declared and supported), `unsupported` (declared and not) and `unknown`
+ * (no `dsh.uiProject` at all — a plain npm package is not a UI project and must not be painted as
+ * broken). A MISSING client-side value is allowed by decision (see R-E2): the host enforces the field,
+ * the client refuses only a DECLARED, unsupported value.
+ */
+
+await test('an installed row carries the API version and a compatibility verdict', async () => {
+  const endpoint = await import('../src/host/installed-endpoint.js').catch(() => null)
+  truthy(endpoint !== null, 'src/host/installed-endpoint.js exists — the installed listing route')
+  truthy(
+    typeof endpoint.createInstalledHandler === 'function',
+    'and it exports the installed-listing handler (createInstalledHandler)',
+  )
+  /*
+   * THE DECLARATION GOES THROUGH THE SUBSET, as it does in the real pipeline: `profile-scan.js` is what
+   * turns a `dsh.uiProject` declaration into the fields a row reads, and the endpoint deliberately does
+   * NOT invent what the scan did not produce (`installed-endpoint.js:74` passes the subset through, it
+   * does not interpret).
+   *
+   * Measured 2026-09-30: this fixture used to hand-write `uiProject: { pluginApiVersion: 1 }`, so the API
+   * version crossed and `compat` did not — a fixture that skipped the very function under test.
+   */
+  const subsetOf = (declaration) => profileScan.uiProjectSubset({ uiProject: declaration })
+  const handler = endpoint.createInstalledHandler({
+    scan: async () => ({
+      profileName: 'web',
+      dependencies: [
+        { name: 'ok-pkg', version: '1.0.0', resolved: true, kind: 'ui-project', uiProject: subsetOf({ pluginApiVersion: 1 }) },
+        { name: 'old-pkg', version: '0.9.0', resolved: true, kind: 'ui-project', uiProject: subsetOf({ pluginApiVersion: 99 }) },
+        { name: 'plain-pkg', version: '2.0.0', resolved: true, kind: 'bundle' },
+      ],
+      orphanedBindings: [],
+    }),
+  })
+  const response = await handler({ url: 'https://x/api/ui-projects/installed.json' })
+  const payload = await response.json()
+  const row = (name) => (payload?.scan?.dependencies ?? []).find((entry) => entry.name === name)
+  /*
+   * THE SUBSET IS NESTED, not flattened (decision 2): `pluginApiVersion` and its verdict live INSIDE
+   * `uiProject`, beside the fields the row already reads, so the object keeps its shape.
+   *
+   * DISCLOSURE: the four assertions below were first written against a FLAT path
+   * (`row('ok-pkg')?.pluginApiVersion`) and observed red in that form — measured 2026-09-30. Rewriting
+   * them to the nested path is the red following the decision, not a change of product semantics.
+   */
+  equal(row('ok-pkg')?.uiProject?.pluginApiVersion, 1, 'a declared API version reaches the wire, inside the project subset')
+  equal(row('ok-pkg')?.uiProject?.compat, 'ok', 'and a supported one is marked compatible')
+  equal(row('old-pkg')?.uiProject?.compat, 'unsupported', 'an unsupported one is marked incompatible — the marking case A asks for')
+  equal(row('plain-pkg')?.uiProject ?? null, null, 'and a package declaring no UI project has no subset at all, so it is not painted as broken')
+
+  /*
+   * THE MIRROR AND THE LIST IT MIRRORS, held equal — the pattern the channel list already uses (the
+   * `CHANNELS` assertion earlier in this file). The two halves are separate bundles and cannot import one
+   * another, so this is the only place the copies can be caught drifting apart.
+   */
+  const clientModule = await import('../src/client/service.js').catch(() => null)
+  const hostSchema = await import('../src/host/manifest-schema.js').catch(() => null)
+  truthy(clientModule !== null && hostSchema !== null, 'both halves of the API-version contract exist')
+  equal(
+    clientModule?.SUPPORTED_PLUGIN_API,
+    hostSchema?.SUPPORTED_PLUGIN_API,
+    'the client mirror and the host list are the same list',
+  )
+})
+
+/* ── E2: an incompatible project is refused, not registered ───────────────────────────────────── */
+
+/*
+ * THE FIRST CASE OF THE COMPATIBILITY MATRIX, ENFORCED (`UI第三阶段.txt:29-31`): a plugin the running
+ * dsh cannot execute must be marked incompatible **and must not be enableable**. The host validates the
+ * manifest field (`src/host/manifest-schema.js:62/147-151`), but that check runs where the PACKAGE is
+ * admitted — the registration that actually puts a project on the page goes through this client service
+ * (`src/client/service.js:97`, whose first step is `validate(manifest)` at `:98`), and its own comment
+ * says the check there is "deliberately shallow" (`:201-203`).
+ *
+ * MEASURED 2026-09-30: the desktop shell has no `pluginApiVersion` concept of its own (asar scan: zero
+ * occurrences), so nothing upstream protects the page either.
+ *
+ * A MISSING FIELD IS ALLOWED, BY DECISION. The host enforces `pluginApiVersion` as required; the client
+ * refuses only a DECLARED value this build cannot read, so packages written before the field existed
+ * keep working instead of turning unenableable overnight — and the reason is stated in `validate()`
+ * itself, where a reader of the refusal will look for it.
+ */
+
+await test('a project whose declared pluginApiVersion this build cannot run is refused, not registered', async () => {
+  const harness = await boot({})
+  const service = harness.ctx.uiProjects
+  equal(typeof service?.register, 'function', 'the registration service is reachable as ctx.uiProjects')
+
+  /*
+   * FROM A FIBER, exactly as `mountTestSkin` registers the framework's own fixture
+   * (`verify.mjs:804-809`: `harness.ctx.child()`, then `fiber.uiProjects.register(...)`).
+   *
+   * The first version of this test called the service off the ROOT context instead, and read a refusal
+   * whose message never named the field — a different check had refused it (the caller's context is what
+   * a registration is bound to, `src/client/service.js:99-107`). The CONTROL below is what makes that
+   * impossible to repeat: the same call, the same manifest shape, no field — it must register, so any
+   * later refusal can only be about the field.
+   */
+  const register = (manifest) => {
+    const fiber = harness.ctx.child()
+    fiber.uiProjects.register(manifest, { apply: () => {}, cleanup: () => {} })
+  }
+
+  /*
+   * THE MANIFEST SHAPE IS TAKEN FROM THE SUITE'S OWN FIXTURE, not guessed. `scripts/test-skin.mjs:26-46`
+   * is a manifest that registers successfully today, and the first version of this control omitted `name`
+   * — measured 2026-09-30: `TypeError: [dsh-ui-projects] UI project "control-skin" needs a name`, a refusal
+   * about the SHAPE rather than about the field under test. Every manifest below therefore carries the
+   * fixture's header, and `pluginApiVersion` is the ONLY thing that varies between them.
+   */
+  const base = (id) => ({ schemaVersion: 1, id, name: id, package: id, version: '1.0.0' })
+
+  /*
+   * THE QUERY IS `list()`, measured 2026-09-30: `createUiProjectsService` (`src/client/service.js:224-313`)
+   * exposes `register`, `list()`, `refusals()`, `revision()` and `diagnostics()` — there is no `ids()`, and
+   * the first version of this test called one and failed on its own helper rather than on the behaviour.
+   * `refusals()` is the purpose-built signal: a refusal that is recorded is a refusal the panel can show.
+   */
+  const ids = () => service.list().map((entry) => entry.id)
+
+  register(base('control-skin'))
+  equal(ids().includes('control-skin'), true, 'the CONTROL registers: the context, the id, the name and the definition are all acceptable')
+
+  const refused = (() => {
+    try {
+      register({ ...base('old-skin'), version: '0.9.0', pluginApiVersion: 99 })
+      return null
+    } catch (error) {
+      return error
+    }
+  })()
+  truthy(refused !== null, 'and the ONLY change — a declared API version this build does not read — is refused')
+  contains(String(refused?.message ?? ''), 'pluginApiVersion', 'the refusal names the field it is about, not some earlier check')
+  equal(ids().includes('old-skin'), false, 'and nothing of it reaches the registry')
+  equal(service.refusals().length >= 1, true, 'while the refusal itself is recorded, which is what a panel renders')
+
+  register({ ...base('ok-skin'), pluginApiVersion: 1 })
+  equal(ids().includes('ok-skin'), true, 'while a supported API version registers normally')
+
+  register(base('silent-skin'))
+  equal(
+    ids().includes('silent-skin'),
+    true,
+    'and a manifest declaring NO API version is allowed — the host enforces the field, the client refuses only a declared, unsupported one',
+  )
+})
+
+/* ── E1b: the API-version mark on a row, and the two attributes that keep it apart ─────────────── */
+
+/*
+ * THE MARK THE FIRST CASE ASKS FOR (`UI第三阶段.txt:29-31`) has to reach the ROW, not only the wire:
+ * R-E1a put `pluginApiVersion` and `compat` into the subset, the endpoint passes the subset through
+ * unchanged, and this is where a person finally sees it.
+ *
+ * TWO ATTRIBUTES, NOT ONE. `data-uip-contract` keeps meaning "did the static UI-contract scan pass";
+ * `data-uip-api-version` means "can this dsh run the plugin API the package declares". Different
+ * questions, different answers — collapsing them would make one of the two unreadable.
+ *
+ * THE SENTENCE IS CHECKED AT THE SOURCE. `columnCopy()` in this suite is a local fixture
+ * (`verify.mjs:3491`), not the real locale table, so asserting on the string would test the fixture
+ * rather than the product — measured 2026-09-30. What is asserted instead is that the key exists in
+ * BOTH languages and that the component reads it from the table; the compromise E4 made, disclosed the
+ * same way.
+ *
+ * FIXTURE NOTE (test-side, disclosed): `foldScan()` (`verify.mjs:4323`) hand-writes `ok-pkg`'s
+ * `uiProject`, so this test routes the declaration through `profileScan.uiProjectSubset` — the same
+ * correction the R-E1a fixture needed, and for the same reason: a fixture that skips the function under
+ * test proves nothing about it. No product semantics change with it.
+ */
+await test('an incompatible plugin API version is marked on the row, beside the contract state', async () => {
+  const localeSource = await readFile(join(packageRoot, 'src', 'client', 'locale.js'), 'utf8')
+  const panelSource = await readFile(join(packageRoot, 'src', 'client', 'panel-plugins.js'), 'utf8')
+  equal(
+    (localeSource.match(/apiUnsupported:/g) ?? []).length,
+    2,
+    'the sentence exists in both languages, in the locale table',
+  )
+  contains(panelSource, 'apiUnsupported', 'and the component reads it from that table rather than printing a literal')
+
+  const subsetOf = (declaration) => profileScan.uiProjectSubset({ uiProject: declaration })
+  /** Render the fold with `ok-pkg` declaring exactly this project (or none), through the real subset. */
+  const renderWith = (declaration) => {
+    const scan = foldScan()
+    scan.dependencies[0].uiProject = declaration === null ? null : subsetOf(declaration)
+    const ready = { status: 'ready', scan }
+    return renderFold({
+      state: ready,
+      store: {
+        state: () => ready,
+        refresh: async () => {},
+        changelog: () => ({ status: 'ready', payload: { reason: null, sections: [] } }),
+        loadChangelog: async () => {},
+      },
+    })
+  }
+
+  const okRow = rowSplit(renderWith({ pluginApiVersion: 1 }), 'ok-pkg').visible
+  equal(okRow.includes('data-uip-api-version="ok"'), true, 'a supported API version reads ok on the row')
+  equal(
+    rowSplit(renderWith({ pluginApiVersion: 99 }), 'ok-pkg').visible.includes('data-uip-api-version="unsupported"'),
+    true,
+    'an unsupported one reads unsupported — the mark case A asks for',
+  )
+  equal(
+    rowSplit(renderFold(), 'bare-pkg').visible.includes('data-uip-api-version="unknown"'),
+    true,
+    'and a package declaring no project reads unknown — a different sentence from "broken"',
+  )
+  equal(
+    okRow.includes('data-uip-contract=') && okRow.includes('data-uip-api-version='),
+    true,
+    'and the two questions keep two attributes: the contract state is still its own',
+  )
 })
 
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)

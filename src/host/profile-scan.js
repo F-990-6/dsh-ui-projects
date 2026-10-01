@@ -22,8 +22,32 @@
 
 import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises'
 
+/*
+ * A CONSTANT, NOT A CAPABILITY. This module's header promises "no write API of any kind, and none may be
+ * added" (`scripts/check-installed.test.mjs` asserts it by reading this source), and a list of supported
+ * API versions is data — it opens no file, writes nothing, and cannot.
+ */
+import { SUPPORTED_PLUGIN_API } from './manifest-schema.js'
+
 /** Where `install.ps1` keeps a package's version snapshots, inside the profile directory. */
 const VERSIONS_DIR_NAME = '.dsh-ui-projects-versions'
+
+/**
+ * Whether this dsh can run a project that declares `declared` as its plugin API version.
+ *
+ * `ok` (declared and supported), `unsupported` (declared and not) and `unknown` (nothing declared) —
+ * NEVER `undefined`, because this file's convention for an absent field is `null` and a field that
+ * vanishes through `JSON.stringify` would leave a row guessing (`uiProjectSubset` says so in full).
+ * `unknown` is the answer for a package that declares no API version at all, which is not the same
+ * sentence as "broken": the host enforces the field at install time, the panel must not paint an older
+ * package as incompatible (`UI第三阶段.txt:29-31` asks for the MARK, not for a scare).
+ * @param {unknown} declared
+ * @returns {'ok' | 'unsupported' | 'unknown'}
+ */
+function compatibleApi(declared) {
+  if (!Number.isInteger(declared)) return 'unknown'
+  return SUPPORTED_PLUGIN_API.includes(declared) ? 'ok' : 'unsupported'
+}
 
 /** How many snapshots are worth sending: the panel offers the newest and lists the rest on request. */
 const VERSIONS_MAX = 5
@@ -286,6 +310,13 @@ export function uiProjectSubset(dsh) {
     priority: Number.isInteger(declared.priority) ? declared.priority : null,
     modifies: list(declared.modifies),
     requires: list(declared.requires),
+    /*
+     * THE COMPATIBILITY MARK (E1a, `UI第三阶段.txt:29-31`): a newer dsh meeting an older plugin must say
+     * so on the row. Added here rather than in the endpoint because this file is the one place that knows
+     * what a declaration MEANS — the endpoint projects, it does not interpret.
+     */
+    pluginApiVersion: Number.isInteger(declared.pluginApiVersion) ? declared.pluginApiVersion : null,
+    compat: compatibleApi(declared.pluginApiVersion),
   }
 }
 

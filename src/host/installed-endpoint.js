@@ -16,6 +16,7 @@
  */
 
 import { CHANGELOG_REASONS, readChangelogAt, summarizeChangelog } from './changelog.js'
+import { CHANNELS, DEFAULT_CHANNEL } from './update-check.js'
 
 /** The route the page asks for. Namespaced, so a future endpoint cannot collide with it. */
 /*
@@ -37,6 +38,18 @@ export const CHANGELOG_PATH = '/api/ui-projects/changelog.json'
 
 /** Bumped when the payload's shape changes, so a newer client can refuse to guess. */
 export const INSTALLED_SCHEMA_VERSION = 1
+
+/**
+ * The third route: what the registry says about the installed packages, asked for ON DEMAND (phase 3,
+ * step 1).
+ *
+ * SEPARATE FROM THE LISTING ON PURPOSE, and that separation IS the "does not block the first frame"
+ * property: the listing is what the column needs to render a row at all and is read once when the
+ * section opens, while this route answers the slower, optional question — "is there something newer?" —
+ * and a page that never asks it costs no network at all. Nothing on the boot path calls it; the first
+ * frame is the marker, the rows and the inlined CSS, and none of them wait for a registry.
+ */
+export const UPDATES_PATH = '/api/ui-projects/updates.json'
 
 /** One dependency, as the column needs it. No paths: see the header. */
 function projectDependency(dependency) {
@@ -184,16 +197,94 @@ export function createChangelogHandler({ scan, read = readChangelogAt }) {
 }
 
 /**
+ * The channels a caller sent with the request, validated against this build's list.
+ *
+ * `?channels=<pkg>:<ch>,<pkg>:<ch>`, parsed exactly like `?name=` above: `URLSearchParams` over
+ * `request?.url`, tolerating a plain `{ url }` object as well as a real `Request`. Anything this build
+ * does not recognise is DROPPED, never adopted and never thrown — a typo must not be able to make a
+ * check answer for a dist-tag nobody chose, and a malformed parameter must behave as if it were absent.
+ * @param {any} request
+ * @returns {Record<string, string>}
+ */
+function parseChannels(request) {
+  const carried = {}
+  try {
+    const raw = new URL(request?.url ?? '/', 'http://localhost').searchParams.get('channels')
+    if (typeof raw !== 'string' || raw === '') return carried
+    for (const pair of raw.split(',')) {
+      const at = pair.indexOf(':')
+      if (at <= 0) continue
+      const name = pair.slice(0, at)
+      const channel = pair.slice(at + 1)
+      if (name !== '' && CHANNELS.includes(channel)) carried[name] = channel
+    }
+  } catch {
+    // A request whose url cannot be parsed carries no channels, which is the pre-B1 behaviour.
+  }
+  return carried
+}
+
+/**
+ * The Fetch-shaped handler for the update check.
+ *
+ * `channels` is how the handler learns which dist-tag to compare each package against, and it is injected
+ * because the settings document is read by the row that owns the namespace (`src/host/index.js`) — this
+ * file never touches a settings service, a filesystem or a network itself. `check` is injected for the
+ * same reason, and it is the ONLY thing here that talks to a registry: the three branches that matter
+ * (answered, refused, never answered) belong to `update-check.js`, where they are testable.
+ *
+ * THE PRECEDENCE IS request → document → default. The request wins for the packages it mentions because
+ * the caller is the page that SHOWS the choice to the user, and in the desktop application the document
+ * it would otherwise be read from never receives our write at all (branch A). Everything the request
+ * does not mention still comes from the document, so an existing caller that sends nothing — every web
+ * session — behaves exactly as before.
+ *
+ * A failure is a PAYLOAD, like every other route here: a check that could not run says so, and a 500
+ * would only make the column guess.
+ * @param {{ scan: () => Promise<any>, channels?: (name: string) => string, check?: (packages: any[]) => Promise<any> }} deps
+ */
+export function createUpdatesHandler({
+  scan,
+  channels = () => DEFAULT_CHANNEL,
+  check = async () => ({ checkedAt: null, results: [] }),
+}) {
+  return async function handle(request) {
+    try {
+      const carried = parseChannels(request)
+      const raw = await scan()
+      const packages = (raw?.dependencies ?? [])
+        .filter((dependency) => dependency?.resolved === true && typeof dependency.name === 'string')
+        .map((dependency) => ({
+          name: dependency.name,
+          version: dependency.version ?? null,
+          channel: carried[dependency.name] ?? channels(dependency.name),
+        }))
+      const result = await check(packages)
+      return jsonResponse({
+        schemaVersion: INSTALLED_SCHEMA_VERSION,
+        checkedAt: result?.checkedAt ?? null,
+        results: result?.results ?? [],
+      })
+    } catch (error) {
+      return jsonResponse({
+        schemaVersion: INSTALLED_SCHEMA_VERSION,
+        error: { message: typeof error?.message === 'string' ? error.message : String(error) },
+      })
+    }
+  }
+}
+
+/**
  * Register the endpoint on the Connection service, if this composition has one.
  *
  * A composition without `connection` is legitimate (Electron serves the client over `file://` and
  * IPC), and the right answer there is a logged line and a column that says it cannot read the
  * listing — not a refused loader row.
  * @param {{ get: (name: string) => any, logger?: any }} ctx
- * @param {{ scan: () => Promise<any> }} deps
+ * @param {{ scan: () => Promise<any>, channels?: (name: string) => string, check?: (packages: any[]) => Promise<any> }} deps
  * @returns {() => void} disposer
  */
-export function registerInstalledEndpoint(ctx, { scan }) {
+export function registerInstalledEndpoint(ctx, { scan, channels = () => DEFAULT_CHANNEL, check = async () => ({ checkedAt: null, results: [] }) }) {
   const connection = ctx.get('connection')
   if (connection === undefined || typeof connection.fetch?.register !== 'function') {
     ctx.logger?.warn?.(
@@ -220,11 +311,23 @@ export function registerInstalledEndpoint(ctx, { scan }) {
     requestBody: 'buffered',
     fetch: createChangelogHandler({ scan }),
   })
+  /*
+   * The update check rides the same fence and the same scan. It is the only route here that can reach a
+   * registry, it is asked for explicitly by the column after the listing has rendered, and it never
+   * installs anything — the column prints the command a person would run.
+   */
+  const disposeUpdates = connection.fetch.register({
+    path: UPDATES_PATH,
+    methods: ['GET'],
+    requestBody: 'buffered',
+    fetch: createUpdatesHandler({ scan, channels, check }),
+  })
   ctx.logger?.info?.(
-    `[dsh-ui-projects] installed-package listing mounted at ${INSTALLED_PATH} and ${CHANGELOG_PATH}`,
+    `[dsh-ui-projects] installed-package listing mounted at ${INSTALLED_PATH}, ${CHANGELOG_PATH} and ${UPDATES_PATH}`,
   )
   return () => {
     void disposeInstalled?.()
     void disposeChangelog?.()
+    void disposeUpdates?.()
   }
 }

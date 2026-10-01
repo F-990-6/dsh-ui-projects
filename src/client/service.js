@@ -34,6 +34,18 @@ const ID_PATTERN = /^[a-z][a-z0-9-]{1,47}$/
 const CONTRACT_FIELDS = ['schemaVersion', 'pluginApiVersion', 'package']
 
 /**
+ * The plugin API versions this CLIENT can host.
+ *
+ * A MIRROR, like the channel list (`channels.js`) and the three route paths (`installed.js`): the two
+ * halves are separate bundles and cannot import one another, so the host's `SUPPORTED_PLUGIN_API`
+ * (`src/host/manifest-schema.js:30`) is copied here — and the suite holds the two copies equal, which is
+ * what makes a rename or a bump impossible to do on one side only.
+ *
+ * Locally: `[1]`, the same single version the host reads.
+ */
+export const SUPPORTED_PLUGIN_API = [1]
+
+/**
  * Turn one manifest into the project fields it defines.
  *
  * The manifest is the single source for everything except behaviour: `definition` carries
@@ -95,7 +107,29 @@ export function createUiProjectsService(deps) {
    * @param {{ apply?: Function, cleanup?: Function }} definition behaviour only
    */
   function register(manifest, definition) {
-    const source = validate(manifest)
+    let source
+    try {
+      source = validate(manifest)
+    } catch (error) {
+      /*
+       * A REFUSAL THE PANEL CAN SEE.
+       *
+       * `refusals` is documented as "registrations that were refused … plain data: the panel renders it"
+       * (the declaration above), and a manifest refused for its declared API version IS a refused
+       * registration — but until now only the CONFLICT branch recorded one, so that refusal was invisible
+       * to the very panel that has to explain it. Measured 2026-09-30: the R-E2 test could see the throw
+       * and not the record.
+       *
+       * The THROW is unchanged, and so is every key a reader already depends on: `id`, `attempted` and
+       * `message` are what the conflict entry carries, minus `heldBy`, which only a conflict can have.
+       */
+      refusals.push({
+        id: typeof manifest?.id === 'string' ? manifest.id : null,
+        attempted: { package: manifest?.package ?? null, version: manifest?.version ?? null },
+        message: String(error?.message ?? error),
+      })
+      throw error
+    }
     const caller = this?.ctx
     if (caller === undefined || typeof caller.effect !== 'function') {
       // Called off a context — `const { register } = ctx.uiProjects` on a plain object, or a
@@ -216,6 +250,21 @@ export function createUiProjectsService(deps) {
     }
     if (typeof manifest.version !== 'string' || manifest.version.length === 0) {
       throw new TypeError(`ui project "${manifest.id}" has no manifest.version`)
+    }
+    /*
+     * A DECLARED API VERSION THIS BUILD CANNOT RUN IS REFUSED HERE, so the project is never enableable —
+     * the first case of the compatibility matrix (`UI第三阶段.txt:29-31`).
+     *
+     * A MISSING FIELD IS ALLOWED, BY DECISION: the host enforces `pluginApiVersion` as required
+     * (`src/host/manifest-schema.js:62`), and this client refuses only a DECLARED value it cannot run, so a
+     * package written before the field existed keeps working instead of turning unenableable overnight.
+     * Measured 2026-09-30: the desktop shell has no `pluginApiVersion` concept of its own (an asar scan
+     * found zero occurrences), so nothing upstream of this service protects the page either.
+     */
+    if (manifest.pluginApiVersion !== undefined && !SUPPORTED_PLUGIN_API.includes(manifest.pluginApiVersion)) {
+      throw new TypeError(
+        `[dsh-ui-projects] UI project "${manifest.id}" declares pluginApiVersion ${JSON.stringify(manifest.pluginApiVersion)}; this build hosts ${SUPPORTED_PLUGIN_API.join(', ')}`,
+      )
     }
     if (manifest.package === undefined) throw new TypeError('unreachable')
     return { package: manifest.package, version: manifest.version, registeredBy: currentFiberName(this?.ctx) }

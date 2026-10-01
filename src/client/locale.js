@@ -150,6 +150,13 @@ export const STRINGS = {
       contractWarn: (count) => `UI Contract: ${count} finding${count === 1 ? '' : 's'}`,
       contractNotScanned: 'UI Contract: not scanned',
       contractNotApplicable: 'n/a',
+      /*
+       * THE API-VERSION MARK (E1b, `UI第三阶段.txt:29-31`), a DIFFERENT question from the contract scan:
+       * "can this dsh run the plugin API the package declares" versus "did the static contract scan pass".
+       * The row carries two attributes for the two answers, and this is the sentence a reader gets when the
+       * first one is `unsupported`.
+       */
+      apiUnsupported: 'plugin API not supported',
       contractCoverage: (judged, total) =>
         `${judged} of the contract’s ${total} rules are judged by reading the built bundle; the rest are listed below`,
       contractFindingsTitle: 'What the scan found',
@@ -275,6 +282,9 @@ export const STRINGS = {
        * suite's unread-key note is a better place to see them than a deleted key would be.
        */
       rowDetails: 'Package details',
+      updateAvailable: (tag) => `Update available on ${tag}`,
+      channelLabel: (channel) => `${channel} channel`,
+      updateHint: (installed, latest) => `Installed ${installed}; ${latest} is available.`,
       maintenanceBrief: 'These act on the PACKAGE: run them in its own directory, or from here with -Package <name>.',
       uninstallTitle: (name) => `Remove ${name}`,
       uninstallBrief: 'Removing it takes the package only — your switch and its settings stay.',
@@ -382,6 +392,12 @@ export const STRINGS = {
       contractWarn: (count) => `UI Contract：${count} 处发现`,
       contractNotScanned: 'UI Contract：未扫描',
       contractNotApplicable: '不适用',
+      /*
+       * API 版本标记（E1b，《UI第三阶段》29–31 行）：与契约扫描是**两个问题** ——
+       * “这个 dsh 能不能运行该包声明的 plugin API” 对 “静态契约扫描是否通过”。
+       * 行上用两个属性分别承载，这一句是第一个答案为 `unsupported` 时读者看到的话。
+       */
+      apiUnsupported: '插件 API 不受支持',
       contractCoverage: (judged, total) => `契约的 ${total} 条规则中有 ${judged} 条通过读构建产物判定；其余见下方`,
       contractFindingsTitle: '扫描发现',
       contractLimitsTitle: '这次扫描看不到的东西',
@@ -472,6 +488,9 @@ export const STRINGS = {
       changelogTruncated: (count) => `……还有 ${count} 行，见 CHANGELOG.md`,
       /* ── step 56c：默认视图、折叠块、复制按钮（与 en 同构） ───────────────── */
       rowDetails: '包详情',
+      updateAvailable: (tag) => `${tag} 通道有更新`,
+      channelLabel: (channel) => `${channel} 通道`,
+      updateHint: (installed, latest) => `已装 ${installed}，可用 ${latest}。`,
       maintenanceBrief: '这些命令作用于**包**：在本包目录里运行，或在此处加 -Package <name> 运行。',
       uninstallTitle: (name) => `卸载 ${name}`,
       uninstallBrief: '只移除此包——你的开关与它的设置都会保留。',

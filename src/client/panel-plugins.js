@@ -30,6 +30,7 @@
  */
 
 const { createPreview, previewKindOf } = require('./preview.js')
+const { CHANNELS, mergeUpdates } = require('./channels.js')
 
 /**
  * @param {{ store: any, projects?: any, t: any, React: any }} props
@@ -109,6 +110,27 @@ export function UiPluginsSection(props) {
 
   const intro = React_.createElement('p', { className: 'uip-intro', key: 'intro' }, copy.intro)
 
+  /*
+   * THE UPDATE CHECK IS ASKED FOR HERE TOO (phase 3, step 1; extended by D2).
+   *
+   * A render-time side effect, like the listing's own trigger and for the same reason: this slot API has
+   * no mount hook. `idle` is the guard, so a double render, a remount or a second visit asks nothing
+   * more — and the guard now lives in the STORE as well (`installed.js`, `loadUpdates`), because a
+   * second caller exists.
+   *
+   * THE TWO TRIGGERS ARE NOT THE SAME QUESTION, which is why they are separate calls in separate files:
+   *
+   *   · the LISTING (`/installed.json`) is on demand only — asked when the section renders
+   *     (`src/client/index.js`), because fetching it at boot would be a request for a page most sessions
+   *     never open;
+   *   · the UPDATE CHECK (`/updates.json`) is additionally armed for AFTER THE FIRST FRAME
+   *     (`src/client/index.js`, `installedStore.deferUpdateCheck()`), because the spec asks for a check
+   *     after startup and never for a blocked first screen. Whoever asks first wins; the store makes the
+   *     second ask a no-op.
+   */
+  if (live.status === 'ready' && typeof store.loadUpdates === 'function' && store.updates?.().status === 'idle') {
+    void store.loadUpdates()
+  }
   if (live.status === 'idle' || live.status === 'loading') {
     return React_.createElement(
       'section',
@@ -134,7 +156,13 @@ export function UiPluginsSection(props) {
     )
   }
 
-  const scan = live.scan
+  /*
+   * THE MERGE HAPPENS HERE, ONCE, and it is why a row can carry a channel and an update without a fixture
+   * having pre-merged them: the scan says what is installed, the settings record says which channel each
+   * package is on, and the store says what the registry answered.
+   */
+  const channels = props.channels
+  const scan = mergeUpdates(live.scan, channels?.record?.(), store.updates?.().payload ?? { results: [] })
   /** The framework's own row is the thing rendering this list: it is not removable from itself. */
   const rows = scan.dependencies.map((dependency) => {
     /*
@@ -142,6 +170,12 @@ export function UiPluginsSection(props) {
      * derivations of one question is how a row ends up claiming two different things.
      */
     const contractState = contractStateOf(dependency)
+    /*
+     * THE SECOND QUESTION, ON ITS OWN ATTRIBUTE (E1b). `compat` is produced by the scan
+     * (`profile-scan.js`), passed through unchanged by the endpoint (`installed-endpoint.js:74`), and
+     * `'unknown'` is the answer for a package that declares no project — not the same sentence as broken.
+     */
+    const apiState = apiVersionStateOf(dependency)
     const contractBadge = React_.createElement(
       'span',
       {
@@ -169,6 +203,15 @@ export function UiPluginsSection(props) {
         // Three states, not two: "a URL to fetch", "a CSS material to paint", "declares none". The
         // stylesheet keys the preview column off this, so a row without one has no empty gutter.
         'data-uip-preview': previewKind,
+        // A SEPARATE attribute from `data-uip-contract`: two questions, two answers, neither folded
+        // into the other's enum.
+        'data-uip-api-version': apiState,
+        /*
+         * AND THE SENTENCE, FROM THE LOCALE TABLE (E1b). Without this the attribute was the only trace of
+         * the verdict, and a reader hovering the row got nothing: the mark existed for the stylesheet, not
+         * for a person. Read from `copy`, never a literal, so both languages come from `locale.js`.
+         */
+        title: apiState === 'unsupported' ? copy.apiUnsupported : undefined,
       },
       previewKind === 'none'
         ? null
@@ -196,6 +239,52 @@ export function UiPluginsSection(props) {
             ? React_.createElement('span', { className: 'uip-badge' }, copy.framework)
             : null,
           contractBadge,
+          /*
+           * THE UPDATE DOT (phase 3, step 1). A package whose channel's dist-tag holds something newer
+           * than what is installed gets a dot and a channel read-out — and that is ALL it gets here: the
+           * command that would install it is printed inside the fold below, like every other command in
+           * this column, because this page never runs anything.
+           *
+           * The dot is absent when there is nothing new, and absent when a check FAILED — a registry this
+           * machine cannot reach must not read as "up to date", which is why the data layer carries the
+           * reason and the row renders nothing rather than a reassuring blank.
+           */
+          dependency.update?.available === true
+            ? React_.createElement(
+                'span',
+                { className: 'uip-badge uip-badge-warn', key: 'update', 'data-uip-update': dependency.name },
+                copy.updateAvailable(dependency.update.tag),
+              )
+            : null,
+          /*
+           * THE CHANNEL IS A CONTROL, not a read-out (phase 3, step 1): stable/beta/canary, the chosen one
+           * selected, and a change written straight into `settings['<pkg>'].channel` through the adapter —
+           * which is the same record the host half reads when it decides which dist-tag to compare
+           * against. The write is followed by a re-render token, because a controlled select that reverted
+           * on the next render would be a control that looks broken.
+           */
+          React_.createElement(
+            'select',
+            {
+              className: 'uip-badge uip-select',
+              key: 'channel',
+              'data-uip-channel': dependency.name,
+              'data-uip-value': dependency.channel ?? 'stable',
+              /*
+               * UNCONTROLLED, and deliberately: `defaultValue` shows the chosen channel and keeps showing
+               * what the user picked, while a controlled `value` would need a re-render on every change —
+               * which would mean a hook in this component, and a hook here shifts the `useState` index the
+               * fake-React tests force by position. The record is written either way; the dot catches up
+               * on the next render.
+               */
+              defaultValue: dependency.channel ?? 'stable',
+              'aria-label': copy.channelLabel(dependency.channel ?? 'stable'),
+              onChange: (event) => {
+                void Promise.resolve(channels?.write?.(dependency.name, event?.target?.value)).catch(() => {})
+              },
+            },
+            CHANNELS.map((channel) => React_.createElement('option', { key: channel, value: channel }, copy.channelLabel(channel))),
+          ),
         ),
         /*
          * THE DEFAULT ROW: preview, name, badges, one line of description, and one fold. Nothing else.
@@ -209,6 +298,28 @@ export function UiPluginsSection(props) {
           'details',
           { className: 'uip-plugin-details', 'data-uip-row-details': dependency.name, open: false },
           React_.createElement('summary', { className: 'uip-hint', 'data-uip-fold-summary': 'row-details' }, copy.rowDetails),
+          /*
+           * THE UPDATE, AS A COMMAND. `add <pkg>@<tag>` is how a channel is acted on: `dsh plugin` is a
+           * pnpm forwarder, and pnpm takes the dist-tag in the package SPEC rather than behind a flag —
+           * so the channel a user picked is visible in the command they are about to run.
+           */
+          dependency.update?.available === true
+            ? React_.createElement(
+                'div',
+                { className: 'uip-update', key: 'update-command' },
+                React_.createElement(
+                  'p',
+                  { className: 'uip-hint' },
+                  copy.updateHint(dependency.version ?? '?', dependency.update.latest ?? '?'),
+                ),
+                React_.createElement(CommandRow, {
+                  copy,
+                  React: React_,
+                  kind: 'update-channel',
+                  source: 'dsh plugin --profile ' + scan.profileName + ' add ' + dependency.name + '@' + dependency.update.tag,
+                }),
+              )
+            : null,
           ...RowFoldFacts({ copy, React: React_, dependency, hasProject, project, mirrorAvailable: projectsLive !== undefined }),
           ...(dependency.problems ?? []).map((problem, index) =>
             React_.createElement('p', { className: 'uip-error', key: 'problem-' + index }, problem.code + ': ' + problem.message),
@@ -657,6 +768,21 @@ function contractStateOf(dependency) {
   if (contract === null || typeof contract !== 'object') return 'none'
   if (contract.scanned !== true) return 'none'
   return (contract.findings ?? []).length > 0 ? 'warn' : 'ok'
+}
+
+/**
+ * `ok` | `unsupported` | `unknown`, read straight off the subset the scan produced.
+ *
+ * A DIFFERENT QUESTION from the contract state above, and deliberately a different attribute on the row
+ * (`data-uip-api-version` beside `data-uip-contract`): "can this dsh run the plugin API the package
+ * declares" is not "did the static contract scan pass", and folding the two into one enum would make one
+ * of them unreadable. `unknown` covers a package that declares no project at all — the same answer the
+ * scan gives (`profile-scan.js`), so the two halves cannot disagree.
+ * @param {any} dependency
+ */
+function apiVersionStateOf(dependency) {
+  const compat = dependency?.uiProject?.compat
+  return compat === 'ok' || compat === 'unsupported' ? compat : 'unknown'
 }
 
 /** The badge's text: one sentence per state, from the dictionary — this file spells none of it. */
