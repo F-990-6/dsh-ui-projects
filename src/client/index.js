@@ -386,10 +386,23 @@ function apply(ctx) {
      * established, so nothing here has to carry a token — and nothing here may hand-build a path
      * outside `/api`, because that is the part with no fence around it.
      */
-    request: async (path) => {
+    /*
+     * ONE REQUESTER, AND AN OPTIONAL SECOND ARGUMENT (step 4, final piece).
+     *
+     * The three GET calls pass a path and nothing else, and they must keep behaving EXACTLY as before —
+     * so the defaults stay in the base object and the caller's options are merged on top:
+     * `headers` is merged (the JSON `accept` is a default, not a rule), while anything else the caller
+     * names — `method`, `body` — wins, because that is the whole point of passing it.
+     *
+     * Measured 2026-09-30: this took only `path`, so the two POST author routes could not be reached; the
+     * caller's `fetch` options were silently dropped and their requests went out as GET.
+     */
+    request: async (path, options) => {
+      const { headers, ...rest } = options ?? {}
       const response = await fetch(path, {
         credentials: 'same-origin',
-        headers: { accept: 'application/json' },
+        headers: { accept: 'application/json', ...(headers ?? {}) },
+        ...rest,
       })
       if (response.ok !== true) throw new Error(`the host answered ${response.status}`)
       return await response.json()
