@@ -7057,7 +7057,7 @@ await test('the fake DOM exports no function nobody calls, and the guard that sa
  * quoted without being a rule; the suite's own `stripComments` is for JavaScript and splits on `//`, which
  * in a Markdown file would eat a URL rather than a comment.
  */
-await test('the contributing rules are nine, and the ninth is the one about the edit itself', async () => {
+await test('the contributing rules are twelve, and the ninth is still the one about the edit itself', async () => {
   const text = (await readFile(join(packageRoot, 'CONTRIBUTING.md'), 'utf8')).replace(/<!--[\s\S]*?-->/g, '')
   const sectionAt = text.indexOf('## Verification discipline')
   truthy(sectionAt > 0, 'the section the rules live in is where this guard looks for them')
@@ -7065,7 +7065,21 @@ await test('the contributing rules are nine, and the ninth is the one about the 
   const nextHeading = rest.indexOf('\n## ', 1)
   const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading)
   const numbered = [...section.matchAll(/^(\d+)\. \*\*/gm)].map((match) => Number(match[1]))
-  equal(numbered, [1, 2, 3, 4, 5, 6, 7, 8, 9], 'the rules are numbered 1 to 9 — no gap, no duplicate, and no tenth')
+  /*
+   * THE GUARD FOLLOWS THE FACT, it does not relax (phase 3, step 6). Three rules were added on purpose —
+   * "red first for mid-round scope", "a commit message states what landed", "a progress report has three
+   * states" — each learned by getting it wrong in this very phase, so the count moved from nine to twelve
+   * because the file grew, not because the assertion was weak.
+   *
+   * WHAT STILL HOLDS, and must: no gap and no duplicate in the numbering (a rule deleted from the middle
+   * still fails this), the ninth rule is STILL the one about the edit itself (so the original nine cannot
+   * be reordered or replaced quietly), and each new rule names the thing it is about — a bare number in a
+   * list would pass the count and say nothing.
+   */
+  equal(numbered, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], 'the rules are numbered 1 to 12 — no gap, no duplicate, and no thirteenth')
+  contains(text, 'gets its red first', 'rule 10 is about writing the red for a requirement added mid-round')
+  contains(text, 'commit message states what LANDED', 'rule 11 is about what a commit message may claim')
+  contains(text, 'three states', 'rule 12 is about naming which of the three states a hand-off is in')
   contains(section, 'Nine rules', 'the sentence that introduces them counts them the same way')
   const ninthAt = section.search(/^9\. \*\*/m)
   truthy(ninthAt > 0, 'the ninth rule is there to be read')
