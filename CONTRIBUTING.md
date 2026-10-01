@@ -98,8 +98,9 @@ something was not verified.
 
 ## Verification discipline
 
-Nine rules, each one learned by getting it wrong. They live here because every reader of this file touches
-one of them; the incidents that produced them, with their numbers, are in `CHANGELOG.md`.
+Nine rules, each one learned by getting it wrong — and three more added in phase 3, learned the same way.
+They live here because every reader of this file touches one of them; the incidents that produced them,
+with their numbers, are in `CHANGELOG.md`.
 
 1. **Changing `src/**` means rebuilding before verifying.** The suite and the browser both load `lib/`, so a
    stale build makes correct code fail and a broken bundle pass. `npm run build` first, always.
@@ -178,6 +179,30 @@ one of them; the incidents that produced them, with their numbers, are in `CHANG
    consumed the heading of the round it was placed before, and it has happened three times: Round 50 ate
    Round 49's heading, Round 55's heading went the same way, and Round 56a's heading was eaten by the entry
    inserted above it. — Round 50, Round 55, Round 56a.
+
+10. **A requirement added MID-ROUND gets its red first.** When the scope grows — a clause discovered while
+    writing the green, a field a panel will need, a "while we are here" — the new claim is written as a
+    failing assertion **before** the code that satisfies it, exactly as it would have been had it been in
+    the plan. The alternative is not a shortcut: it is a suite that is fully green **and does not test the
+    thing at all**, so "0 failing" stops meaning "done" and starts meaning "nobody has looked". Measured
+    twice in phase 3: the `updateFailures` row landed with no assertion and 1432/0 was reported as a
+    finish, and the `onUpdateFailure` signature landed while the call that uses it did not — a signature is
+    not behaviour, and a `contains(source, 'name')` check matches the parameter list. **Ask what could make
+    this assertion pass while the feature is broken** (rule 8), and if the answer is "the line I have
+    already written", it is not an assertion about the feature.
+11. **A commit message states what LANDED, never what was planned.** Two phase-3 commits described work
+    that had not been done: one claimed the `request` injector had gained an optional second argument when
+    only the intention existed, and one claimed a step was complete when only its signature was in the
+    tree. The message is the only part of a commit that survives a squash, a rebase and a reader's
+    patience — and a message that describes a plan makes the log actively misleading about what the code
+    does. Before writing one, read `git diff --stat` and describe THAT. If part of the work is missing, the
+    message says which part, or the commit waits.
+12. **A progress report has three states, and "partly" is one of them.** Every hand-off says which of
+    three things is true, by name: **landed** (with the files and lines), **not landed**, or **partly
+    landed** (with the part that is). "Done" and "not done" are not a complete vocabulary: the phase-3
+    segments repeatedly ended with a signature in the tree and its caller missing, or a module in place and
+    its import not — states that a two-valued report rounds to "done" and a reader then trusts. The report
+    is what the next action is planned from, so rounding up here costs the next round, not this one.
 
 Rule 4 is the same discipline as `## Tool discipline` below, applied to bytes rather than to anchors:
 mutate with the file tools, or in memory, and never leave the tree in a state only a test could have
