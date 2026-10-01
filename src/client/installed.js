@@ -16,8 +16,10 @@
  * the refresh control — all of which are cheap, because the host side is one directory read.
  */
 
-/** @param {{ request: (path: string) => Promise<any> }} deps */
-export function createInstalledStore({ request, channelMap = () => ({}) }) {
+/**
+ * @param {{ request: (path: string, options?: any) => Promise<any>, channelMap?: () => Record<string, string>, onUpdateFailure?: (name: string, failure: { at: string, version: string | null, reason: string }) => unknown }} deps
+ */
+export function createInstalledStore({ request, channelMap = () => ({}), onUpdateFailure }) {
   /** @type {Set<() => void>} */
   const listeners = new Set()
   /** @type {{ status: 'idle'|'loading'|'ready'|'failed', scan?: any, error?: string, fetchedAt?: string }} */
