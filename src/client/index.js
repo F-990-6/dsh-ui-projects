@@ -39,7 +39,7 @@ const {
 } = require('./persist.js')
 const { createRemoteSettingsPersist } = require('./settings-controller.js')
 const { registerIntoSlot } = require('./slot-registration.js')
-const { createUiProjectsService } = require('./service.js')
+const { createUiProjectsService, SUPPORTED_PLUGIN_API } = require('./service.js')
 const { createInstalledStore } = require('./installed.js')
 const { readHostRowsAtBoot, bootFragmentPresent, bodyMarkerPresent } = require('./boot-presence.js')
 const { createRuntime, markTimingRecorder, markTiming } = require('./runtime.js')
@@ -173,6 +173,18 @@ function apply(ctx) {
    * registered early enough to be seen by it.
    */
   let runtime
+
+  /*
+   * THE SAME SERVICE NAME AS THE HOST, with the part the client can honestly answer: the client cannot read
+   * the framework package's version — that would drag `node:fs` into a browser bundle — so its `judge`
+   * answers `ok` / `unsupported` from its own mirrored list, and the DEPRECATION WARNING is the host's to
+   * send. Two halves, one name, and the mirror is held equal by the suite.
+   */
+  ctx.provide('dshPluginApiVersion', {
+    current: SUPPORTED_PLUGIN_API[SUPPORTED_PLUGIN_API.length - 1],
+    supported: [...SUPPORTED_PLUGIN_API],
+    judge: (declared) => (SUPPORTED_PLUGIN_API.includes(declared) ? 'ok' : 'unsupported'),
+  })
 
   ctx.provide(
     'uiProjects',

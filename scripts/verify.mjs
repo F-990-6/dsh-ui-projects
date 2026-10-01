@@ -8566,6 +8566,68 @@ await test('an incompatible package is listed with the two ways out of it, and t
   equal(folded.includes('data-uip-upgrade-deferred-action'), false, 'no button pretends to postpone a host upgrade')
 })
 
+/* ── Step 3: the plugin API version, said once and judged in one place ─────────────────────────── */
+
+/*
+ * `UI第三阶段.txt:43-49` asks for five things, and the decisions taken 2026-09-30 fix their shape:
+ *
+ *   1. dsh exposes `dshPluginApiVersion` — as a Cordis service in BOTH halves, whose value is
+ *      `{ current, supported, judge }` and whose `judge` answers `ok` / `deprecated` / `unsupported`.
+ *   2. Compatibility inside one major version is backwards compatible — kept as a LIST OF INTEGERS,
+ *      not semver: several majors may be supported at once (`[1, 2]`), and each integer IS a major.
+ *   3. A breaking change warns one minor BEFORE it lands and is removed only at a major — a hard-coded
+ *      table `{ version, deprecatedInDsh, removedInDsh }` compared against the running dsh's own version.
+ *   4. A manifest declares `pluginApiVersion` (already true: `manifest-schema.js:62`).
+ *   5. ONE FIELD DECIDES: `pluginApiVersion`. `dshVersionHint` stays advisory — measured: the schema calls
+ *      it advisory (`manifest-schema.js:78`) and the update check says so in as many words
+ *      (`update-check.js:16`), so this step must not quietly give it a vote.
+ *
+ * RED TODAY: `src/host/plugin-api.js` does not exist.
+ *
+ * The import is guarded (`.catch(() => null)`, the house pattern at `verify.mjs:7048`) so a missing module
+ * fails THIS test with a sentence rather than taking the run down with it.
+ */
+await test('the plugin API version is declared once, and judged in one place', async () => {
+  const api = await import('../src/host/plugin-api.js').catch(() => null)
+  truthy(api !== null, 'src/host/plugin-api.js exists — the single source of the plugin API version')
+  equal(api?.PLUGIN_API_VERSION, 1, 'and names the version this build speaks')
+  equal(Array.isArray(api?.SUPPORTED_PLUGIN_API), true, 'supported versions are a list, not a range (decision 2)')
+  equal(api?.SUPPORTED_PLUGIN_API?.includes(api?.PLUGIN_API_VERSION), true, 'and the version this build speaks is in it')
+  equal(typeof api?.judge, 'function', 'and one function answers for a declared version')
+
+  /*
+   * THE VERSION HERE IS THIS PACKAGE'S OWN (`package.json` = `0.1.0`), which is what `judge` is given
+   * everywhere (measured 2026-09-30). The first draft of these two lines passed `'1.2.0'` — a version
+   * above this package's removal date for the API version it was asking about — so the "ordinary dsh"
+   * case answered `unsupported` and the assertion was measuring the schedule, not the judgement.
+   */
+  equal(api?.judge?.(1, '0.1.0'), 'ok', 'a supported version on an ordinary dsh is ok')
+  equal(api?.judge?.(99, '0.1.0'), 'unsupported', 'a version this build never spoke is unsupported')
+  equal(Array.isArray(api?.DEPRECATIONS), true, 'the deprecation table is data (decision 3)')
+  const one = (api?.DEPRECATIONS ?? []).find((entry) => entry?.version === 1)
+  truthy(one !== undefined, 'and it carries the version-1 entry the decision named')
+  equal(one?.deprecatedInDsh, '0.2.0', 'with the NEXT MINOR of this package as the release that starts warning')
+  equal(one?.removedInDsh, '1.0.0', 'and this package’s first major as the one that removes it')
+  equal(api?.judge?.(1, '0.1.0'), 'ok', 'so on the version this package is today, nothing warns at all')
+  equal(api?.judge?.(1, '0.2.0'), 'deprecated', 'from the next minor on the answer is a warning, not a refusal')
+  equal(api?.judge?.(1, '1.0.0'), 'unsupported', 'and at the major it becomes a refusal')
+
+  /* ONE SOURCE, NOT TWO: the schema reads the list rather than keeping its own. */
+  const schemaSource = await readFile(join(packageRoot, 'src', 'host', 'manifest-schema.js'), 'utf8')
+  contains(schemaSource, "from './plugin-api.js'", 'the manifest schema imports the one source')
+  equal(
+    /(^|\n)\s*(export\s+)?const SUPPORTED_PLUGIN_API\s*=\s*\[/.test(schemaSource),
+    false,
+    'and does not define a second copy of the list',
+  )
+
+  /* THE SERVICE, IN BOTH HALVES (decision 1). */
+  const hostIndex = await readFile(join(packageRoot, 'src', 'host', 'index.js'), 'utf8')
+  const clientIndex = await readFile(join(packageRoot, 'src', 'client', 'index.js'), 'utf8')
+  contains(hostIndex, 'dshPluginApiVersion', 'the host half registers the dshPluginApiVersion service')
+  contains(clientIndex, 'dshPluginApiVersion', 'and so does the client half')
+})
+
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
 if (onlyTest !== '') {
   process.stdout.write(`[filter] DSH_TEST_ONLY=${JSON.stringify(onlyTest)} skipped ${skipped} test(s)\n`)

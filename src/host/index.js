@@ -76,6 +76,17 @@ export const UI_PROJECTS_SETTINGS_SCHEMA = z.object({
   touched: z.boolean().default(false).description('Whether the user has changed anything yet.'),
 })
 
+/*
+ * THE PLUGIN API VERSION AND WHERE IT COMES FROM (step 3). `plugin-api.js` owns the supported majors, the
+ * deprecation schedule and the judgement; `own-version.js` reads THIS package's version once, because the
+ * schedule's dates are framework-package releases rather than the dsh runtime's.
+ *
+ * Declared here rather than at the top of the file only because this is where the changes landed; ESM
+ * hoists imports, so the placement has no effect beyond readability.
+ */
+import { createPluginApiService } from './plugin-api.js'
+import { readOwnVersion } from './own-version.js'
+
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
  */
@@ -91,6 +102,13 @@ export function apply(ctx) {
    * first-paint CSS. `service.js` explains why at length.
    */
   const hostService = createHostService(ctx)
+  /*
+   * THE PLUGIN API VERSION, AS A SERVICE (step 3). Both halves register the same name so a plugin asks ONE
+   * question — `ctx.get('dshPluginApiVersion').judge(declared)` — and gets `ok` / `deprecated` /
+   * `unsupported`, whichever half it lives in. Provided before anything that could fail, like the registry
+   * below it: a service that appears late is a service a plugin has already given up on.
+   */
+  ctx.provide('dshPluginApiVersion', createPluginApiService(readOwnVersion()))
   ctx.provide('uiProjectsHost', hostService)
 
   /*

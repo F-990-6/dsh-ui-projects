@@ -26,8 +26,19 @@
 /** The only manifest schema this build understands. */
 export const SUPPORTED_MANIFEST_SCHEMA = 1
 
-/** The plugin API majors this build understands — the entry↔framework contract, not the doc shape. */
-export const SUPPORTED_PLUGIN_API = [1]
+/*
+ * THE PLUGIN API LIST LIVES IN `plugin-api.js` (step 3): one source for the supported majors, the
+ * deprecation schedule and the judgement itself.
+ *
+ * BOTH LINES ARE NEEDED, and the reason is easy to miss: `export { X } from '…'` re-exports `X` WITHOUT
+ * binding it in this module's scope, and `checkValue` below reads the list. The import is what puts the
+ * name here; the re-export keeps every existing reader's import path working — a re-export is not a
+ * second copy, and the suite asserts this file does not define one.
+ */
+import { DEPRECATIONS, PLUGIN_API_VERSION, SUPPORTED_PLUGIN_API, judge } from './plugin-api.js'
+import { readOwnVersion } from './own-version.js'
+
+export { SUPPORTED_PLUGIN_API } from './plugin-api.js'
 
 /**
  * Project kinds a PACKAGE may declare.
@@ -147,18 +158,30 @@ function checkValue(entry, value) {
       if (entry.kind === 'apiVersion' && SUPPORTED_PLUGIN_API.includes(value)) return undefined
       if (entry.kind === 'apiVersion') {
         /*
-         * THE REFUSAL CARRIES ITS OWN WAY OUT (E4, `UI第三阶段.txt:33-35`).
+         * THE JUDGEMENT IS NOT MADE HERE (step 3). `plugin-api.js` owns the supported list AND the
+         * deprecation schedule, so this schema asks it — and hands it the running framework version
+         * (decision 2026-09-30: the schedule's dates are THIS package's versions, so the version compared
+         * is `package.json`'s, read once in `own-version.js`).
          *
-         * The validation was already right — an unsupported API is refused, and `action` has said what to
-         * do since it was written. What a reader SEES first, though, is the `message`, and "is not
-         * supported" answers only half the question. Measured 2026-09-30: the desktop shell has no
-         * `pluginApiVersion` concept at all (an asar scan found zero occurrences), so this sentence is the
-         * whole of the guidance a user gets.
+         * TWO ANSWERS, TWO SENTENCES. `unsupported` is the E4 refusal, which carries its own way out;
+         * `deprecated` is NOT a refusal — the package runs, and the reader is told to migrate before the
+         * major that removes it, which is the "warn one minor early" rule (`UI第三阶段.txt:45-47`).
          */
-        return {
-          message: `pluginApiVersion ${JSON.stringify(value)} is not supported; upgrade dsh to a version that supports pluginApiVersion ${JSON.stringify(value)}, or install a build for ${SUPPORTED_PLUGIN_API.join(', ')}`,
-          action: 'rebuild the package against a supported plugin API, or upgrade the framework first',
+        const verdict = judge(value, dshVersion ?? readOwnVersion())
+        if (verdict === 'unsupported') {
+          return {
+            message: `pluginApiVersion ${JSON.stringify(value)} is not supported; upgrade dsh to a version that supports pluginApiVersion ${JSON.stringify(value)}, or install a build for ${SUPPORTED_PLUGIN_API.join(', ')}`,
+            action: 'rebuild the package against a supported plugin API, or upgrade the framework first',
+          }
         }
+        if (verdict === 'deprecated') {
+          const removal = DEPRECATIONS.find((entry) => entry?.version === value)?.removedInDsh ?? 'the next major'
+          return {
+            message: `pluginApiVersion ${JSON.stringify(value)} still runs, but dsh is retiring it at ${removal}; migrate to pluginApiVersion ${PLUGIN_API_VERSION} before then`,
+            action: `rebuild the package against pluginApiVersion ${PLUGIN_API_VERSION} before dsh ${removal}`,
+          }
+        }
+        return undefined
       }
       return { message: `expected a number, got ${JSON.stringify(value)}`, action: `set ${entry.field} to a number` }
     case 'string':
