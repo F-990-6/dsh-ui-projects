@@ -837,37 +837,38 @@ const disposeEndpoint = registerInstalledEndpoint(endpointCtx, {
   },
 })
 /*
- * THREE ROUTES SINCE PHASE 3, STEP 1. The listing and the CHANGELOG were joined by the update check: the
- * same fence, the same scan, asked for on demand and never from the boot path. Selected BY PATH rather
- * than by position, because position is what a fourth route would silently break.
+ * THREE ROUTES, ALL OF THEM READS (2026-09-30). The listing and the CHANGELOG were joined by the update
+ * check in phase 3, step 1. Two POST author routes (`changelog-draft`, `changelog-write`) were added later
+ * for the CHANGELOG-and-checklist tools, and they have since been removed along with the "UI plugins"
+ * column that hosted those tools — so the count is back to three, and it is not the same three as before:
+ * the LISTING and the CHANGELOG stay, because the remaining "界面" column reads both.
+ *
+ * Selected BY PATH rather than by position, because position is what a fourth route would silently break
+ * — and it did, twice, before `failingRoute(path)` below replaced `slice(-3)`.
  */
-equal(registeredRoutes.length, 5, 'the endpoint registers exactly five routes: the listing, the changelog, the update check, and the two author routes')
+equal(registeredRoutes.length, 3, 'the endpoint registers exactly three routes: the listing, the changelog and the update check')
 equal(
   registeredRoutes.map((route) => route.path).sort().join(','),
-  [INSTALLED_PATH, CHANGELOG_PATH, UPDATES_PATH, '/api/ui-projects/changelog-draft', '/api/ui-projects/changelog-write'].sort().join(','),
-  'at the five namespaced paths, and nothing else',
+  [INSTALLED_PATH, CHANGELOG_PATH, UPDATES_PATH].sort().join(','),
+  'at the three namespaced paths, and nothing else',
 )
 const listingRoute = registeredRoutes.find((route) => route.path === INSTALLED_PATH)
 const changelogRoute = registeredRoutes.find((route) => route.path === CHANGELOG_PATH)
 const updatesRoute = registeredRoutes.find((route) => route.path === UPDATES_PATH)
-const draftRoute = registeredRoutes.find((route) => route.path === '/api/ui-projects/changelog-draft')
-const writeRoute = registeredRoutes.find((route) => route.path === '/api/ui-projects/changelog-write')
-/*
- * COMPARED AS STRINGS, like the METHODS assertion below — `equal` here is strict identity, so two
- * `['POST']` arrays that look alike are never equal to each other (measured 2026-09-30, where these two
- * lines failed with `got ["POST"], expected ["POST"]`).
- */
-equal(draftRoute?.methods?.join('|'), 'POST', 'the draft route answers POST')
-equal(writeRoute?.methods?.join('|'), 'POST', 'and so does the write route')
 equal(
   [INSTALLED_PATH, CHANGELOG_PATH, UPDATES_PATH].every((path) => path.startsWith('/api/')),
   true,
-  'all five under /api, which is the only prefix the Host/Origin fence and the browser session cover',
+  'all three under /api, which is the only prefix the Host/Origin fence and the browser session cover',
 )
+/*
+ * COMPARED AS STRINGS, not as arrays: `equal` here is strict identity, so two `['GET']` arrays that look
+ * alike are never equal (measured 2026-09-30, where the author routes' assertions failed with
+ * `got ["POST"], expected ["POST"]`). The string form also pins that nothing answers both.
+ */
 equal(
-  [listingRoute, changelogRoute, updatesRoute, draftRoute, writeRoute].map((route) => route?.methods?.join(',')).join('|'),
-  'GET|GET|GET|POST|POST',
-  'three read routes answer GET and the two author routes answer POST — nothing answers both',
+  [listingRoute, changelogRoute, updatesRoute].map((route) => route?.methods?.join(',')).join('|'),
+  'GET|GET|GET',
+  'and all three answer GET only',
 )
 
 /*

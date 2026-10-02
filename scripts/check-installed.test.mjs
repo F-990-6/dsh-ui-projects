@@ -492,33 +492,26 @@ const WRITE_OPEN = /\bopen\([^)]*['"](w|a|r\+|w\+|a\+)['"]/
 const writes = (source) => WRITE_API.test(source) || WRITE_OPEN.test(source)
 
 /*
- * THIS IS AN UPGRADE, NOT A NARROWING (decision 2026-09-30).
+ * NOTHING IN THE HOST HALF MAY WRITE — AND THIS IS A WIDENING, NOT A NARROWING (2026-09-30).
  *
- * Two lists used to be named here while the rest of the host half was unconstrained. Now the whole
- * directory is scanned and exactly ONE module may write — `changelog-write.js`, whose entire job is
- * appending a version section and setting `package.json`'s version
- * (`UI第三阶段.txt:59-69`).
+ * Two lists used to be named here while the rest of the host half was unconstrained; then the whole
+ * directory was scanned with exactly ONE exception (`changelog-write.js`, the module behind the author's
+ * "write CHANGELOG" button). The author tools are gone, that module is gone with them, and the exception
+ * goes with it: THE ALLOWLIST IS EMPTY, so the assertion is now the strongest it has ever been — every
+ * host module, including one added tomorrow, must contain no write API at all.
  *
- * `profile-scan.js`, `conformance.js` and `manifest-schema.js` are constrained exactly as before: they are
- * NOT in the allowlist, so a write API appearing in any of them still fails. What changed is that a host
- * module added TOMORROW is constrained too, without anyone remembering to add it here — forgetting now
- * fails this check instead of quietly opening a write path (fail-closed).
+ * The old rule had a second half, "the allowlisted module must ACTUALLY write", which existed so a stale
+ * name could not turn the exception into a ghost. With no names left there is nothing to ghost, and the
+ * requirement collapses into the single sentence below.
  *
- * THE ALLOWLIST MUST ACTUALLY WRITE. A name parked in this list after its module was renamed or deleted
- * would otherwise turn the whole exception into a ghost, so the allowlisted module is checked for the
- * OPPOSITE property: it writes, and it is the only one that does.
+ * `profile-scan.js`, `conformance.js` and `manifest-schema.js` were already constrained; what is new is
+ * that forgetting is impossible: a host module added tomorrow fails this check instead of quietly opening
+ * a write path (fail-closed).
  */
-const WRITE_ALLOWLIST = ['changelog-write.js']
 const hostDir = join(packageRoot, 'src', 'host')
 for (const name of (await readdir(hostDir)).filter((entry) => entry.endsWith('.js')).sort()) {
   const source = await readFile(join(hostDir, name), 'utf8')
-  const allowed = WRITE_ALLOWLIST.includes(name)
-  check(
-    allowed ? writes(source) : !writes(source),
-    allowed
-      ? `src/host/${name} is the one module allowed to write, and it does write`
-      : `src/host/${name} contains no write API (allowlist: ${WRITE_ALLOWLIST.join(', ')})`,
-  )
+  check(!writes(source), `src/host/${name} contains no write API at all — the last module allowed to write was removed with the author tools`)
 }
 
 /* The two scripts that must stay read-only are OUTSIDE the host directory, so they keep their own loop. */
