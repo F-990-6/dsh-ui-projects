@@ -92,3 +92,35 @@ browser-verify.mjs 首次运行至收敛，共 5 次。
 ### 与本轮工作的关系
 - 第 3 步**未引入任何 browser-verify 红点**
 - C8 菜单的 6 处 bug 是**独立缺陷**——同一波工作（2026-09-30）遗留
+### 剩余 5 红 · 最终定性（2026-10-02）
+
+**4 × 例包未装**——环境。装 `@xjl-resources/dsh-plugin-example*` 后应全绿。
+
+**1 × first-frame marker**——**跨仓库问题**，不在本仓库范围：
+
+| 环节 | 位置 | 状态 |
+|---|---|---|
+| host 准备注入 `<script>` | `src/host/service.js:105-110` `markerRow()` | ✅ 存在 |
+| 通过 `webserver/index-inject` 返回 | `src/host/service.js` | ✅ 存在 |
+| dsh 框架把该脚本注入 HTML | **dsh 主框架** | ❓ 无法在本仓库验证 |
+| 浏览器执行注入 → body 有 marker | — | ❌ test 失败 |
+
+**结论**：本仓库正确准备了注入内容；失败点在 dsh 框架层（或该环境未启用
+`webserver/index-inject` 服务）。**不属于第 3 步，也不属于 C8 修复。**
+
+### 波动红点 · browser-verify 自身 flaky（证据）
+
+同一份代码、同一 token、连续三次运行：
+
+| 运行 | assertions | failing | 差异点 |
+|---|---|---|---|
+| A | 109 | 6 | `Settings opens` ok；`less transparency` FAIL |
+| B | 116 | 8 | `Settings opens` FAIL；`skin survives reload` FAIL |
+| C | 116 | 7 | `Settings opens` FAIL；`skin survives reload` ok |
+
+**这不是我们代码的 bug**——是 **browser-verify.mjs 测试间的状态污染**。
+`ensurePanel` 只是缓解了"上一 test 关闭面板"的一类，**其它状态传递
+（viewport / dark mode / contrast emulation / skin state）仍会跨 test 泄漏**。
+
+**修复方向**（独立任务）：每个 test 开头显式设置前置状态——不继承。
+**与第 3 步无关。**
