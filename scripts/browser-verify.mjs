@@ -2593,6 +2593,8 @@ try {
    * the fills are opaque, and they are not the values they had a moment earlier.
    */
   await test('the modes that ask for less transparency get it', async () => {
+    await navigate(pageUrl)
+    await ensurePanel(session)
     const readState = `(() => {
       const body = getComputedStyle(document.body)
       /*

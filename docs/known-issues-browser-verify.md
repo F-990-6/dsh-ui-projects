@@ -108,19 +108,25 @@ browser-verify.mjs 首次运行至收敛，共 5 次。
 **结论**：本仓库正确准备了注入内容；失败点在 dsh 框架层（或该环境未启用
 `webserver/index-inject` 服务）。**不属于第 3 步，也不属于 C8 修复。**
 
-### 波动红点 · browser-verify 自身 flaky（证据）
+### flaky 分两类（最终定性 · 2026-10-02）
 
-同一份代码、同一 token、连续三次运行：
+**删除引入 · 已修（1 个）**：
+- `the modes that ask for less transparency get it`
+- **根因**：被删的 `verification checklist` / `card reset` test 内部各有
+  `await navigate(pageUrl)` + `await ensurePanel(session)`——**作为隐式状态
+  隔离点**。它们被删后 modes 继承前一 test 的残留状态。
+- **修法**：modes test 开头补回这两行（commit `<新 commit>`）
+- **验证**：连跑 4 次——4/4 ok
 
-| 运行 | assertions | failing | 差异点 |
-|---|---|---|---|
-| A | 109 | 6 | `Settings opens` ok；`less transparency` FAIL |
-| B | 116 | 8 | `Settings opens` FAIL；`skin survives reload` FAIL |
-| C | 116 | 7 | `Settings opens` FAIL；`skin survives reload` ok |
+**suite 自身 · 未修（3+ 个）**：
+- `Settings opens`（2/4 红）
+- `panel lists`（1/4 红）
+- `turning the skin on`（连续多次运行后偶发）
+- **根因**（推断）：多次运行未重启 dsh web——累积状态
+  （in-memory 缓存 / DevTools session / settings document 中间态）
+- **不属删除引入**——它们在**所有删除 test 之前**，且多次跑未重启后才出现
+- **另立任务**：改测试隔离（每 test 显式设置前置）或加 `--cold` 模式（重启 dsh web）
 
-**这不是我们代码的 bug**——是 **browser-verify.mjs 测试间的状态污染**。
-`ensurePanel` 只是缓解了"上一 test 关闭面板"的一类，**其它状态传递
-（viewport / dark mode / contrast emulation / skin state）仍会跨 test 泄漏**。
-
-**修复方向**（独立任务）：每个 test 开头显式设置前置状态——不继承。
-**与第 3 步无关。**
+### 稳定红 · 5 个（已归档）
+- 4 × 例包未装 —— 环境
+- 1 × first-frame —— 跨仓库（dsh 框架层）
