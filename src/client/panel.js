@@ -29,6 +29,12 @@ const { createPreview } = require('./preview.js')
 const { copyCommandText } = require('./clipboard.js')
 const { buildDiagnostics } = require('./plugin-diagnostics.js')
 
+/*
+ * (C8 迁移) 这个常量原在 `panel-plugins.js:708`（`export const COPY_FEEDBACK_MS = 1500`），
+ * 该文件于第 3 步删除，但 `CardMenu` 的 useEffect 仍引用它——浏览器里抛
+ * ReferenceError 并让整个 settings.section 卸载。值 = 1500ms，与原定义一致。
+ */
+const COPY_FEEDBACK_MS = 1500
 /**
  * @param {object} props
  * @param {import('./store.js').UiProjectsStore} props.store
@@ -233,6 +239,7 @@ function UiProjectsSection(props) {
               onToggle: () => run(project.id, store.toggle(project.id)),
               onRun: (task) => run(project.id, task),
               installed: installedState,
+                            store: props.installed,
               /* (C4, 2026-09-30: `onConfirmChecks` and `onClearChecks` were passed here, for the checklist
                * block. That block is removed above, and its unit tests went with it in the same round, so
                * nothing calls these handlers any more. `store.confirmChecks`/`clearChecks` lose their last
@@ -312,22 +319,53 @@ function UiProjectsSection(props) {
  */
 function CardMenu(props) {
   const { R, t, project, name, pending, onRun, installed } = props
-  const [copied, setCopied] = React.useState('idle')
-  const [showChangelog, setShowChangelog] = React.useState(false)
-  const timer = React.useRef(undefined)
+  /*
+   * `copied` 是 OBJECT，不是字符串——每个按钮一个独立的反馈状态。
+   * 之前它是单值，两个复制按钮（uninstall / diagnostics）共享，
+   * 点其中一个两个都变"已复制"。按 key 分开后它们各自计时、各自复位。
+   */
+  const [copied, setCopied] = React.useState({})
+  const timers = React.useRef({})
+
   React.useEffect(() => {
-    if (copied === 'idle') return undefined
-    timer.current = setTimeout(() => setCopied('idle'), COPY_FEEDBACK_MS)
-    return () => {
-      if (timer.current !== undefined) clearTimeout(timer.current)
-      timer.current = undefined
+    for (const key of Object.keys(copied)) {
+      const state = copied[key]
+      if (state !== 'copied' && state !== 'failed') continue
+      if (timers.current[key] !== undefined) continue
+      timers.current[key] = setTimeout(() => {
+        setCopied((cur) => {
+          const next = { ...cur }
+          delete next[key]
+          return next
+        })
+        delete timers.current[key]
+      }, COPY_FEEDBACK_MS)
     }
   }, [copied])
 
-  /** The same three labels the plugins column used: one table, so the words are the same too. */
-  const copyLabel = copied === 'copied' ? t.copyDone : copied === 'failed' ? t.copyFailed : t.copyCommand
-  const copy = (source) => {
-    void copyCommandText(source).then((outcome) => setCopied(outcome))
+  React.useEffect(() => {
+    return () => {
+      for (const key of Object.keys(timers.current)) clearTimeout(timers.current[key])
+      timers.current = {}
+    }
+  }, [])
+
+  /*
+   * 每个按钮有自己的初始 label：
+   *   · uninstall   → t.plugins.copyCommand（"复制"）
+   *   · diagnostics → t.plugins.diagnosticsCopy（"复制诊断信息"）
+   * 复制成功后都变 copyDone（"已复制"），失败都变 copyFailed。
+   */
+  const labelFor = (key, fallback) => {
+    const state = copied[key]
+    if (state === 'copied') return t.plugins?.copyDone
+    if (state === 'failed') return t.plugins?.copyFailed
+    return fallback
+  }
+  const copy = (key, source) => {
+    void copyCommandText(source).then((outcome) => {
+      setCopied((cur) => ({ ...cur, [key]: outcome }))
+    })
   }
 
   const scan = installed !== null && installed?.status === 'ready' ? installed.scan : undefined
@@ -337,7 +375,6 @@ function CardMenu(props) {
     { name: project.package, version: installedVersion, problems: [], update: null },
     scan?.versions?.[project.package],
   )
-  const changelog = typeof installed?.changelog === 'function' ? installed.changelog(project.package) : null
 
   const items = []
   if (profileName !== null) {
@@ -351,32 +388,14 @@ function CardMenu(props) {
           key: 'uninstall',
           'data-uip-action': 'uninstall',
           'data-uip-copy-source': command,
-          'aria-label': t.copyCommand + ': ' + command,
-          onClick: () => copy(command),
+                   'aria-label': t.plugins?.copyUninstallCommand + ': ' + command,
+          onClick: () => copy('uninstall', command),
         },
-        copyLabel,
+        labelFor('uninstall', t.plugins?.copyUninstallCommand),
       ),
     )
   }
-  items.push(
-    R.createElement(
-      'button',
-      {
-        type: 'button',
-        className: 'uip-button',
-        key: 'changelog',
-        'data-uip-action': 'view-changelog',
-        disabled: pending,
-        onClick: () =>
-          onRun(() => {
-            setShowChangelog((open) => !open)
-            if (typeof installed?.loadChangelog === 'function') return installed.loadChangelog(project.package)
-            return undefined
-          }),
-      },
-      t.changelogTitle,
-    ),
-  )
+
   items.push(
     R.createElement(
       'button',
@@ -386,43 +405,65 @@ function CardMenu(props) {
         key: 'diagnostics',
         'data-uip-action': 'copy-diagnostics',
         'data-uip-copy-source': diagnosis.text,
-        'aria-label': t.diagnosticsCopy + ': ' + project.package,
-        onClick: () => copy(diagnosis.text),
+        'aria-label': t.plugins?.diagnosticsCopy + ': ' + project.package,
+        onClick: () => copy('diagnostics', diagnosis.text),
       },
-      copyLabel,
+      labelFor('diagnostics', t.plugins?.diagnosticsCopy),
     ),
   )
 
   const body = [R.createElement('div', { className: 'uip-actions', key: 'menu-items' }, items)]
-  if (showChangelog) {
-    const sections = changelog?.payload?.sections
-    body.push(
-      R.createElement(
-        'details',
-        { className: 'uip-cardChangelog', key: 'changelog', 'data-uip-card-changelog': project.id, open: true },
-        R.createElement('summary', { 'data-uip-fold-summary': 'card-changelog' }, t.changelogTitle),
-        Array.isArray(sections) && sections.length > 0
-          ? sections.map((section, index) =>
-              R.createElement(
-                'div',
-                { key: 'section-' + index },
-                R.createElement('p', null, String(section?.title ?? section?.heading ?? '')),
-                R.createElement('pre', null, String(section?.lines ?? section?.body ?? '')),
-              ),
-            )
-          : R.createElement('p', { className: 'uip-hint' }, t.changelogUnavailable),
-      ),
-    )
-  }
 
   return R.createElement(
     'details',
     { className: 'uip-menu', 'data-uip-menu': project.id, open: false },
-    R.createElement('summary', { 'data-uip-fold-summary': 'card-menu' }, t.cardMenuTitle),
+    R.createElement('summary', { 'data-uip-fold-summary': 'card-menu' }, t.plugins?.cardMenuTitle),
     body,
   )
 }
 
+/**
+ * THE CHANGELOG DISCLOSURE (2026-10-02) — a card-level `<details>` beside
+ * the "more actions" menu, not a button inside it.
+ *
+ * `store`, not `installed`: the snapshot has `scan`, but `changelog()` and
+ * `loadChangelog()` live on the STORE itself (`installed.js:360`).
+ * Passing the snapshot made both `undefined`.
+ *
+ * Loads lazily: nothing is asked of the host until the reader opens it.
+ */
+function ChangelogDetails(props) {
+  const { R, t, project, store } = props
+  const [open, setOpen] = React.useState(false)
+  const changelog = typeof store?.changelog === 'function' ? store.changelog(project.package) : null
+  React.useEffect(() => {
+    if (!open) return undefined
+    if (changelog !== null && changelog?.status !== 'idle') return undefined
+    if (typeof store?.loadChangelog === 'function') void store.loadChangelog(project.package)
+    return undefined
+  }, [open, project.package, changelog?.status, store])
+  const sections = changelog?.payload?.sections
+  return R.createElement(
+    'details',
+    {
+      className: 'uip-menu',
+      key: 'changelog',
+      'data-uip-card-changelog': project.id,
+      open,
+      onToggle: (event) => setOpen(event.target.open),
+    },
+    R.createElement('summary', { 'data-uip-fold-summary': 'card-changelog' }, t.plugins?.changelogTitle),
+    Array.isArray(sections) && sections.length > 0
+      ? sections.map((section, index) =>
+          R.createElement(
+            'p',
+            { key: 'section-' + index },
+            String(section?.title ?? section?.heading ?? ''),
+          ),
+        )
+      : R.createElement('p', { className: 'uip-hint' }, t.plugins?.changelogUnavailable),
+  )
+}
 /**
  * One project card. Everything shown here comes from the project definition.
  * @param {object} input
@@ -433,7 +474,7 @@ function createCard(input) {
    * block is gone (C2) and the prop with it (C6), so the field is no longer read.) */
   /* (C4, 2026-09-30: `onConfirmChecks` and `onClearChecks` were destructured here, for the checklist block
    * (removed above). `onReset` stays until the card menu replaces the reset control.) */
-  const { React: R, project, t, pending, activeNames, outOfOrder, conflictsHere, onToggle, onRun, installed } = input
+  const { React: R, project, t, pending, activeNames, outOfOrder, conflictsHere, onToggle, onRun, installed, store } = input
   const name = project.name
 
   const badges = [
@@ -571,7 +612,16 @@ function createCard(input) {
       installed,
     }),
   )
-
+  body.push(
+    ChangelogDetails({
+      key: 'changelog',
+      R,
+      t,
+      project,
+      store,
+    }),
+  )
+  
   return R.createElement(
     'li',
     { className: 'uip-card', key: project.id, 'data-project': project.id, 'data-status': project.status },

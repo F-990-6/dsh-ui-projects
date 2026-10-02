@@ -354,6 +354,9 @@ export const STRINGS = {
       copyCommand: 'Copy',
       copyDone: 'Copied',
       copyFailed: 'Copy failed — select it manually',
+            changelogUnavailable: 'CHANGELOG unavailable',
+                  copyUninstallCommand: 'Copy uninstall command',
+      cardMenuTitle: 'More actions',
       /* ── step 56d: short fold titles, because a fold's title is a label rather than a sentence ── */
       foldContractPassed: 'Contract: passed',
       foldContractFindings: (count) => `Contract: ${count} finding(s)`,
@@ -618,6 +621,9 @@ export const STRINGS = {
       copyCommand: '复制',
       copyDone: '已复制',
       copyFailed: '复制失败，请手动复制',
+            changelogUnavailable: '更新日志不可用',
+                  copyUninstallCommand: '复制卸载命令',
+      cardMenuTitle: '更多操作',
       /* ── step 56d：折叠标题是标签而不是句子 ─────────────────────────────── */
       foldContractPassed: '契约：通过',
       foldContractFindings: (count) => `契约：${count} 处发现`,
