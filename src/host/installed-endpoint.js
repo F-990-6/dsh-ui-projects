@@ -307,7 +307,7 @@ export function registerInstalledEndpoint(ctx, { scan, channels = () => DEFAULT_
   const connection = ctx.get('connection')
   if (connection === undefined || typeof connection.fetch?.register !== 'function') {
     ctx.logger?.warn?.(
-      '[dsh-ui-projects] no connection service in this composition; the installed-package listing is unavailable and Settings › UI plugins will say so',
+      '[dsh-ui-projects] no connection service in this composition; the installed-package listing is unavailable and Settings › UI will say so',
     )
     return () => {}
   }

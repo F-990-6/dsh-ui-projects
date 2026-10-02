@@ -352,7 +352,9 @@ function apply(ctx) {
   )
 
   /*
-   * Settings › UI plugins: what is INSTALLED, from the host, read-only.
+   * (D7, 2026-09-30: this block used to be introduced as "Settings › UI plugins: what is INSTALLED, from
+   * the host, read-only." That column has been removed — the listing it described now feeds the "界面"
+   * column's card menu instead.)
    *
    * The request goes through the Connection service's fetch registry — the same authenticated
    * `/api` channel the host mounted the endpoint on — so the page never hand-builds a URL and the
@@ -436,119 +438,19 @@ function apply(ctx) {
    */
   ctx.effect(() => installedStore.deferUpdateCheck(), 'ui-projects: deferred update check')
 
-  ctx.effect(() => {
-    const slots = ctx.get('slots')
-    if (slots === undefined || typeof slots.inject !== 'function') return () => {}
-    return contributeSection(
-      { id: PLUGINS_SECTION_ID, order: PLUGINS_SECTION_ORDER, label: () => strings(detectLocale(ctx)).pluginsLabel },
-      () => {
-          // Opening the column is what asks the host, and asking twice is what the store's in-flight
-          // guard prevents. A side effect in a render is a smell, and it is the only seam this slot
-          // API offers: there is no mount hook, and a listing fetched at boot would be a request for
-          // a page most sessions never open.
-          if (installedStore.state().status === 'idle') void installedStore.refresh()
-          const { UiPluginsSection } = require('./panel-plugins.js')
-          /*
-           * The PROJECTS store goes along for the ride, read-only: §五's 启用开关 is a MIRROR here, not a
-           * second switch. The projects page receives the installed store the same way, so this is one
-           * page reading the other's snapshot rather than a new source of truth.
-           */
-          return UiPluginsSection({
-            store: installedStore,
-            projects: store,
-            t: strings(detectLocale(ctx)),
-            React: require('react'),
-            /*
-             * THE CHANNEL ADAPTER (phase 3, step 1). `record()` hands the section the settings record to
-             * merge against, and `write()` is the ONLY way a channel changes: it copies the record, sets
-             * `settings['<pkg>'].channel` through the channel store (which refuses a value it does not
-             * know), and writes it back through the persistence adapter this plugin already owns — so a
-             * channel lives in the same document as everything else the user has chosen.
-             */
-            channels: {
-              record: () => persist.read() ?? { settings: {} },
-              read: (name) => channels.read(persist.read() ?? { settings: {} }, name),
-              write: async (name, value) => {
-                const current = persist.read() ?? { v: 1, initialized: false, enabled: [], settings: {}, touched: false }
-                const next = { ...current, settings: { ...(current.settings ?? {}) } }
-                channels.write(next, name, value)
-                await persist.write(next)
-              },
-              /*
-               * THE CHECKLIST GOES THROUGH THE SAME DOOR (step 4). `readChecklist` is a plain read beside
-               * `read`; `writeChecklist` clones the record, sets one item through the channel store's own
-               * module (which refuses an id it does not know — `src/client/channels.js`), and hands the
-               * whole document back to the persistence adapter this plugin already owns.
-               *
-               * THAT IS THE POINT: the checklist is not a second store. It lives in the same settings
-               * document as the channel, so it is the user's data, it survives the package being removed,
-               * and it re-renders by whatever path the channel selector already uses — one mechanism, two
-               * fields.
-               */
-              readChecklist: (name) => channels.readChecklist(persist.read() ?? { settings: {} }, name),
-              writeChecklist: async (name, itemId, checked) => {
-                const current = persist.read() ?? { v: 1, initialized: false, enabled: [], settings: {}, touched: false }
-                const next = { ...current, settings: { ...(current.settings ?? {}) } }
-                channels.writeChecklist(next, name, itemId, checked)
-                await persist.write(next)
-              },
-              /*
-               * THE AUTHOR'S TWO OTHER PIECES OF STATE, through the same door as the checklist: a draft and
-               * the mark that says which version was tested. Cloning the record before touching it is what
-               * keeps `channel`, `checklist`, `changelogDraft` and `testedAt` from overwriting one another
-               * — they are four fields of ONE per-package entry (`src/client/channels.js`).
-               */
-              readDraft: (name) => channels.readDraft(persist.read() ?? { settings: {} }, name),
-              writeDraft: async (name, draft) => {
-                const current = persist.read() ?? { v: 1, initialized: false, enabled: [], settings: {}, touched: false }
-                const next = { ...current, settings: { ...(current.settings ?? {}) } }
-                channels.writeDraft(next, name, draft)
-                await persist.write(next)
-              },
-              /*
-               * ONE ENTRY OF THE DRAFT, edited where it belongs. The panel asks for a change; this method
-               * reads the draft that is actually stored, applies the change to a COPY, and writes the whole
-               * draft back through the channel store — so "what the panel saw" and "what gets written" can
-               * never drift, and a stale index cannot corrupt the record.
-               *
-               * `patch` is either `{ category?, text? }` (edit those fields) or `{ remove: true }` (drop the
-               * entry). An index nobody can reach changes nothing: the panel's own list is the only source of
-               * indices, and a stale one must not delete a neighbour.
-               */
-              writeDraftEntry: async (name, index, patch) => {
-                const current = persist.read() ?? { v: 1, initialized: false, enabled: [], settings: {}, touched: false }
-                const next = { ...current, settings: { ...(current.settings ?? {}) } }
-                const draft = channels.readDraft(next, name)
-                if (draft === null) return undefined
-                const position = Number.isInteger(index) ? index : -1
-                /** @type {Array<{ category: string, text: string }>} */
-                const entries = draft.entries.map((entry) => ({ ...entry }))
-                if (patch !== null && typeof patch === 'object' && patch.remove === true) {
-                  if (position >= 0 && position < entries.length) entries.splice(position, 1)
-                } else if (patch !== null && typeof patch === 'object') {
-                  const entry = position >= 0 && position < entries.length ? entries[position] : { category: 'Changed', text: '' }
-                  if (typeof patch.category === 'string') entry.category = patch.category
-                  if (typeof patch.text === 'string') entry.text = patch.text
-                  if (position < 0 || position >= entries.length) entries.push(entry)
-                  else entries[position] = entry
-                }
-                channels.writeDraft(next, name, { ...draft, entries, savedAt: new Date().toISOString() })
-                await persist.write(next)
-                return entries
-              },
-              readTestedAt: (name) => channels.readTestedAt(persist.read() ?? { settings: {} }, name),              writeTestedAt: async (name, version, at) => {
-                const current = persist.read() ?? { v: 1, initialized: false, enabled: [], settings: {}, touched: false }
-                const next = { ...current, settings: { ...(current.settings ?? {}) } }
-                /* The stamp defaults HERE, at the edge that knows what "now" is — the store stays a plain
-                 * function of its arguments (decision 2026-09-30). */
-                channels.writeTestedAt(next, name, version, at ?? new Date().toISOString())
-                await persist.write(next)
-              },
-            },
-          })
-        },
-    )
-  }, 'ui-projects: settings plugins section')
+  /*
+   * THE "UI PLUGINS" COLUMN IS GONE (2026-09-30). What used to live here was a second `settings.section`
+   * contribution — the package listing, its contract badge, its channel selector, the author's sub-fold and
+   * its diagnostics block — plus the whole `channels` adapter those features read and wrote the settings
+   * record through. All of it belonged to features that are being removed with the column.
+   *
+   * WHAT SURVIVES, and it is the point of the removal rather than a casualty of it:
+   *   · `installedStore` is still created above, because the "界面" column reads it (`render`, and the
+   *     `refresh()` it performs before the first paint);
+   *   · the "界面" section contribution above is untouched — one column, not two;
+   *   · the copy button, the uninstall command, the CHANGELOG view and the diagnostics move onto that
+   *     column's own card menu, and `copyCommandText` now lives in `src/client/clipboard.js`.
+   */
 
 }
 
@@ -631,12 +533,10 @@ module.exports = {
      * test can supply as a `createElement` that returns plain data.
      */
     createInstalledStore,
-    UiPluginsSection: require('./panel-plugins.js').UiPluginsSection,
     /*
      * The changelog toggle, exported so the suite can drive it directly: the wiring between "a reader
      * opens a row" and "the store is asked" is one function, and a browser is not needed to check it.
      */
-    createChangelogToggle: require('./panel-plugins.js').createChangelogToggle,
     /*
      * The projects section, exported for the same reason its sibling is: the suite has to be able to
      * render it WITH props. The registered section is a zero-argument closure over the live store, so a

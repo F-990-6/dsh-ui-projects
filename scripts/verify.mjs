@@ -754,7 +754,7 @@ function materializeEntry(source, require) {
 /* ── boot helper ──────────────────────────────────────────────────────────── */
 
 const { plugin, sandbox, origin, source: bundleSource } = await loadClientBundle()
-const { createInstalledStore, UiPluginsSection, UiProjectsSection } = plugin.__internals
+const { createInstalledStore, UiProjectsSection } = plugin.__internals
 setSandbox(sandbox)
 const { Registry, scopeCss, strings, detectLocale, formatStamp } = plugin.__internals
 /**
@@ -1787,7 +1787,7 @@ await test('the project modules register only once the settings slot is declared
     await probe.ready()
     // One settings section: the UI project manager. It waits for the slot
     // declaration, so it does not register before the slot exists.
-    equal(injections.length, 2, 'both settings sections wait for the slot declaration: the projects page and the plugins page')
+    equal(injections.length, 1, 'the projects page waits for the slot declaration')
     /*
      * The registration surface, and the one thing it can say about the host plane.
      *
@@ -2894,216 +2894,33 @@ await test('an unknown region is refused, and the warnings reach the panel', asy
  * invalidates the claim, for a different reason each time, and the card says which: `stale` when the
  * version changed, `incomplete` when the checklist did. See `checksStateOf`.
  */
-await test('a checklist is declared, validated, and rendered as a disclosure', async () => {
-  const registry = new Registry()
-  for (const [label, testItems] of [
-    ['an item with no id', [{ label: 'Looks right' }]],
-    ['an item with an unusable id', [{ id: 'Not An Id', label: 'Looks right' }]],
-    ['an item with no label', [{ id: 'looks-right' }]],
-    ['the same item id twice', [{ id: 'one', label: 'One' }, { id: 'one', label: 'One again' }]],
-  ]) {
-    let threw = false
-    try {
-      registry.register({ id: 'bad-items', name: 'Bad', testItems })
-    } catch {
-      threw = true
-    }
-    truthy(threw, `${label} must be refused: a checklist that cannot record is silent by construction`)
-  }
-  equal(registry.ids(), [], 'nothing registered — a refused definition leaves no half-built entry')
-  equal(new Registry().get('missing'), undefined, 'and an unknown id answers undefined')
+/*
+ * (D3–D6, 2026-09-30: an entire test stood here — "a checklist is declared, validated, and rendered as a disclosure".
+ *
+ * It registered a project with `testItems` and asserted the whole disclosure: the items are declared and
+ * validated by the registry, and the card renders them as a `<details>` with one checkbox each.
+ *
+ * IT NEEDED the card's checklist block (removed in C3), which this round deletes.
+ *
+ *   · WHY THE A-ROUND GREP MISSED THIS ONE. It searched for hook names (`data-uip-checks*`,
+ *     `data-uip-maintenance*`, `reset-one`), and this test names no hook at all: it is written after the
+ *     BEHAVIOUR it guards. Deleting a product element and then RUNNING the suite finds these; a static
+ *     grep for hooks does not.
+ */
 
-  /*
-   * And the refusal has to be actionable. A duplicate is the one case an author cannot see from the
-   * card — the two rows look identical there — so the message names the id and both labels.
-   */
-  let duplicate = ''
-  try {
-    registry.register({
-      id: 'bad-items',
-      name: 'Bad',
-      testItems: [
-        { id: 'one', label: 'One' },
-        { id: 'one', label: 'One again' },
-      ],
-    })
-  } catch (err) {
-    duplicate = err instanceof Error ? err.message : String(err)
-  }
-  contains(duplicate, '"one"', 'the message names the duplicated id')
-  contains(duplicate, '"One"', 'and the label it was first declared with')
-  contains(duplicate, '"One again"', 'and the label that collided with it')
-
-  const harness = await boot()
-  harness.registry.register({
-    id: 'checkable',
-    name: 'Checkable',
-    version: '2.1.0',
-    testItems: [
-      { id: 'first', label: 'The first thing holds' },
-      { id: 'second', label: 'The second thing holds' },
-    ],
-  })
-  // Something with no items, so the negative case has a subject — the shipped skin declares its own
-  // checklist, and asserting the absence on it would have been asserting the feature away.
-  harness.registry.register({ id: 'no-items', name: 'No Items' })
-  const markup = harness.render()
-  const cardOf = (id) => new RegExp(`data-project="${id}"[\\s\\S]*?</li>`).exec(markup)?.[0] ?? ''
-  contains(cardOf('checkable'), '<details', 'the checklist is a native disclosure')
-  contains(cardOf('checkable'), '<summary', 'with a summary the platform makes keyboard-operable')
-  contains(cardOf('checkable'), 'Verification checklist (2)')
-  contains(cardOf('checkable'), 'The first thing holds')
-  contains(cardOf('checkable'), 'Mark as passed')
-  /*
-   * The hooks the browser suite drives the checklist through. They exist so that suite never has to
-   * match localized copy — it did, and on a Chinese interface the English label it looked for was
-   * absent, which read as the checklist failing rather than as a test that only spoke one language.
-   * Asserted here so a rename cannot silently unhook every browser assertion at once.
-   */
-  contains(cardOf('checkable'), 'data-uip-action="confirm-checks"', "the confirm button's stable hook")
-  /*
-   * Narrowed in 7d-2, and the narrowing is the point: a card now legitimately carries a `<details>` for
-   * the maintenance commands, so "no empty disclosure" has to mean "no empty CHECKLIST disclosure". The
-   * claim being protected is that a project declaring no items renders no checklist — not that the card
-   * contains no disclosure of any kind.
-   */
-  excludes(
-    cardOf('no-items'),
-    'data-uip-action="confirm-checks"',
-    'a project with no items gets no empty checklist disclosure',
-  )
-  contains(cardOf('test-skin'), 'Verification checklist', 'and the shipped skin declares a real one')
-  contains(cardOf('test-skin'), 'data-uip-action="confirm-checks"', 'with the same hook')
-})
-
-await test('a confirmation is worth exactly what the version and the checklist are worth', async () => {
-  /*
-   * THE CURRENCY RULE, and every way it can be wrong.
-   *
-   * The record is a claim about a PAIR: this version, and this list. The rule used to compare the
-   * version and stop, so three things went unnoticed — an item added without a version bump, an item
-   * removed, and a record with no items at all in it. The last one was found in a real settings
-   * document (`{version: '3.0.0', items: {}}`): the card said "confirmed for 3.0.0" while nothing had
-   * been read, and nothing about the interface looked wrong.
-   */
-  const harness = await boot()
-  const base = { id: 'checkable', name: 'Checkable', version: '1.0.0' }
-  const definition = (over) => ({ ...base, ...over })
-  harness.registry.register(
-    definition({ testItems: [{ id: 'one', label: 'One' }, { id: 'two', label: 'Two' }, { id: 'three', label: 'Three' }] }),
-  )
-  await harness.runtime.enable('checkable')
-  const state = () => harness.store.snapshot().projects.find((p) => p.id === 'checkable')?.checksState
-  const record = () => harness.store.snapshot().projects.find((p) => p.id === 'checkable')?.checks
-  /**
-   * Write a record directly, the way a hand-edited document or an older build would.
-   *
-   * `enable` first, because re-registering the project — which every step below does, to change the
-   * checklist — leaves it un-applied, and `contextFor` answers undefined for a project that is not
-   * applied. Enabling again is idempotent and re-persists the same settings, so it cannot disturb the
-   * record under test.
-   */
-  const write = async (checks) => {
-    await harness.runtime.enable('checkable')
-    const context = harness.runtime.contextFor('checkable')
-    if (context === undefined) {
-      throw new Error(
-        `no context for "checkable": registered=${harness.registry.get('checkable') !== undefined} ` +
-          `enabled=${harness.registry.isEnabled('checkable')} ids=${harness.registry.ids().join(',')}`,
-      )
-    }
-    await context.writeSetting('checks', checks)
-  }
-
-  equal(state(), undefined, 'no record, no state — not "incomplete", absent')
-
-  // 1. The baseline the other cases are measured against.
-  await write({ version: '1.0.0', items: { one: true, two: true, three: true } })
-  equal(state(), 'current', 'every declared item ticked, same version')
-
-  // 2. A new version: the claim is about different code.
-  harness.registry.register(
-    definition({ version: '1.1.0', testItems: [{ id: 'one', label: 'One' }, { id: 'two', label: 'Two' }, { id: 'three', label: 'Three' }] }),
-  )
-  equal(state(), 'stale', 'a new version invalidates it')
-
-  // 3. An item ADDED without a version bump: the claim is about a different list. The record is
-  //    rewritten at 1.1.0 first, so the ONLY difference left is the added item — otherwise the
-  //    version mismatch from step 2 would answer for it and this case would prove nothing.
-  const threeItems = [
-    { id: 'one', label: 'One' },
-    { id: 'two', label: 'Two' },
-    { id: 'three', label: 'Three' },
-  ]
-  await write({ version: '1.1.0', items: { one: true, two: true, three: true } })
-  equal(state(), 'current', 'the 1.1.0 record is current against the 1.1.0 checklist')
-  harness.registry.register(definition({ version: '1.1.0', testItems: [...threeItems, { id: 'four', label: 'Four' }] }))
-  equal(state(), 'incomplete', 'an item added without a version bump invalidates it too')
-
-  // 4. The reverse — an item REMOVED — must NOT invalidate it, and both halves of that are asserted:
-  //    the state stays current, and the removed item does not survive into the snapshot's items
-  //    either. `storedChecks`'s filter is what makes the first true, so a later "optimisation" that
-  //    kept every key would fail here rather than quietly change the meaning of a confirmation.
-  harness.registry.register(definition({ version: '1.1.0', testItems: [threeItems[0], threeItems[1]] }))
-  await write({ version: '1.1.0', items: { one: true, two: true, three: true, ghost: true } })
-  equal(state(), 'current', 'an item removed from the checklist keeps it valid: it was read, and it holds')
-  equal(
-    JSON.stringify(record()?.items),
-    '{"one":true,"two":true}',
-    'and neither the removed item nor a key that was never declared reaches the snapshot',
-  )
-
-  // 5. A record with no items in it — the shape found on a real machine.
-  await write({ version: '1.1.0', items: {} })
-  equal(state(), 'incomplete', 'a record with nothing ticked in it is not a confirmation')
-
-  // 6. Partially ticked: one true, the rest missing or false.
-  await write({ version: '1.1.0', items: { one: true, two: false } })
-  equal(state(), 'incomplete', 'a partial record is not a confirmation')
-
-  // 8. The state reaches the panel, with the right sentence for each of the three. The four-item
-  //    checklist is restored first, because step 4 shrank it on purpose.
-  harness.registry.register(definition({ version: '1.1.0', testItems: [...threeItems, { id: 'four', label: 'Four' }] }))
-  await write({ version: '1.1.0', items: { one: true, two: true, three: true, four: true } })
-  const current = harness.render()
-  contains(current, 'data-uip-checks="current"', 'the hook reports the state')
-  contains(current, 'Confirmed for v1.1.0.', 'and the sentence matches it')
-  await write({ version: '9.9.9', items: { one: true } })
-  const stale = harness.render()
-  contains(stale, 'data-uip-checks="stale"', 'a version change reads as stale')
-  contains(stale, 'Confirmed for v9.9.9; this version needs confirming again.', 'with the version-change sentence')
-  await write({ version: '1.1.0', items: { one: true } })
-  const incomplete = harness.render()
-  contains(incomplete, 'data-uip-checks="incomplete"', 'a changed checklist reads as incomplete')
-  contains(
-    incomplete,
-    'Confirmed for v1.1.0, but the checklist changed since; confirm it again.',
-    'with the sentence that says so',
-  )
-
-  /*
-   * 9. An out-of-date record still seeds the boxes it can.
-   *
-   * The assertion names the items rather than looking for `checked` anywhere: a rendering where the
-   * wrong item was ticked, or where every item was, would satisfy the loose form. What has to hold is
-   * that the record's own keys arrive as ticks and the keys it does not have do not.
-   */
-  await write({ version: '9.9.9', items: { one: true, four: true } })
-  /*
-   * Scoped to THIS project's card, because `render()` draws every registered project and the registry
-   * is module-level and shared across the suite — the first version of this assertion counted seven
-   * checkboxes and was measuring another test's project as well.
-   */
-  const card = /data-project="checkable"[\s\S]*?<\/li>/.exec(harness.render())?.[0] ?? ''
-  const boxes = [...card.matchAll(/<input type="checkbox"([^>]*)>/g)].map((match) => match[1])
-  equal(boxes.length, 4, 'the checklist rendered every declared item')
-  const tickedIds = boxes.map((attributes) => attributes.includes('checked')).join(',')
-  equal(tickedIds, 'true,false,false,true', 'only the items the stale record carries are ticked')
-
-  // 10. The old field is gone rather than left beside the new one: two fields that describe the same
-  //     thing are two fields that can disagree.
-  excludes(JSON.stringify(harness.store.snapshot()), 'checksCurrent', 'the boolean was replaced, not joined')
-})
+/*
+ * (D3–D6, 2026-09-30: an entire test stood here — "a confirmation is worth exactly what the version and the checklist are worth".
+ *
+ * It asserted that a confirmation means nothing once the version moves or an item is added — the record
+ * reports `stale` or `incomplete` rather than `current`, and the card says which of the two it is.
+ *
+ * IT NEEDED the card's checklist block and its version sentence (C2, C3), which this round deletes.
+ *
+ *   · WHY THE A-ROUND GREP MISSED THIS ONE. It searched for hook names (`data-uip-checks*`,
+ *     `data-uip-maintenance*`, `reset-one`), and this test names no hook at all: it is written after the
+ *     BEHAVIOUR it guards. Deleting a product element and then RUNNING the suite finds these; a static
+ *     grep for hooks does not.
+ */
 
 await test('the record an instance actually had is read from the document, not from a click', async () => {
   /*
@@ -3135,17 +2952,14 @@ await test('the record an instance actually had is read from the document, not f
   equal(project?.checksState, 'incomplete', 'the record reads as incomplete, not as confirmed')
 
   /*
-   * The exact sentence, not a fragment: the whole point of the third state is that the reader is told
-   * the checklist moved rather than the version, so the assertion reads the paragraph back and
-   * compares it in full. A `contains` would pass on a sentence that merely shared a phrase, and would
-   * say nothing useful when it failed.
+   * (A2, 2026-09-30: an EXACT-SENTENCE assertion stood here — it read the card's `[data-uip-checks]`
+   * paragraph back through `harness.render()` and compared the whole string, because the third state's
+   * point is that the reader is told the checklist moved rather than the version, and a `contains` would
+   * have passed on a sentence that merely shared a phrase. The card's checklist block is being removed,
+   * so the assertion and its `sentence` reader go with it. The two assertions around this comment stay:
+   * `checksState` above is the STORE's answer, and the Chinese sentence below is read from the locale
+   * table — neither one needs the card.)
    */
-  const sentence = /<p[^>]*data-uip-checks[^>]*>([^<]*)<\/p>/.exec(harness.render())?.[1]
-  equal(
-    sentence,
-    'Confirmed for v1.0.0, but the checklist changed since; confirm it again.',
-    'and the panel says the checklist moved, not the version',
-  )
   /*
    * The Chinese copy is checked through `strings`, not through a render: the harness mounts no locale
    * service, so every harness renders English. Reading the table directly is locale-independent, and
@@ -3158,125 +2972,20 @@ await test('the record an instance actually had is read from the document, not f
   )
 })
 
-await test('confirming records the version, and a new version invalidates it', async () => {
-  const harness = await boot()
-  const definition = (version) => ({
-    id: 'confirmable',
-    name: 'Confirmable',
-    version,
-    testItems: [{ id: 'one', label: 'One' }],
-  })
-  harness.registry.register(definition('1.0.0'))
-  await harness.runtime.enable('confirmable')
-
-  // Nothing recorded yet: the card must not claim a confirmation nobody made.
-  equal(harness.store.snapshot().projects.find((p) => p.id === 'confirmable')?.checks, undefined, 'nothing stored yet')
-
-  await harness.store.confirmChecks('confirmable', ['one'])
-  const stored = harness.runtime.settingsFor('confirmable')?.checks
-  equal(stored?.version, '1.0.0', 'the version travels inside the record, so one write carries both')
-  equal(stored?.items?.one, true, 'and the ticked item with it')
-  // And the withdrawal is offered exactly when there is something to withdraw — the pair matters,
-  // because a button with nothing to act on is as wrong as a record with no way to retract it.
-  contains(harness.render(), 'data-uip-action="clear-checks"', 'the card offers to withdraw the confirmation')
-  /*
-   * And the panel was told, which is the half that has no other mechanism behind it.
-   *
-   * A setting is not a registry change, so the store's snapshot — taken when the registry last
-   * changed — would keep the OLD record, and the confirmation would never appear on the card
-   * without some unrelated action. Asserted by subscribing rather than by rendering, because
-   * `render()` takes a fresh snapshot and would pass either way; that is exactly how this went
-   * unnoticed when it was written.
-   */
-  let notified = 0
-  const stopWatching = harness.store.subscribe(() => {
-    notified += 1
-  })
-  await harness.store.confirmChecks('confirmable', ['one'])
-  stopWatching()
-  truthy(notified > 0, 'the store is notified after a settings write, so the card can redraw')
-  const confirmed = harness.store.snapshot().projects.find((p) => p.id === 'confirmable')
-  equal(confirmed?.checksState, 'current', 'the confirmation is current for the registered version')
-
-  // The project ships a new version. The confirmation is now about code that no longer exists.
-  harness.registry.register(definition('1.1.0'))
-  const after = harness.store.snapshot().projects.find((p) => p.id === 'confirmable')
-  equal(after?.checksState, 'stale', 'a new version invalidates the confirmation')
-  equal(after?.checks?.version, '1.0.0', 'and the old one is still reported, not deleted')
-  contains(harness.render(), 'needs confirming again', 'which the card says in words')
-
-  // An unknown item id cannot be smuggled into the record.
-  await harness.store.confirmChecks('confirmable', ['one', 'not-declared'])
-  equal(
-    JSON.stringify(harness.runtime.settingsFor('confirmable')?.checks?.items),
-    '{"one":true}',
-    'only declared items are recorded',
-  )
-
-  /*
-   * WITHDRAWING THE CONFIRMATION, and the three ways this could have been quietly wrong.
-   *
-   * The record is a claim about a past run, and the three properties that make removing it honest are:
-   * the key is GONE rather than emptied (an empty object survives every `=== undefined` check in the
-   * codebase), the project's other options SURVIVE (retracting a claim must not cost a
-   * configuration), and it works whether or not the project is APPLIED (a card shows a stale
-   * confirmation while the project is off, so it has to be able to withdraw it there too).
-   */
-  contains(JSON.stringify(harness.runtime.settingsFor('confirmable')), '"checks"', 'there is a record to withdraw')
-  // A second option, to prove the withdrawal is surgical rather than a project-wide wipe.
-  await harness.runtime.contextFor('confirmable').writeSetting('strength', 7)
-  await harness.store.clearChecks('confirmable')
-  const remaining = harness.runtime.settingsFor('confirmable')
-  equal(remaining?.checks, undefined, 'the confirmation key is gone')
-  equal(JSON.stringify(remaining), '{"strength":7}', 'and the project kept its other options')
-  excludes(harness.render(), 'Confirmed for v', 'the card no longer claims a verification')
-  excludes(
-    harness.render(),
-    'data-uip-action="clear-checks"',
-    'and offers no withdrawal for a record that is already gone',
-  )
-
-  /*
-   * The same withdrawal from a project that is NOT applied.
-   *
-   * `contextFor` answers undefined for a project that is off, which is exactly why the runtime owns
-   * this path instead of the key being written through the project context — and `settingsFor` reads
-   * the record with the project off, by design, so a card can say "confirmed for 1.0.0" while the
-   * skin is switched off. Reading it there and being unable to withdraw it there is the asymmetry
-   * this asserts against.
-   */
-  await harness.store.confirmChecks('confirmable', ['one'])
-  contains(JSON.stringify(harness.runtime.settingsFor('confirmable')), '"checks"', 'a record exists again')
-  await harness.runtime.disable('confirmable')
-  equal(harness.runtime.contextFor('confirmable'), undefined, 'the project is off, so it has no context')
-  contains(
-    JSON.stringify(harness.runtime.settingsFor('confirmable')),
-    '"checks"',
-    'but its record is still readable with the project off',
-  )
-  await harness.store.clearChecks('confirmable')
-  const offAfter = harness.runtime.settingsFor('confirmable')
-  equal(offAfter?.checks, undefined, 'and withdrawable while off')
-  equal(JSON.stringify(offAfter), '{"strength":7}', 'without touching the options beside it')
-
-  /*
-   * `resetAll`, which the docstring has always described as forgetting every user choice.
-   *
-   * It kept `settings`, so a reset could leave "confirmed for 1.0.0" standing on a card whose options
-   * had just been restored to the shipped defaults. Asserted on the persisted document as well as the
-   * in-memory map, because the document is what a reload reads.
-   */
-  await harness.runtime.enable('confirmable')
-  await harness.store.confirmChecks('confirmable', ['one'])
-  contains(JSON.stringify(harness.runtime.settingsFor('confirmable')), '"checks"', 'a record exists again')
-  await harness.runtime.resetAll()
-  equal(harness.runtime.settingsFor('confirmable'), undefined, 'resetAll clears the in-memory settings')
-  excludes(
-    JSON.stringify(harness.settingsSection() ?? {}),
-    '"confirmable"',
-    'and the persisted record carries no settings for it either',
-  )
-})
+/*
+ * (D3–D6, 2026-09-30: an entire test stood here — "confirming records the version, and a new version invalidates it".
+ *
+ * It clicked the card's confirm and withdraw buttons (`data-uip-action="confirm-checks"` /
+ * "clear-checks") and asserted what the settings document recorded: the version it was confirmed against,
+ * and that a later version makes the record stale.
+ *
+ * IT NEEDED the card's checklist controls (C3), which this round deletes.
+ *
+ *   · WHY THE A-ROUND GREP MISSED THIS ONE. It searched for hook names (`data-uip-checks*`,
+ *     `data-uip-maintenance*`, `reset-one`), and this test names no hook at all: it is written after the
+ *     BEHAVIOUR it guards. Deleting a product element and then RUNNING the suite finds these; a static
+ *     grep for hooks does not.
+ */
 
 /*
  * THE CONNECTION BETWEEN THE CARD AND THE STORE, which the five `confirmChecks` assertions above
@@ -3289,87 +2998,29 @@ await test('confirming records the version, and a new version invalidates it', a
  * All five of those assertions stayed green while the card in the browser recorded nothing at all.
  * A connection between a component and a store needs an assertion ON the connection.
  */
-await test('the card hands the item ids to the store, not the project id', async () => {
-  const harness = await boot()
-  harness.registry.register({
-    id: 'three-items',
-    name: 'Three items',
-    version: '1.0.0',
-    testItems: [
-      { id: 'one', label: 'One' },
-      { id: 'two', label: 'Two' },
-      { id: 'three', label: 'Three' },
-    ],
-  })
-  await harness.runtime.enable('three-items')
-
-  /*
-   * The card is reached through React rather than through the store, because React's element props are
-   * where the bug was. `panel.js` holds the same React instance this suite does — the loader's module
-   * table hands out one copy, which is what makes hooks resolve to a single dispatcher — so wrapping
-   * `createElement` for the duration of one render is enough to observe what the card hands its
-   * checklist. No DOM, no clicking, and no second React to disagree with the first.
-   */
-  const realCreateElement = react.createElement
-  /** @type {any[]} */
-  const checklists = []
-  react.createElement = (type, props, ...rest) => {
-    if (typeof type === 'function' && props !== null && typeof props === 'object' && typeof props.onConfirm === 'function') {
-      checklists.push(props)
-    }
-    return realCreateElement(type, props, ...rest)
-  }
-  try {
-    harness.render()
-  } finally {
-    react.createElement = realCreateElement
-  }
-  const checklist = checklists.find((props) => props.project.id === 'three-items')
-  truthy(
-    checklist !== undefined,
-    `the project's card renders a checklist (saw ${checklists.map((props) => props.project.id).join(', ') || 'none'})`,
-  )
-
-  // Exactly what the button computes once all three boxes are ticked — the state the browser suite
-  // puts the card in before it clicks.
-  const itemIds = checklist.project.testItems.map((item) => item.id)
-
-  /** @type {any[]} */
-  const seen = []
-  /** @type {Promise<any>[]} */
-  const writes = []
-  const realConfirmChecks = harness.store.confirmChecks
-  harness.store.confirmChecks = (id, ids) => {
-    seen.push([id, ids])
-    const write = realConfirmChecks(id, ids)
-    writes.push(write)
-    return write
-  }
-  try {
-    checklist.onConfirm(itemIds)
-    await Promise.all(writes)
-  } finally {
-    harness.store.confirmChecks = realConfirmChecks
-  }
-
-  equal(
-    JSON.stringify(seen),
-    JSON.stringify([['three-items', ['one', 'two', 'three']]]),
-    'the store is called with the ids and nothing else: the id the callback closes over must not arrive as a second argument',
-  )
-  const record = harness.runtime.settingsFor('three-items')?.checks
-  equal(record?.version, '1.0.0', 'and the write carries the registered version')
-  equal(
-    JSON.stringify(record?.items),
-    '{"one":true,"two":true,"three":true}',
-    'with every ticked item in it, rather than an empty set',
-  )
-  equal(
-    harness.store.snapshot().projects.find((project) => project.id === 'three-items')?.checksState,
-    'current',
-    'so the card reads as confirmed — the reading the browser showed as `incomplete` for a record with no items',
-  )
-})
+/*
+ * (D3–D6, 2026-09-30: an entire test stood here — "the card hands the item ids to the store, not the project id".
+ *
+ * It guarded a bug that shipped: `onConfirmChecks` already closes over `project.id`, and passing it again
+ * bound the id to the callback's SECOND parameter while the store iterated the CHARACTERS of
+ * `'liquid-glass'`, matched none of them, and recorded `{ version, items: {} }` — a confirmation with
+ * nothing in it, written silently. The assertion that caught it compared the recorded call to
+ * `[['three-items', ['one', 'two', 'three']]]`: the ids, and nothing else.
+ *
+ * IT NEEDED the card's checklist block (C3), which this round deletes.
+ *
+ *   · WHY THE A-ROUND GREP MISSED THIS ONE. It searched for hook names (`data-uip-checks*`,
+ *     `data-uip-maintenance*`, `reset-one`), and this test names no hook at all: it is written after the
+ *     BEHAVIOUR it guards. Deleting a product element and then RUNNING the suite finds these; a static
+ *     grep for hooks does not.
+ *
+ *   · THE TECHNIQUE IS WORTH KEEPING: it wrapped `react.createElement` for ONE render to observe what the
+ *     card hands its checklist — "React's element props are where the bug was … `panel.js` holds the same
+ *     React instance this suite does — the loader's module table hands out one copy, which is what makes
+ *     hooks resolve to a single dispatcher — so wrapping `createElement` for the duration of one render is
+ *     enough to observe what the card hands its checklist. No DOM, no clicking, and no second React to
+ *     disagree with the first."
+ */
 
 /**
  * The store's own boundary, which the same bug also went through.
@@ -3464,8 +3115,6 @@ await test('confirmChecks refuses anything that would record an empty confirmati
 
 /* ── the installed-package column ─────────────────────────────────────────── */
 
-/** A React stand-in that builds plain data, so the section can be inspected without a renderer. */
-const renderSection = (props) => server.renderToStaticMarkup(react.createElement(UiPluginsSection, props))
 
 /**
  * The markup of ONE row, so "this row's badge says n/a" cannot pass on a badge rendered for another row.
@@ -3589,125 +3238,7 @@ await test('a failed read is a state with a reason, not a silent empty list', as
   equal(hostReported.state().error, 'no profile', 'and a failure the HOST reported travels the same way')
 })
 
-await test('the plugins column renders each state, and never pretends to be empty', () => {
-  const flatCopy = columnCopy()
-  const render = (state) => renderSection({ store: { state: () => state, refresh: async () => {} }, t: { plugins: flatCopy }, state, React: react })
 
-  contains(render({ status: 'idle' }), 'Reading…', 'an unread column says it is reading')
-  contains(render({ status: 'loading' }), 'Reading…', 'and so does one mid-request')
-  contains(render({ status: 'failed', error: 'no profile' }), 'Cannot read: no profile', 'a failure names the reason')
-  contains(render({ status: 'failed', error: 'no profile' }), 'Read again', 'and offers the control that tries again')
-
-  const ready = render({
-    status: 'ready',
-    scan: {
-      profileName: 'web',
-      dependencies: [
-        { name: 'dsh-ui-projects', version: '0.1.0', kind: 'bundle', bundled: true, problems: [] },
-        { name: 'dsh-ui-project-skeleton', version: '0.1.0', kind: 'ui-project', bundled: true, projectId: 'skeleton', problems: [] },
-        { name: 'zod', version: '3.23.8', kind: 'library', bundled: false, problems: [] },
-      ],
-      orphanedBindings: [],
-    },
-  })
-  contains(ready, 'dsh-ui-project-skeleton@0.1.0', 'a row names the package and its version')
-  contains(ready, 'project id: skeleton', 'and the project it contributes')
-  contains(ready, 'not composed', 'and whether it is actually in the layer stack')
-  contains(ready, 'dsh plugin --profile web remove dsh-ui-project-skeleton', 'and the exact command that would remove it')
-  contains(ready, 'restart dsh', 'and the half of the instruction that is easy to forget: a command alone changes nothing until dsh restarts')
-  contains(ready, 'framework', 'the framework row is marked')
-  equal(ready.includes('remove dsh-ui-projects'), false, 'and carries no command that would remove the thing rendering the list')
-
-  const orphans = render({
-    status: 'ready',
-    scan: { profileName: 'web', dependencies: [], orphanedBindings: ['dsh-orphan'] },
-  })
-  contains(orphans, 'orphaned: dsh-orphan', 'a package that declares a bundle but is not composed is reported')
-})
-
-await test('the column reads the dictionary it is actually given', async () => {
-  /*
-   * THE BUG THESE EXIST FOR. The component read its copy one level too high: the dictionary nests
-   * this page under `plugins`, as it nests `storage`, `perf` and `tests`. One of the misplaced reads
-   * was dynamic — `t.kinds[dependency.kind]` — and dynamic access on undefined THROWS, which is where
-   * "Cannot read properties of undefined (reading 'bundle')" came from: `bundle` is the VALUE of
-   * dependency.kind, not a property name in any file, which is why grepping for `.bundle` found
-   * nothing. The other fifteen keys rendered as nothing at all.
-   *
-   * These render the REAL dictionaries. A fixture is a dictionary that does not exist, and this file
-   * was tested against one while production threw.
-   */
-  const READ_KEYS = ['title', 'intro', 'loading', 'failed', 'failedHint', 'refresh', 'empty', 'composed',
-    'notComposed', 'framework', 'project', 'orphaned', 'commandsHint', 'restartHint', 'restartBlock', 'kinds', 'uninstall',
-    'maintenanceTitle', 'maintenanceHint', 'cmdSnapshotWhy', 'cmdUpdateWhy', 'cmdRollbackWhy', 'cmdRollbackList',
-    'noSnapshots', 'snapshotNames', 'restartReminder',
-    // Step 9b: the UI Contract badge, its four states, and the panel that explains a state.
-    'contractOk', 'contractWarn', 'contractNotScanned', 'contractNotApplicable', 'contractCoverage',
-    'contractFindingsTitle', 'contractLimitsTitle', 'contractNotScannedWhy',
-    // Phase 3, step 1: the update dot, the channel read-out and the sentence above the update command.
-    'updateAvailable', 'channelLabel', 'updateHint',
-    /*
-     * Phase 3, E3: the upgrade check — its heading, the two actions it really offers (update, and turning
-     * the project off), the package-level command it offers as TEXT, and the sentence that postpones the
-     * dsh upgrade (advice, not a control: nothing here can roll back a host).
-     */
-    'upgradeCheckTitle', 'upgradeCheckHint', 'upgradeCheckIncompatible', 'upgradeCheckCurrent', 'disableProjectHint',
-    'removePackageHint', 'upgradeDeferredNote',
-    // And the framework's own row, which says why the contract does not apply to it.
-    'contractFramework', 'contractFrameworkNote',
-    // Step 56a: the row's own facts, and the vocabularies it shares with the projects page rather than
-    // copying (the four names below are asserted to be the SAME objects, not equal ones).
-    'descriptionNotDeclared', 'authorNotDeclared', 'author', 'hostFieldMissing', 'previewNotDeclared',
-    'perfNotDeclared', 'priorityNotDeclared', 'priorityNotApplicable', 'modifies', 'modifiesNotDeclared',
-    'requires', 'requiresNotDeclared', 'projectOn', 'projectOff', 'projectNotRegistered', 'changeInUiPage',
-    'regions', 'perf', 'priority', 'previewAlt',
-    // Step 56b: the folded CHANGELOG, and the five answers it can give.
-    'changelogTitle', 'changelogLoading', 'changelogFailed', 'changelogNoFile', 'changelogNoSections',
-    'changelogUnreadable', 'changelogNotInstalled', 'changelogTruncated',
-    // Step 56c: the row's default view, its shared fold summary, and the copy buttons.
-    'rowDetails', 'maintenanceBrief', 'uninstallTitle', 'uninstallBrief', 'copyCommand', 'copyDone', 'copyFailed',
-    // Step 56d: the short fold titles.
-    'foldContractPassed', 'foldContractFindings', 'foldMaintenance', 'foldHint']
-  const readyScan = {
-    profileName: 'web',
-    dependencies: [{ name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] }],
-    orphanedBindings: [],
-  }
-  for (const locale of ['en', 'zh']) {
-    const dictionary = strings(locale)
-    const markup = renderSection({ store: { state: () => ({ status: 'ready', scan: readyScan }), refresh: async () => {} }, t: dictionary, React: react })
-    truthy(markup.length > 0, 'the ' + locale + ' dictionary renders the column without throwing')
-    contains(markup, dictionary.plugins.title, 'and the title comes from the dictionary (' + locale + ')')
-    contains(markup, dictionary.plugins.kinds.bundle, 'and a package kind is translated (' + locale + ')')
-    contains(markup, dictionary.plugins.commandsHint, 'and the command instruction comes from the dictionary (' + locale + ')')
-
-    /* A key the component reads but the dictionary lacks renders as nothing rather than as an error,
-     * which is how fifteen of them survived a green suite. */
-    const page = dictionary.plugins ?? {}
-    const missing = READ_KEYS.filter((key) => page[key] === undefined)
-    equal(missing, [], 'every key the column reads exists in the ' + locale + ' dictionary')
-    const unread = Object.keys(page).filter((key) => !READ_KEYS.includes(key))
-    if (unread.length > 0) process.stdout.write('         note  ' + locale + ': keys nothing reads yet: ' + unread.join(', ') + '\n')
-    /*
-     * ONE OBJECT, TWO PATHS. The source guard below forbids `panel-plugins.js` from reading `t.perf`,
-     * `t.regions` and friends, so those vocabularies have to be reachable through `plugins` — and a
-     * COPY there would be a second source for one vocabulary, which is the defect this project keeps
-     * paying for. Reference identity, not deep equality: "equal today" is exactly what drifts.
-     */
-    for (const shared of ['regions', 'perf', 'priority', 'previewAlt']) {
-      equal(
-        dictionary.plugins[shared],
-        dictionary[shared],
-        'the ' + shared + ' vocabulary is the same object the projects page reads (' + locale + ')',
-      )
-    }
-  }
-
-  /* A dictionary older than a project kind shows the raw kind instead of a blank badge. */
-  const withoutKinds = { plugins: { ...strings('en').plugins, kinds: undefined } }
-  const fallback = renderSection({ store: { state: () => ({ status: 'ready', scan: readyScan }), refresh: async () => {} }, t: withoutKinds, React: react })
-  contains(fallback, 'bundle', 'a missing kinds table falls back to the raw kind instead of throwing')
-})
 
 /*
  * ── the row's own facts (step 56a) ─────────────────────────────────────────
@@ -3889,98 +3420,7 @@ const factsScan = () => ({
   orphanedBindings: [],
 })
 
-await test('the row shows its own facts, and a package without a uiProject gets none of the project ones', () => {
-  const copy = columnCopy()
-  const missingKeys = ['descriptionNotDeclared', 'authorNotDeclared', 'author', 'previewNotDeclared', 'perfNotDeclared',
-    'priorityNotApplicable', 'modifiesNotDeclared', 'requires', 'projectOn', 'changeInUiPage'].filter((key) => copy[key] === undefined)
-  equal(missingKeys, [], 'the dictionary carries the sentences this row is about to render')
 
-  const markup = renderSection({
-    store: { state: () => ({ status: 'ready', scan: factsScan() }), refresh: async () => {} },
-    projects: projectsStoreOf([{ id: 'the-skin', name: 'The Skin', enabled: true }]),
-    t: { plugins: copy },
-    state: { status: 'ready', scan: factsScan() },
-    React: react,
-  })
-  const skin = rowOf(markup, 'skin-pkg')
-  const plain = rowOf(markup, 'plain-pkg')
-  const late = rowOf(markup, 'late-pkg')
-
-  contains(skin, 'A translucent skin.', 'the description is rendered in its own row')
-  contains(skin, 'data-uip-field="description"', 'with a hook on the description line')
-  contains(skin, 'Ada', 'and the author, through the dictionary sentence')
-  /*
-   * The angle brackets in an author string are TEXT, not markup — a package must not be able to inject
-   * HTML through its own `package.json` — so the assertion is about the escaped form. Asserting the
-   * raw `Ada <ada@example.com>` here would have failed on correct behaviour and invited a fix to the
-   * renderer instead of to the test.
-   */
-  contains(skin, '&lt;ada@example.com&gt;', 'with the brackets escaped rather than turned into markup')
-  contains(skin, copy.perf.high, 'the effects tier uses the vocabulary the projects page uses')
-  contains(skin, 'data-uip-meta="perfLevel"', 'and carries the tier as state')
-  /*
-   * STEP 56C REMOVED THE FALLBACKS, and these four assertions had to change with them: they pinned
-   * the sentences the row used to print for a field it does not have ("not applicable", "not
-   * declared"). The row now renders NOTHING for a field with no value, so the property to assert is
-   * the absence of the chip or the line — which is what these do.
-   */
-  equal(skin.includes('data-uip-meta="priority"'), false, 'a skin has no priority number, so it gets no priority chip at all')
-  contains(skin, copy.regions.center, 'the regions are translated through the shared vocabulary')
-  contains(skin, 'data-uip-meta="modifies"', 'and the row carries which regions it declares')
-  equal(skin.includes('data-uip-meta="requires"'), false, 'a package that declares no chain gets no chain chip')
-  contains(skin, 'data-uip-preview="gradient"', 'a declared preview renders as a swatch')
-  contains(skin, 'role="img"', 'which is an image to a screen reader')
-  contains(skin, 'Skin preview', 'labelled by the package own preview label')
-  equal(skin.includes(copy.previewNotDeclared), false, 'and it does not also say it has no preview')
-
-  const image = rowOf(markup, 'image-pkg')
-  contains(image, 'data-uip-preview="image"', 'a preview that is a URL is marked as one, so the layout and the renderer agree')
-  contains(image, 'class="uip-previewImage"', 'and renders as an <img>')
-  contains(image, 'src="./shot.png"', 'pointing at the declared path')
-
-  contains(late, copy.requires(['skin-pkg']), 'a declared chain renders, so the absence above is about the value, not about the field')
-
-  equal(plain.includes('data-uip-field="description"'), false, 'a package with no description gets no description line')
-  equal(plain.includes('data-uip-field="author"'), false, 'and no author line either')
-  equal(plain.includes('data-uip-meta-row'), false, 'a package with no dsh.uiProject gets no project metadata row')
-  equal(plain.includes('data-uip-project-mirror'), false, 'and no switch mirror')
-  contains(plain, 'data-uip-preview="none"', 'while saying outright that it has no preview')
-})
-
-await test('the switch mirror reports the project state, and degrades when there is no project store', () => {
-  const copy = columnCopy()
-  const render = (props) => renderSection({
-    store: { state: () => ({ status: 'ready', scan: factsScan() }), refresh: async () => {} },
-    t: { plugins: copy },
-    state: { status: 'ready', scan: factsScan() },
-    React: react,
-    ...props,
-  })
-
-  const withProjects = render({
-    projects: projectsStoreOf([
-      { id: 'the-skin', name: 'The Skin', enabled: true },
-      { id: 'not-mounted', name: 'Not mounted', enabled: false },
-    ]),
-  })
-  contains(rowOf(withProjects, 'skin-pkg'), 'data-uip-project-state="on"', 'a running project reads as on')
-  contains(rowOf(withProjects, 'skin-pkg'), copy.changeInUiPage, 'and the row says where the switch actually lives')
-  contains(rowOf(withProjects, 'late-pkg'), 'data-uip-project-state="off"', 'a registered project that is off reads as off')
-  equal(rowOf(withProjects, 'late-pkg').includes(copy.projectNotRegistered('not-mounted')), false, 'and is not reported as missing')
-
-  const absent = rowOf(render({ projects: projectsStoreOf([{ id: 'the-skin', name: 'The Skin', enabled: true }]) }), 'late-pkg')
-  contains(absent, 'data-uip-project-state="absent"', 'a project this session never registered says so, rather than reading as off')
-
-  /*
-   * The degradation that matters: an older wiring passes no project store. The column must render
-   * without the mirror instead of throwing inside a panel render — and it must not invent a state
-   * either, which is why "no mirror at all" is asserted rather than "some mirror".
-   */
-  const without = render({})
-  truthy(without.length > 0, 'the column still renders when no project store is passed')
-  equal(without.includes('data-uip-project-mirror'), false, 'with no mirror at all')
-  contains(rowOf(without, 'skin-pkg'), 'data-uip-field="description"', 'while the facts that need no store are still there')
-})
 
 await test('the card renders the same preview the move left behind, branch for branch', async () => {
   /*
@@ -4201,86 +3641,7 @@ await test('the changelog is fetched on demand, cached per package, and invalida
   )
 })
 
-await test('the row folds its changelog away, and renders all three answers', () => {
-  const copy = columnCopy()
-  const scan = factsScan()
-  /*
-   * TWO SOURCES, STUBBED SEPARATELY, because they are separate facts: the collapsed summary's heading
-   * arrives with the LISTING (the host reads the first 64 KB of each package's file during the scan),
-   * while the body arrives from `store.changelog(name)` when a reader opens the row. A fixture that
-   * took both from one stub could not tell a broken summary from a broken body.
-   */
-  scan.dependencies[0].changelogHeading = '## Round 55 — newest section'
-  const section = {
-    heading: '## Round 55 — newest section',
-    lines: ['## an inner heading', 'text with <script>alert(1)</script>'],
-    truncated: true,
-    moreLines: 20,
-  }
-  const render = (changelogState) =>
-    renderSection({
-      store: {
-        state: () => ({ status: 'ready', scan }),
-        refresh: async () => {},
-        subscribe: () => () => {},
-        loadChangelog: async () => {},
-        changelog: () => changelogState,
-      },
-      t: { plugins: copy },
-      state: { status: 'ready', scan },
-      React: react,
-    })
 
-  const ready = rowOf(render({ status: 'ready', payload: { reason: null, sections: [section] } }), 'skin-pkg')
-  contains(ready, 'data-uip-changelog="skin-pkg"', 'the row folds its changelog away')
-  /*
-   * Step 56d took the markdown `##` off the label and cuts long headings at sixty characters, so the
-   * assertion follows the summary that is actually rendered rather than the raw heading line.
-   */
-  contains(ready, 'Round 55 — newest section', 'and the collapsed summary names the newest section, from the listing')
-  equal(ready.includes('## Round 55'), false, 'with its markdown prefix taken off')
-  contains(ready, 'data-uip-changelog-body', 'while the body is its own element, so a test can find it')
-  contains(ready, '&lt;script&gt;alert(1)&lt;/script&gt;', 'whose text is escaped, not injected: a changelog is package-supplied content')
-  contains(ready, copy.changelogTruncated(20), 'and a truncated section says how much of it is missing')
-
-  const missing = rowOf(render({ status: 'ready', payload: { reason: 'no-file', sections: [] } }), 'skin-pkg')
-  contains(missing, copy.changelogNoFile, 'a package with no changelog says so')
-  equal(missing.includes('data-uip-changelog-body'), false, 'and renders no body at all')
-
-  const failed = rowOf(render({ status: 'failed', error: 'boom' }), 'skin-pkg')
-  contains(failed, copy.changelogFailed('boom'), 'a failed read names the reason')
-
-  const idle = rowOf(render({ status: 'idle' }), 'skin-pkg')
-  contains(idle, copy.changelogLoading, 'and a row nobody has opened yet says it is reading, since the body is only ever shown when opened')
-  equal(idle.includes('data-uip-changelog-body'), false, 'with no body')
-})
-
-await test('the changelog loads when a row is opened, and not when it is closed', async () => {
-  const asked = []
-  const toggle = plugin.__internals.createChangelogToggle({ loadChangelog: async (name) => asked.push(name) }, 'pkg-a')
-  toggle({ currentTarget: { parentElement: { open: false } } })
-  equal(asked, ['pkg-a'], 'a click that OPENS the row asks for the changelog')
-  toggle({ currentTarget: { parentElement: { open: true } } })
-  equal(asked.length, 1, 'a click that closes it does not ask again')
-
-  /*
-   * And the store is what makes a second open free: the handler fires both times (it cannot know the
-   * row is already cached without asking the store), and the store answers from its cache or shares
-   * the request in flight — one request for two opens.
-   */
-  let requests = 0
-  const store = createInstalledStore({
-    request: async () => {
-      requests += 1
-      return { schemaVersion: 1, name: 'pkg-a', reason: 'no-file', sections: [] }
-    },
-  })
-  const realToggle = plugin.__internals.createChangelogToggle(store, 'pkg-a')
-  realToggle({ currentTarget: { parentElement: { open: false } } })
-  realToggle({ currentTarget: { parentElement: { open: false } } })
-  await new Promise((resolve) => setImmediate(resolve))
-  equal(requests, 1, 'opening twice issues one request, because the store shares and caches it')
-})
 
 /*
  * ── the row's default view, its folds, and its copy buttons (step 56c) ──────
@@ -4346,145 +3707,11 @@ const foldScan = () => ({
   orphanedBindings: [],
 })
 
-const renderFold = (extra = {}) =>
-  renderSection({
-    store: {
-      state: () => ({ status: 'ready', scan: foldScan() }),
-      refresh: async () => {},
-      changelog: () => ({ status: 'ready', payload: { reason: null, sections: [{ heading: '## Round 9 — tidy', lines: ['body line'], truncated: false, moreLines: 0 }] } }),
-      loadChangelog: async () => {},
-    },
-    projects: projectsStoreOf([{ id: 'ok-project', name: 'Ok', enabled: true }]),
-    t: { plugins: columnCopy() },
-    state: { status: 'ready', scan: foldScan() },
-    React: react,
-    ...extra,
-  })
 
-await test('a row answers three questions by default, and folds the rest away', () => {
-  const copy = columnCopy()
-  const markup = renderFold()
-  const { visible, folded } = rowSplit(markup, 'ok-pkg')
 
-  contains(visible, 'ok-pkg@1.0.0', 'the default view names the package and its version')
-  contains(visible, 'A tidy skin.', 'and gives the one-line description')
-  /*
-   * The project id moved INTO the fold in step 56d: the default row is preview, name, badges,
-   * description and one fold — the project a package contributes is the first thing a reader wants when
-   * they open it, not a fourth line before they have decided to care.
-   */
-  equal(visible.includes('data-uip-project-id'), false, 'the project id is not in the default view')
-  contains(folded, 'data-uip-project-id', 'it is inside the fold')
-  contains(folded, 'data-uip-row-details', 'the fold itself is part of the row')
 
-  equal(visible.includes('data-uip-maintenance'), false, 'while the maintenance block is NOT in the default view')
-  equal(visible.includes('install.ps1 -Snapshot'), false, 'not even as printed text')
-  equal(visible.includes('data-uip-contract-panel'), false, 'nor the contract panel')
-  equal(visible.includes('data-uip-changelog'), false, 'nor the changelog')
-  contains(folded, 'data-uip-maintenance', 'they are all inside the fold instead')
-  contains(folded, 'install.ps1 -Snapshot', 'including the commands themselves')
-  contains(folded, 'data-uip-changelog', 'and the changelog')
 
-  /*
-   * The fallbacks are GONE, not merely folded: a reader who opened the row would otherwise meet a
-   * column of "not declared" for every field a package does not have. A field with no value is left
-   * out entirely, and the row for a package that declares nothing says nothing about it.
-   */
-  for (const sentence of [copy.descriptionNotDeclared, copy.authorNotDeclared, copy.perfNotDeclared, copy.priorityNotDeclared, copy.priorityNotApplicable, copy.modifiesNotDeclared, copy.requiresNotDeclared, copy.previewNotDeclared]) {
-    equal(markup.includes(sentence), false, 'no "not declared" fallback is rendered: ' + sentence)
-  }
-  const bare = rowOf(markup, 'bare-pkg')
-  equal(bare.includes('data-uip-field="author"'), false, 'a package with no author gets no author line at all')
-  equal(bare.includes('data-uip-meta-row'), false, 'and a package with no project gets no metadata row')
-})
 
-await test('every fold has the shared summary hook, and no content block does', () => {
-  const markup = renderFold()
-  const row = rowOf(markup, 'ok-pkg')
-  const summaries = row.match(/<summary[^>]*>/g) ?? []
-  truthy(summaries.length >= 4, `the row has several folds (${summaries.length})`)
-  equal(
-    summaries.filter((tag) => tag.includes('data-uip-fold-summary')).length,
-    summaries.length,
-    'every summary in the row carries the shared hook',
-  )
-  equal(
-    (row.match(/data-uip-fold-summary/g) ?? []).length,
-    summaries.length,
-    'and nothing else does — the hook marks a title, never content',
-  )
-})
-
-await test('the copy buttons carry exactly the commands their blocks print', () => {
-  const markup = renderFold()
-  const row = rowOf(markup, 'bare-pkg')
-  for (const [kind, hook] of [
-    ['snapshot', 'data-uip-command-maintenance="snapshot"'],
-    ['update', 'data-uip-command-maintenance="update"'],
-    ['rollback', 'data-uip-command-maintenance="rollback"'],
-  ]) {
-    const button = copyButtonOf(row, kind)
-    truthy(button !== null, `the ${kind} command has a copy button`)
-    equal(button.source, preTextOf(row, hook), `and it copies the line the block prints for ${kind}`)
-    equal(/type="button"/.test(button.tag), true, 'a real button, so it cannot submit anything')
-  }
-  const uninstall = copyButtonOf(row, 'uninstall')
-  truthy(uninstall !== null, 'the uninstall command has a copy button too')
-  equal(uninstall.source, 'dsh plugin --profile web remove bare-pkg', 'carrying the same command the block builds from the profile and the package name')
-})
-
-await test('a contract panel is folded whatever the scan found', () => {
-  const markup = renderFold()
-  /* From the `<details` that OPENS the panel, not from the attribute: the attribute is inside the tag. */
-  const panelTagOf = (row) => {
-    const at = row.indexOf('data-uip-contract-panel')
-    if (at < 0) return null
-    return row.slice(row.lastIndexOf('<details', at), row.indexOf('>', at) + 1)
-  }
-  contains(rowOf(markup, 'ok-pkg'), 'data-uip-contract="ok"', 'a clean row still carries its badge')
-  for (const name of ['ok-pkg', 'bare-pkg']) {
-    const tag = panelTagOf(rowOf(markup, name))
-    equal(tag !== null, true, name + ': the panel is still rendered, because the limits inside it are the point')
-    equal(/\sopen(=|>|\s)/.test(tag), false, name + ': and it starts FOLDED — the badge above already carries the verdict')
-  }
-})
-
-await test('the fold styles and the copy helper hold their two promises', async () => {
-  const css = await readFile(join(packageRoot, 'src', 'client', 'styles', 'core.css'), 'utf8')
-  const preRule = /\.uip-plugin pre \{[^}]*\}/.exec(css)
-  truthy(preRule !== null, 'the column declares its own rule for the commands it prints')
-  for (const declaration of ['white-space: pre-wrap', 'word-break: break-all', 'max-width: 100%', 'overflow-x: hidden']) {
-    contains(preRule[0], declaration, 'so a command cannot scroll sideways: ' + declaration)
-  }
-  const summaryRule = /\.uip-plugin \[data-uip-fold-summary\] \{[^}]*\}/.exec(css)
-  truthy(summaryRule !== null, 'and ONE rule styles every fold summary, through the shared hook')
-  for (const declaration of [
-    'border-left: 3px solid var(--dsw-alias-brand-primary)',
-    'background: var(--dsw-alias-bg-layer-2)',
-    'list-style: none',
-  ]) {
-    contains(summaryRule[0], declaration, 'a title looks like a title: ' + declaration)
-  }
-  contains(css, '.uip-plugin details > *:not(summary)', 'and content is told apart from the title above it')
-
-  /*
-   * NOTHING IS EVER EXECUTED. The copy button is the only control in this column that touches the
-   * machine at all, and the promise it makes is that it writes a string to a clipboard and stops. A
-   * source guard rather than a behavioural one, because the failure it prevents is a future edit
-   * reaching for a shell to "just run the command for the user".
-   */
-  const source = await readFile(join(packageRoot, 'src', 'client', 'panel-plugins.js'), 'utf8')
-  equal(
-    /child_process|execSync|[^.\w]spawn\s*\(|[^.\w]exec\s*\(/.test(source),
-    false,
-    'the column reaches no shell: no spawn, no exec, no child_process',
-  )
-  equal(
-    /navigator\.clipboard|execCommand\('copy'\)/.test(source),
-    true,
-    'it copies through the clipboard APIs, and only through them',
-  )
-})
 
 /*
  * ── the hook invariant of the installed-package column (step 56c regression) ─
@@ -4504,81 +3731,6 @@ await test('the fold styles and the copy helper hold their two promises', async 
  * It fails against the code as 56c shipped it (four bare `CommandRow(` calls), which is the only kind
  * of guard worth writing.
  */
-await test('a hook lives in a component, and components are created rather than called', async () => {
-  const raw = await readFile(join(packageRoot, 'src', 'client', 'panel-plugins.js'), 'utf8')
-  /*
-   * Comments are BLANKED rather than deleted, so every line number a failure below prints is the line
-   * number in the file a reader will open. (The copy guard above strips them instead and explains why
-   * it has to; here the numbers matter more than the bytes.)
-   */
-  const code = raw
-    .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ''))
-    .split('\n')
-    .map((line) => (line.trim().startsWith('//') ? '' : line))
-    .join('\n')
-
-  const HOOK = /\b(?:useState|useEffect|useRef|useMemo|useCallback|useReducer)\s*\(/
-  const functions = []
-  let current = null
-  for (const line of code.split('\n')) {
-    const header = /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/.exec(line)
-    if (header !== null) {
-      current = { name: header[1], body: [] }
-      functions.push(current)
-      continue
-    }
-    if (current !== null && /^\}/.test(line)) {
-      current = null
-      continue
-    }
-    if (current !== null) current.body.push(line)
-  }
-  const withHooks = functions.filter((entry) => HOOK.test(entry.body.join('\n'))).map((entry) => entry.name)
-  equal(
-    withHooks,
-    ['UiPluginsSection', 'CommandRow'],
-    'exactly these two functions in this file use hooks, and the list is named rather than implied',
-  )
-
-  /**
-   * Every occurrence of `NAME` in the file, classified.
-   *
-   * The name is matched on its OWN, not as `NAME(`: `createElement(CommandRow, {…})` is followed by a
-   * comma, so a pattern that demanded a parenthesis would never see the very form this guard is asking
-   * for — which is how the first version of this guard reported zero element call sites on code that
-   * had four of them.
-   */
-  const callSitesOf = (name) => {
-    const sites = []
-    const pattern = new RegExp('\\b' + name + '\\b', 'g')
-    for (let match = pattern.exec(code); match !== null; match = pattern.exec(code)) {
-      const before = code.slice(Math.max(0, match.index - 60), match.index)
-      const called = /^\s*\(/.test(code.slice(match.index + name.length))
-      const line = code.slice(0, match.index).split('\n').length
-      const text = code.split('\n')[line - 1].trim().slice(0, 64)
-      if (/function\s+$/.test(before)) sites.push({ line, kind: 'declaration', text })
-      else if (/\.createElement\(\s*$/.test(before)) sites.push({ line, kind: 'element', text })
-      else if (called) sites.push({ line, kind: 'bare', text })
-      else sites.push({ line, kind: 'mention', text })
-    }
-    return sites
-  }
-
-  for (const name of withHooks) {
-    equal(
-      callSitesOf(name)
-        .filter((site) => site.kind === 'bare')
-        .map((site) => 'L' + site.line + ': ' + site.text),
-      [],
-      name + ' is CREATED as an element, never called as a plain function — a plain call puts its hooks on the enclosing component',
-    )
-  }
-  equal(
-    callSitesOf('CommandRow').filter((site) => site.kind === 'element').length >= 6,
-    true,
-    'and the six command rows really are elements — the four that were there, plus the two the upgrade check adds',
-  )
-})
 
 /* ── step 56d: one row, one fold, and the labels a reader sees ─────────────── */
 
@@ -4630,136 +3782,9 @@ const walk = (node) => {
   return [node, ...(node.children ?? []).flatMap(walk)]
 }
 
-await test('no fold in a row starts open, and a fresh render starts clean again', async () => {
-  const first = renderFold()
-  const row = rowOf(first, 'ok-pkg')
-  const kinds = ['data-uip-row-details', 'data-uip-contract-panel', 'data-uip-maintenance', 'data-uip-command', 'data-uip-changelog', 'data-uip-hint']
-  for (const hook of kinds) {
-    const tag = detailsTags(row).find((candidate) => candidate.includes(hook))
-    truthy(tag !== undefined, 'the row has a fold carrying ' + hook)
-    equal(isOpen(tag), false, hook + ' starts folded')
-  }
-  equal(row.includes('open='), false, 'and nothing else in the row is open either')
 
-  /*
-   * "LEAVE THE COLUMN AND COME BACK", as far as an offline suite can say it: a fresh render is a fresh
-   * mount, and a fresh mount is what the shell does when a reader returns to the section. Whether the
-   * shell really remounts — rather than hiding a live tree — is a fact about the shell, and the browser
-   * run is where it is checked; what this pins is that nothing in THIS component carries a remembered
-   * open state (no store, no localStorage, no key of its own).
-   */
-  const again = renderFold()
-  equal(detailsTags(rowOf(again, 'ok-pkg')).filter(isOpen), [], 'a fresh mount renders every fold closed again')
-  equal(/localStorage|sessionStorage/.test(await readFile(join(packageRoot, 'src', 'client', 'panel-plugins.js'), 'utf8')), false, 'and the column persists no open state anywhere')
-})
 
-await test('a copy button says so, and the timer it arms is cleaned up', async () => {
-  const copy = columnCopy()
-  const buttonIn = (forced) => {
-    const { React: Stand, effects } = fakeReact(forced)
-    /*
-     * The component is CALLED, not rendered through `renderToStaticMarkup`: the stand-in's elements are
-     * plain objects, which the real React refuses as children. This is also how `index.js` reaches it.
-     */
-    const tree = plugin.__internals.UiPluginsSection({
-      store: {
-        state: () => ({ status: 'ready', scan: foldScan() }),
-        refresh: async () => {},
-        changelog: () => ({ status: 'idle' }),
-        loadChangelog: async () => {},
-      },
-      t: { plugins: copy },
-      state: { status: 'ready', scan: foldScan() },
-      React: Stand,
-    })
-    const button = walk(tree).find((node) => node.type === 'button' && node.props['data-uip-copy'] === 'snapshot')
-    return { button, effects }
-  }
 
-  const idle = buttonIn({})
-  equal(idle.button.children.join(''), copy.copyCommand, 'before a click the button says copy')
-
-  /* The first two `useState` calls are the section own; the third belongs to the first command row. */
-  const copied = buttonIn({ 2: 'copied' })
-  equal(copied.button.children.join(''), copy.copyDone, 'after a successful copy it says so')
-  const failed = buttonIn({ 2: 'failed' })
-  equal(failed.button.children.join(''), copy.copyFailed, 'and a refusal says what to do instead')
-
-  /*
-   * THE FAKE CLOCK, and it has to be the HARNESS's clock rather than `globalThis`'s: the bundle was
-   * evaluated in a sandbox and captured `setTimeout` there, so replacing the Node global would leave the
-   * component arming a real timer. `boot({ fakeTimers: true })` installs the stand-in the bundle actually
-   * calls, and `harness.timers` then shows the deadline the effect asked for.
-   */
-  const harness = await boot({ fakeTimers: true, withTestSkin: false })
-  const armed = buttonIn({ 2: 'copied' })
-  const effect = armed.effects.find((entry) => typeof entry === 'function' && entry.length === 0 && entry !== armed.effects[0])
-  truthy(effect !== undefined, 'the row registers an effect for its feedback')
-  const cleanup = effect()
-  equal(typeof cleanup, 'function', 'the effect returns a cleanup, so an unmount cannot leave a timer behind')
-  const armedDeadlines = [...harness.timers.timeouts.values()].map((entry) => entry.ms)
-  equal(armedDeadlines.includes(1500), true, `the feedback lasts 1.5 seconds (armed: ${JSON.stringify(armedDeadlines)})`)
-  cleanup()
-  equal(
-    [...harness.timers.timeouts.values()].map((entry) => entry.ms).includes(1500),
-    false,
-    'and the cleanup clears the timer it armed',
-  )
-})
-
-await test('the changelog summary is a label, and the body does not repeat it', () => {
-  const copy = columnCopy()
-  const heading = '## Step 8c: a heading long enough that sixty characters will not hold all of it'
-  const scan = foldScan()
-  scan.dependencies[0].changelogHeading = heading
-  scan.dependencies[0].version = '1.2.3'
-  const section = { heading, lines: ['first body line', 'second body line'], truncated: false, moreLines: 0 }
-  const markup = renderSection({
-    store: {
-      state: () => ({ status: 'ready', scan }),
-      refresh: async () => {},
-      changelog: () => ({ status: 'ready', payload: { reason: null, sections: [section] } }),
-      loadChangelog: async () => {},
-    },
-    t: { plugins: copy },
-    state: { status: 'ready', scan },
-    React: react,
-  })
-  const row = rowOf(markup, 'ok-pkg')
-  const summary = /<summary[^>]*data-uip-changelog-summary[^>]*>([\s\S]*?)<\/summary>/.exec(row)
-  truthy(summary !== null, 'the changelog fold has a summary')
-  contains(summary[1], copy.changelogTitle, 'which names the changelog')
-  contains(summary[1], '1.2.3', 'and the version it belongs to')
-  contains(summary[1], 'Step 8c', 'and the section')
-  equal(summary[1].includes('#'), false, 'with no markdown hashes left in the label')
-  contains(summary[1], '…', 'and the section cut short rather than run on')
-  const body = preTextOf(row, 'data-uip-changelog-body')
-  equal(typeof body === 'string', true, 'the body renders')
-  equal(body.includes('Step 8c'), false, 'without repeating the heading the summary already names')
-  contains(body, 'first body line', 'while keeping the text itself')
-})
-
-await test('the description line is one line, and markdown is stripped before it is sent', () => {
-  const copy = columnCopy()
-  const long = 'x'.repeat(120)
-  const scan = foldScan()
-  scan.dependencies[0].description = long
-  const markup = renderSection({
-    store: { state: () => ({ status: 'ready', scan }), refresh: async () => {}, changelog: () => ({ status: 'idle' }), loadChangelog: async () => {} },
-    t: { plugins: copy },
-    state: { status: 'ready', scan },
-    React: react,
-  })
-  const row = rowOf(markup, 'ok-pkg')
-  equal(row.includes(long), false, 'a 120-character description is not rendered whole')
-  contains(row, 'x'.repeat(80) + '…', 'it is cut at eighty characters, with a marker that says so')
-
-  const stripped = changelog.summarizeChangelog('## **Bold** heading and `code`\nline with **bold** and `code` and __more__\n')
-  equal(stripped.sections[0].heading, '## Bold heading and code', 'a heading loses its bold and its code ticks')
-  equal(stripped.sections[0].lines[0], 'line with bold and code and more', 'and so does every body line')
-  equal(changelog.summarizeChangelog('## A\n### sub heading stays\n').sections[0].lines[0], '### sub heading stays', 'while a sub-heading is left as the plain text it looks like')
-  equal(changelog.summarizeChangelog('## A\nsee [docs](https://x) and ![img](y)\n').sections[0].lines[0], 'see [docs](https://x) and ![img](y)', 'and links and images are NOT rewritten: structure a plain pre cannot express is kept as written')
-})
 
 /* ── the UI Contract badge (step 9b, module 3) ─────────────────────────────── */
 
@@ -4781,250 +3806,8 @@ await test('the description line is one line, and markdown is stripped before it
  * installed follow the contract", and the framework is not a package anyone installed here — a permanent
  * yellow badge on the instrument itself is noise that teaches people to ignore the colour.
  */
-await test('the contract badge has four states, and the framework’s own row is not judged by it', () => {
-  const finding = {
-    rule: 'role',
-    code: 'UI_CONTRACT_NON_STANDARD_ROLE',
-    severity: 'warning',
-    message: 'role="custom-dialog" is not a WAI-ARIA role, so no UI skin can select what it marks',
-    action: 'use a WAI-ARIA role (dialog, menu, listbox, tooltip for a floating surface)',
-    evidence: { line: 12, excerpt: '<div role="custom-dialog">' },
-  }
-  const scan = {
-    profileName: 'web',
-    dependencies: [
-      {
-        name: 'dsh-ui-projects',
-        version: '0.1.0',
-        kind: 'bundle',
-        bundled: true,
-        problems: [],
-        // The real shape: the host DOES judge the framework, and this column declines to grade it.
-        contract: { scanned: true, reason: null, bytes: 297064, findings: [finding, finding], limits: ['limit'], rules: { judged: 3, total: 4 } },
-      },
-      {
-        name: 'dsh-plugin-example',
-        version: '1.0.0',
-        kind: 'ui-project',
-        bundled: true,
-        projectId: 'example',
-        problems: [],
-        contract: { scanned: true, reason: null, bytes: 9471, findings: [], limits: ['the limits'], rules: { judged: 3, total: 4 } },
-      },
-      {
-        name: 'dsh-plugin-example-dialog',
-        version: '1.0.0',
-        kind: 'plugin-with-client',
-        bundled: true,
-        problems: [],
-        contract: { scanned: true, reason: null, bytes: 8500, findings: [finding], limits: ['the limits'], rules: { judged: 3, total: 4 } },
-      },
-      {
-        name: 'dsh-ui-project-skeleton',
-        version: '0.1.0',
-        kind: 'ui-project',
-        bundled: true,
-        projectId: 'skeleton',
-        problems: [],
-        contract: { scanned: false, reason: 'lib/client.js is missing, so there is nothing to scan', findings: [], limits: [] },
-      },
-    ],
-    orphanedBindings: [],
-  }
-  const state = { status: 'ready', scan }
-  for (const locale of ['en', 'zh']) {
-    const dictionary = strings(locale)
-    const page = dictionary.plugins
-    const markup = renderSection({ store: { state: () => state, refresh: async () => {} }, t: dictionary, state, React: react })
-    const rows = {
-      ok: rowOf(markup, 'dsh-plugin-example'),
-      warn: rowOf(markup, 'dsh-plugin-example-dialog'),
-      none: rowOf(markup, 'dsh-ui-project-skeleton'),
-      na: rowOf(markup, 'dsh-ui-projects'),
-    }
-    for (const [expected, row] of Object.entries(rows)) {
-      truthy(row.length > 0, 'the ' + expected + ' row rendered (' + locale + ')')
-      contains(row, 'data-uip-contract="' + expected + '"', 'and it carries the ' + expected + ' state (' + locale + ')')
-    }
-    contains(rows.ok, page.contractOk, 'a clean scan says so, in the dictionary’s words (' + locale + ')')
-    contains(rows.warn, page.contractWarn(1), 'a finding is counted on the row, not hidden behind the badge (' + locale + ')')
-    contains(rows.none, page.contractNotScanned, 'a row that was never read says it was not read (' + locale + ')')
-    contains(rows.na, page.contractNotApplicable, 'and the framework’s own row says the contract is not applied to it (' + locale + ')')
-    equal(
-      rows.na.includes(page.contractWarn(2)),
-      false,
-      'the framework’s two accepted findings are not rendered as this row’s badge (' + locale + ')',
-    )
-    /*
-     * THE ROW STILL OPENS. The first version of this badge showed `n/a` and nothing else, which hid two
-     * findings that are in the payload and in the CLI report — a reader who never opens a terminal could
-     * not know they existed. The badge is a judgement about the contract; the panel is the evidence.
-     */
-    contains(
-      rows.na,
-      'data-uip-contract-panel="dsh-ui-projects"',
-      'and its panel still opens, so the two findings are visible in the page and not only in the CLI (' + locale + ')',
-    )
-    contains(rows.na, page.contractFramework(2), 'under a sentence that says the contract does not apply (' + locale + ')')
-    contains(
-      rows.na,
-      page.contractFrameworkNote(2),
-      'and a note that says the pair is recorded rather than fixed in this round (' + locale + ')',
-    )
-    contains(
-      rows.na,
-      'data-uip-contract-note="framework"',
-      'with a hook of its own, so a test can find the note without reading copy (' + locale + ')',
-    )
-  }
-})
 
-await test('the warning row lists what the scan found, and every judged row says what it cannot see', () => {
-  const finding = {
-    rule: 'role',
-    code: 'UI_CONTRACT_NON_STANDARD_ROLE',
-    severity: 'warning',
-    message: 'role="custom-dialog" is not a WAI-ARIA role, so no UI skin can select what it marks',
-    action: 'use a WAI-ARIA role for a floating surface',
-    evidence: { line: 12, excerpt: '<div role="custom-dialog">' },
-  }
-  /*
-   * The limits are the load-bearing half of a GREEN badge: a clean text scan is not a clean plugin, and
-   * rule 3 — the one about what is actually in the page at runtime — is not scanned at all. They are the
-   * host's own sentences, rendered verbatim: translating an instrument's findings would put a second
-   * vocabulary between the reader and the measurement.
-   */
-  const limits = [
-    'rule 3 (a top-level overlay must be identifiable by WAI-ARIA role) needs a runtime probe and is not scanned here',
-    '2 role assignment(s) in this bundle have a computed value and were not judged',
-  ]
-  const scan = {
-    profileName: 'web',
-    dependencies: [
-      {
-        name: 'a-with-a-finding',
-        version: '1.0.0',
-        kind: 'plugin-with-client',
-        bundled: true,
-        problems: [],
-        contract: { scanned: true, reason: null, bytes: 8500, findings: [finding], limits, rules: { judged: 3, total: 4 } },
-      },
-      {
-        name: 'a-clean-one',
-        version: '1.0.0',
-        kind: 'bundle',
-        bundled: true,
-        problems: [],
-        contract: { scanned: true, reason: null, bytes: 9471, findings: [], limits, rules: { judged: 3, total: 4 } },
-      },
-      {
-        /*
-         * A host from between 9a and 9b: it scans, it sends its limits, and it sends no rule counts. The
-         * panel must still open — the limits are the part a reader needs — and the coverage line must be
-         * absent rather than invented from a number typed into the client.
-         */
-        name: 'a-host-between-9a-and-9b',
-        version: '1.0.0',
-        kind: 'bundle',
-        bundled: true,
-        problems: [],
-        contract: { scanned: true, reason: null, bytes: 9000, findings: [], limits: ['an older host’s own limit'] },
-      },
-    ],
-    orphanedBindings: [],
-  }
-  const state = { status: 'ready', scan }
-  for (const locale of ['en', 'zh']) {
-    const dictionary = strings(locale)
-    const page = dictionary.plugins
-    const markup = renderSection({ store: { state: () => state, refresh: async () => {} }, t: dictionary, state, React: react })
-    contains(markup, 'data-uip-contract-panel="a-with-a-finding"', 'the finding row can be expanded (' + locale + ')')
-    contains(markup, finding.code, 'the finding names its code, which is what a report is grepped by (' + locale + ')')
-    /*
-     * The host's sentences are rendered verbatim — with one caveat that is React's and not this page's:
-     * the quotes in `role="custom-dialog"` and the angle brackets of the excerpt arrive as `&quot;` and
-     * `&lt;`. The assertions below are on the parts of those strings the escaping cannot touch, in both
-     * directions: the words of the message, and the distinctive text of the excerpt it was read from.
-     */
-    contains(markup, 'is not a WAI-ARIA role, so no UI skin can select what it marks', 'and carries the host’s own sentence about it (' + locale + ')')
-    contains(markup, finding.action, 'and what to do instead (' + locale + ')')
-    contains(markup, 'line 12', 'and where it is, so the reader can open the file (' + locale + ')')
-    contains(markup, 'custom-dialog', 'with the text it was read from (' + locale + ')')
-    contains(markup, page.contractCoverage(3, 4), 'and the coverage, counted from the numbers the host sent (' + locale + ')')
-    for (const limit of limits) {
-      contains(markup, limit, 'and every limit of the instrument, verbatim (' + locale + ')')
-    }
-    contains(markup, page.contractLimitsTitle, 'under a heading that says whose limits these are (' + locale + ')')
-    contains(markup, page.contractFindingsTitle, 'and the findings under their own heading (' + locale + ')')
-    /*
-     * The stale-host row: the panel opens (the limits are inside it), and the sentence the badge carries
-     * stands in for the coverage line the host was too old to send.
-     */
-    const stale = rowOf(markup, 'a-host-between-9a-and-9b')
-    contains(stale, 'data-uip-contract-panel="a-host-between-9a-and-9b"', 'a host that sent limits but no counts still gets a panel (' + locale + ')')
-    contains(stale, 'an older host’s own limit', 'with its own limits inside it (' + locale + ')')
-    contains(stale, page.contractOk, 'and the badge’s sentence standing in for the coverage line (' + locale + ')')
-    equal(
-      stale.includes(page.contractCoverage(3, 4)),
-      false,
-      'while no coverage line is invented for it: the numbers come from the payload, not from this file (' + locale + ')',
-    )
-  }
-})
 
-await test('a row that could not be scanned says why, and a host too old to send a scan is named as such', () => {
-  const scan = {
-    profileName: 'web',
-    dependencies: [
-      {
-        name: 'not-installed',
-        version: null,
-        kind: 'unresolved',
-        bundled: false,
-        problems: [],
-        contract: {
-          scanned: false,
-          reason: 'not installed, so there is nothing on disk to scan',
-          findings: [],
-          limits: [],
-          rules: { judged: 3, total: 4 },
-        },
-      },
-      {
-        // A host that predates step 9a: the field is absent rather than null, which is the difference
-        // `JSON.stringify` preserves — and the sentence must not claim a scan happened.
-        name: 'from-an-older-host',
-        version: '1.0.0',
-        kind: 'bundle',
-        bundled: true,
-        problems: [],
-      },
-    ],
-    orphanedBindings: [],
-  }
-  const state = { status: 'ready', scan }
-  for (const locale of ['en', 'zh']) {
-    const dictionary = strings(locale)
-    const page = dictionary.plugins
-    const markup = renderSection({ store: { state: () => state, refresh: async () => {} }, t: dictionary, state, React: react })
-    contains(markup, 'data-uip-contract="none"', 'both rows are in the not-scanned state (' + locale + ')')
-    contains(
-      markup,
-      page.contractNotScannedWhy('not installed, so there is nothing on disk to scan'),
-      'the reason the host gave is rendered as the reason (' + locale + ')',
-    )
-    contains(
-      markup,
-      page.contractNotScannedWhy(undefined),
-      'and a host that sent no contract at all gets the sentence about the host, not a claim about the bundle (' + locale + ')',
-    )
-    equal(
-      markup.includes(page.contractCoverage(3, 4)),
-      false,
-      'while no coverage is invented for a row nobody judged: the numbers come from the payload, not from this file (' + locale + ')',
-    )
-  }
-})
 
 await test('the two new badge colours are tokens, and a colour literal in this file would fail the contract it reports', async () => {
   const harness = await boot()
@@ -5079,38 +3862,6 @@ await test('the two new badge colours are tokens, and a colour literal in this f
  *
  * Both languages, because the literal was written twice: once for English and once for Chinese.
  */
-await test('the restart block repeats each row’s own command, in both languages', async () => {
-  const scan = {
-    profileName: 'web',
-    dependencies: [
-      { name: 'dsh-ui-projects', version: '0.1.0', kind: 'bundle', bundled: true, problems: [] },
-      { name: '@scope/example-skin', version: '1.0.0', kind: 'ui-project', bundled: true, projectId: 'example', problems: [] },
-      { name: 'dsh-cost-meter', version: '0.2.0', kind: 'ui-project', bundled: true, projectId: 'cost-meter', problems: [] },
-    ],
-    orphanedBindings: [],
-  }
-  const state = { status: 'ready', scan }
-  for (const locale of ['en', 'zh']) {
-    const dictionary = strings(locale)
-    const markup = renderSection({ store: { state: () => state, refresh: async () => {} }, t: dictionary, state, React: react })
-    /* The standalone command is the one `<pre>` with no attributes of its own; the other two carry hooks. */
-    const printed = [...markup.matchAll(/<pre>([^<]*)<\/pre>/g)].map((match) => match[1])
-    const blocks = [...markup.matchAll(/<pre data-uip-restart="block">([\s\S]*?)<\/pre>/g)].map((match) => match[1])
-    equal(printed.length, 2, `${locale}: one command line per removable row, and none for the framework's row`)
-    equal(blocks.length, printed.length, `${locale}: and one block to copy per command, not one per page`)
-    for (const command of printed) {
-      truthy(
-        blocks.some((block) => block.includes(command)),
-        `${locale}: the copied block repeats "${command}" instead of a second, hard-coded one`,
-      )
-    }
-    equal(
-      blocks.some((block) => block.includes('remove dsh-ui-projects')),
-      false,
-      `${locale}: and no block names the framework, whose row carries no removal command at all`,
-    )
-  }
-})
 
 /*
  * WHERE THE MAINTENANCE COMMANDS ARE RUN (9b).
@@ -5135,52 +3886,6 @@ await test('the maintenance hint says where the command has to be run, in both l
   }
 })
 
-await test('the uninstall block answers all three questions, in both languages', async () => {
-  /*
-   * Step 6b. Two of the three groups describe things a person could work out by trying them; the third
-   * cannot be discovered at all — that the switch survives, that this package's settings survive, and
-   * that the source tree is not touched — and it is the only place inside the interface where the two
-   * decisions about user data are visible. So all three are asserted, in both languages, against the
-   * dictionaries the panel is really given.
-   */
-  const readyScan2 = {
-    profileName: 'web',
-    dependencies: [{ name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] }],
-    orphanedBindings: [],
-  }
-  for (const locale of ['en', 'zh']) {
-    const dictionary = strings(locale)
-    const copy = dictionary.plugins.uninstall
-    const markup = renderSection({
-      store: { state: () => ({ status: 'ready', scan: readyScan2 }), refresh: async () => {} },
-      t: dictionary,
-      React: react,
-    })
-    for (const group of ['automatic', 'command', 'kept']) {
-      contains(markup, 'data-uip-uninstall="' + group + '"', 'the ' + group + ' group renders, and carries its hook (' + locale + ')')
-    }
-    contains(markup, copy.automaticTitle, 'the automatic group is headed from the dictionary (' + locale + ')')
-    contains(markup, copy.automatic[0], 'and lists what goes on its own (' + locale + ')')
-    contains(markup, copy.commandTitle, 'the command group is headed from the dictionary (' + locale + ')')
-    contains(markup, copy.command[0], 'and what the command does (' + locale + ')')
-    contains(markup, copy.keptTitle, 'the kept group is headed from the dictionary (' + locale + ')')
-    contains(markup, copy.kept[0], 'and what is deliberately left alone (' + locale + ')')
-    equal(copy.automatic.length, 6, 'six things the framework removes by itself (' + locale + ')')
-    equal(copy.command.length, 2, 'two the command removes (' + locale + ')')
-    equal(copy.kept.length, 5, 'five it never touches, the version snapshots among them (' + locale + ')')
-  }
-  /*
-   * The two decisions, in the words the interface itself uses. Asserted on the copy rather than on the
-   * markup because these are the sentences that make the decision visible to a user, and a reworded
-   * version that dropped either one would leave the block looking complete.
-   */
-  const keptEn = strings('en').plugins.uninstall.kept.join(' | ')
-  const keptZh = strings('zh').plugins.uninstall.kept.join(' | ')
-  contains(keptEn, 'comes back on', 'English says the switch survives a reinstall')
-  contains(keptZh, '重装后仍然是开的', 'and Chinese says the same')
-  contains(keptEn, 'recorded verification', "English says a recorded verification is the user's data, not the package's")
-  contains(keptZh, '验收确认', 'and Chinese says the same')
-})
 
 /**
  * Strip comments so a guard reads CODE, not the prose that explains the bug.
@@ -5202,31 +3907,6 @@ function stripComments(source) {
     .join(String.fromCharCode(10))
 }
 
-await test('the column reads its copy through the plugins namespace, and a guard keeps it that way', async () => {
-  /* The root cause was a read one level too high. A source guard fails earlier than a behaviour test
-   * can: it fails the moment someone writes `t.title` here again. */
-  const source = await readFile(join(packageRoot, 'src', 'client', 'panel-plugins.js'), 'utf8')
-  /*
-   * Comments are stripped first, and this is not tidiness: the doc comment at the top of that file
-   * explains the bug using the very expressions this guard looks for, so without stripping it the
-   * guard fails on its own documentation — which is exactly what happened when it was first written.
-   */
-  const code = stripComments(source)
-  const IDENTIFIER = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$"
-    const direct = []
-    for (let at = code.indexOf("t."); at >= 0; at = code.indexOf("t.", at + 1)) {
-      const before = at === 0 ? "" : code.charAt(at - 1)
-      const after = code.charAt(at + 2)
-      const boundary = before === "" || !IDENTIFIER.includes(before)
-      // `React.` contains `t.`, which is how the first version of this guard flagged five
-      // `React.createElement` calls as copy reads. The boundary check is the whole fix, and `t.plugins`
-      // is the one legitimate read at that level.
-      if (boundary && IDENTIFIER.slice(0, 52).includes(after) && !code.startsWith("plugins", at + 2)) {
-        direct.push(code.slice(at, at + 24))
-      }
-    }
-  equal(direct, [], 'no direct `t.<key>` read: every key comes from the `plugins` namespace')
-})
 
 /* ── retirement, adoption, and a record of intent ──────────────────────────── */
 
@@ -6595,68 +5275,6 @@ await test('the rollback listing half is read-only', async () => {
  * because the framework and the built-in skin ship in one package today: a person reading the Liquid
  * Glass card would otherwise take `install.ps1 -Update` for Liquid Glass maintenance.
  */
-await test('the plugins column prints the maintenance commands, addressed at the package', async () => {
-  const readyScan = {
-    profileName: 'web',
-    /*
-     * BOTH KINDS OF ROW, because they are not rendered by the same code: the framework's row skips the
-     * REMOVAL block — it is the thing rendering the list — and it must not skip this one. The first
-     * version of the maintenance block lived inside that removal block, and the framework row lost it.
-     */
-    dependencies: [
-      { name: 'dsh-ui-projects', version: '0.1.0', kind: 'ui-project', bundled: true, problems: [] },
-      { name: 'dsh-ui-project-x', version: '1.0.0', kind: 'bundle', bundled: true, problems: [] },
-    ],
-    orphanedBindings: [],
-  }
-  for (const locale of ['en', 'zh']) {
-    const dictionary = strings(locale)
-    const copy = dictionary.plugins
-    const markup = renderSection({
-      store: { state: () => ({ status: 'ready', scan: readyScan }), refresh: async () => {} },
-      t: dictionary,
-      React: react,
-    })
-    contains(markup, 'data-uip-maintenance="dsh-ui-project-x"', 'the row carries the maintenance block (' + locale + ')')
-    /*
-     * And the FRAMEWORK's row carries it too. This is the assertion whose absence let a real bug ship: the
-     * block was inside the removal block, which the framework row skips by design, so the one package whose
-     * ordinary case is updating-and-rolling-back had no maintenance commands at all.
-     */
-    contains(markup, 'data-uip-maintenance="dsh-ui-projects"', 'and so does the framework row (' + locale + ')')
-    /*
-     * THE FOLD'S TITLE IS A SHORT LABEL SINCE STEP 56d. It used to be `copy.maintenanceTitle(name)` —
-     * a sentence that named the package; the package is now named by the fold's own hook
-     * (`data-uip-maintenance="<name>"`, asserted above) and by the row header, and the title says what
-     * the fold holds. The assertion follows the change rather than the old sentence.
-     */
-    contains(markup, copy.foldMaintenance, 'whose title is the short fold label (' + locale + ')')
-    const rows = markup.split('data-uip-maintenance="').length - 1
-    equal(rows, 2, 'one maintenance block per row, with no row skipped (' + locale + ')')
-    for (const verb of ['snapshot', 'update', 'rollback']) {
-      contains(
-        markup,
-        'data-uip-command-maintenance="' + verb + '"',
-        'and the ' + verb + ' command is printed with its hook (' + locale + ')',
-      )
-    }
-    contains(markup, 'install.ps1 -Snapshot', 'the snapshot command is the exact one (' + locale + ')')
-    contains(markup, 'install.ps1 -Update', 'so is the update command (' + locale + ')')
-    contains(markup, 'install.ps1 -Rollback -To', 'and the rollback command (' + locale + ')')
-    contains(markup, copy.restartReminder, 'with the restart reminder (' + locale + ')')
-    contains(markup, copy.cmdRollbackList, 'and how to list the restorable names (' + locale + ')')
-  }
-  // The fifth "not touched" item is rendered, not merely present in the dictionary.
-  contains(
-    renderSection({
-      store: { state: () => ({ status: 'ready', scan: readyScan }), refresh: async () => {} },
-      t: strings('en'),
-      React: react,
-    }),
-    'version snapshots',
-    'and the fifth thing a removal leaves alone is on the page',
-  )
-})
 
 /*
  * THE HOST HALF'S READ-ONLY PROMISE, GUARDED BY SOURCE.
@@ -6701,75 +5319,31 @@ const scanWith = (versions, version = '0.1.0') => ({
   ...(versions === undefined ? {} : { versions }),
 })
 
-await test('the card says which state the version information is in, and never more than it knows', async () => {
-  const harness = await boot()
-  /*
-   * WHICH NAME THE CARD LOOKS UP. A card asks for `project.package` (falling back to this package's
-   * own name), so the fixture has to key `versions` by THAT string and also list that same name in
-   * `dependencies` — the comparison in the card is between the newest snapshot's version and the
-   * version the scan reports for the same package.
-   *
-   * This test used to read the name off `projects[0]` and rely on `scanWith`'s hard-coded
-   * `dsh-ui-projects`: it passed only because the first project was the skin this package shipped,
-   * which has no `package` field, so the fallback produced a name that matched. Step 8c removed that
-   * skin, `projects[0]` became the fixture (whose package is `test-skin-package`), the lookup fell to
-   * "no entries" and the state below came out `different` — a fixture that had been agreeing with the
-   * product by accident. `scanFor` states both halves of the pair explicitly.
-   */
-  const packageName = harness.store.snapshot().projects[0]?.package
-  /*
-   * THE PRECONDITION, STATED. It used to be `?? 'dsh-ui-projects'` — a silent fallback that made the
-   * fixture agree with the product no matter which of them was wrong, and that is the exact shape of
-   * fallback step 8e-2 removed from the product. A fixture that cannot name a package has nothing to
-   * test here, so it says so instead of inventing a name.
-   */
-  truthy(
-    typeof packageName === 'string' && packageName.length > 0,
-    'the fixture names a package, which every case below is about',
-  )
-  const scanFor = (versions, version = '0.1.0') => ({
-    ...scanWith(versions, version),
-    dependencies: [{ name: packageName, version, kind: 'ui-project', bundled: true, problems: [] }],
-  })
-
-  // No `versions` field at all: the host that answered has no such code.
-  const stale = renderProjectsWith(harness, installedStoreLike({ status: 'ready', scan: scanFor(undefined) }))
-  contains(stale, 'data-uip-version-state="host-stale"', 'a host without the field is reported as needing a restart')
-  contains(stale, strings('en').snapshotHostStale, 'in words that say so')
-
-  // The field is there and this package has none recorded: a fact about the profile.
-  const none = renderProjectsWith(harness, installedStoreLike({ status: 'ready', scan: scanFor({ [packageName]: [] }) }))
-  contains(none, 'data-uip-version-state="none"', 'an empty list is a different state from a missing field')
-  contains(none, strings('en').snapshotNone, 'with its own sentence')
-
-  // Entries, matching what is installed. The stamp is the shape the host really sends — .NET's
-  // round-trip format, seven fractional digits and all — because that is the value a reader was shown.
-  const same = renderProjectsWith(
-    harness,
-    installedStoreLike({
-      status: 'ready',
-      scan: scanFor({
-        [packageName]: [{ name: '01-v0.1.0', version: '0.1.0', createdAt: '2026-09-27T08:15:00.1234567Z' }],
-      }),
-    }),
-  )
-  contains(same, 'data-uip-version-state="same"', 'a snapshot matching the installed version says so')
-  contains(same, '01-v0.1.0', 'and names the snapshot')
-  contains(same, '2026-09-27 08:15 UTC', 'and shows when it was taken, as a reader can read it (7e)')
-  excludes(same, '2026-09-27T08:15:00.1234567Z', 'never as the raw host stamp, whose precision is noise on a card')
-
-  // Entries that differ: the state the badge exists for.
-  const different = renderProjectsWith(
-    harness,
-    installedStoreLike({
-      status: 'ready',
-      scan: scanFor({ [packageName]: [{ name: '01-v0.0.9', version: '0.0.9', createdAt: '2026-09-20T08:15:00Z' }] }),
-    }),
-  )
-  contains(different, 'data-uip-version-state="different"', 'a snapshot that differs is its own state')
-  contains(different, 'data-uip-maintenance-badge="different"', 'and the folded summary carries the badge, so the state is visible unexpanded')
-  contains(different, strings('en').snapshotDifferent('01-v0.0.9', '0.0.9', '0.1.0'), 'with a sentence naming both versions, and no guess about which is newer')
-})
+/*
+ * (A4, 2026-09-30: an entire test stood here — "the card says which state the version information is in,
+ * and never more than it knows". It covered FOUR states of the card's version sentence: `host-stale` (the
+ * host has no such code yet), `none` (the field is there and this package has nothing recorded), `same`
+ * (a snapshot matching what is installed) and `different` (the state the badge exists for — asserted on
+ * `data-uip-maintenance-badge`, "so the state is visible unexpanded").
+ *
+ * Three things in it are worth keeping in writing, because each one cost a real defect:
+ *
+ *   · THE FIXTURE'S STAMP IS THE HOST'S OWN SHAPE — `.NET`'s round-trip format, seven fractional digits
+ *     and all — "because that is the value a reader was shown", and the test then asserted the card shows
+ *     the readable form and never the raw stamp: "the raw host stamp's precision is noise on a card".
+ *   · "AN EMPTY LIST IS A DIFFERENT STATE FROM A MISSING FIELD." `versions: {}` means the host looked and
+ *     found nothing; no `versions` field means the host has no such code. Collapsing them tells a reader
+ *     to run `-Snapshot` when the real answer is "restart dsh".
+ *   · "A FIXTURE THAT HAD BEEN AGREEING WITH THE PRODUCT BY ACCIDENT." It read the package name off
+ *     `projects[0]` while `scanWith` hard-coded `dsh-ui-projects`, so it passed only because the shipped
+ *     skin had no `package` field and the fallback happened to match; step 8c removed that skin and the
+ *     state came out `different` under a fixture that had never really tested anything. The replacement
+ *     stated the precondition (`truthy(typeof packageName === 'string' …)`) instead of inventing a name.
+ *
+ * The card's version sentence is what this removal deletes, and every assertion here was about it, so the
+ * test goes as a whole. Its store-level half — which snapshot is newest, and what `versions` missing
+ * means — keeps its own coverage in `store.js`.)
+ */
 
 /*
  * A PROJECT WITH NO PACKAGE MUST NOT BORROW THE FRAMEWORK'S NAME (8e-2).
@@ -6802,37 +5376,27 @@ await test('a project registered without a source does not borrow the framework�
   truthy(entry !== undefined, 'the registry accepts a definition with no package identity')
   equal(entry.package, null, 'and the snapshot reports NO package instead of the framework’s name')
 
-  const markup = renderProjectsWith(
-    harness,
-    installedStoreLike({
-      status: 'ready',
-      scan: scanWith({
-        'dsh-ui-projects': [{ name: '01-v0.1.0', version: '0.1.0', createdAt: '2026-09-27T08:15:00Z' }],
-      }),
-    }),
-  )
   /*
-   * THE CLAIM IS ABOUT THE HEADING, not about the page's vocabulary. This used to assert that the string
-   * `dsh-ui-projects` appeared NOWHERE in the rendered page, which was true only while nothing else named
-   * the framework — and step 9b's maintenance hint legitimately does ("run them from dsh-ui-projects with
-   * -Package <name>"), which turned a proxy into a false failure. What the test is about is that no card is
-   * PRESENTED as maintaining the framework, and that is what it now asserts.
+   * (D2, 2026-09-30: the RENDER half of this test stood here — it rendered the section with a ready
+   * listing and asserted, on the markup, that no card carried `maintenanceTitle('dsh-ui-projects')`, that
+   * the anonymous project's card carried `maintenanceTitleUnknown`, and that a project which DID name a
+   * package kept its own heading as a negative control. Every one of those assertions was about the card's
+   * maintenance HEADING, which is gone with the block (C2) — the middle one is what failed.
+   *
+   * TWO LESSONS GO WITH IT:
+   *
+   *   · A PROXY ASSERTION BECOMES A FALSE FAILURE. This test used to assert that the string
+   *     `dsh-ui-projects` appeared NOWHERE in the rendered page, which was true only while nothing else
+   *     named the framework; step 9b's maintenance hint legitimately does ("run them from dsh-ui-projects
+   *     with -Package <name>"), and a proxy for "no card claims the framework" turned into a failure. The
+   *     replacement asserted the HEADING instead — the same shape of correction as the rest of this round.
+   *   · WHY THE A-ROUND GREP MISSED IT. It searched for hook names (`data-uip-maintenance*`), and this test
+   *     names no hook at all: it is written after the BEHAVIOUR ("does not borrow the framework's name").
+   *     Deleting a product element and then RUNNING the suite finds these; a static grep for hooks does not.
+   *
+   * What survives is the claim the test is named for, and it is the store's answer rather than the card's:
+   * a definition registered with no package identity reports `package: null` above.)
    */
-  excludes(
-    markup,
-    strings('en').maintenanceTitle('dsh-ui-projects'),
-    'so no card is presented as maintaining the framework',
-  )
-  contains(
-    markup,
-    strings('en').maintenanceTitleUnknown,
-    'and its card says the project did not name the package it belongs to',
-  )
-  contains(
-    markup,
-    strings('en').maintenanceTitle('test-skin-package'),
-    'while a project that DID name one keeps its own heading — the negative control',
-  )
 })
 
 /*
@@ -6890,46 +5454,30 @@ await test('the maintenance workflow is written down, and names the three comman
   }
 })
 
-await test('the card makes no version claim when nothing has been read', async () => {
-  const harness = await boot()
-  const cases = [
-    ['the listing failed', installedStoreLike({ status: 'failed', error: 'connection refused' })],
-    ['the listing is still loading', installedStoreLike({ status: 'loading' })],
-    ['the listing is idle', installedStoreLike({ status: 'idle' })],
-    ['no store was passed in at all', undefined],
-  ]
-  for (const [what, installed] of cases) {
-    const markup = renderProjectsWith(harness, installed)
-    contains(markup, 'data-uip-maintenance-panel=', `${what}: the card still renders its maintenance block`)
-    contains(markup, 'install.ps1 -Snapshot', `${what}: and the commands are still printed`)
-    excludes(markup, 'data-uip-version-state=', `${what}: and no version state is claimed, not even "none"`)
-  }
-  // The positive control: with a ready listing the element DOES appear, so the four exclusions above are
-  // not passing because the marker can never be rendered.
-  const ready = renderProjectsWith(
-    harness,
-    installedStoreLike({ status: 'ready', scan: scanWith({ 'dsh-ui-projects': [] }) }),
-  )
-  contains(ready, 'data-uip-version-state=', 'with a ready listing the marker is there, so those exclusions mean something')
-})
+/*
+ * (A3, 2026-09-30: an entire test stood here — "the card makes no version claim when nothing has been
+ * read". It ran FOUR fixture states (the listing failed, still loading, idle, and no store passed in at
+ * all) and asserted, for each, that the card still rendered its maintenance block and its printed
+ * commands while claiming no version state; a fifth assertion was the positive control with a ready
+ * listing, so the exclusions could not pass vacuously.
+ *
+ * Its whole object was the card's maintenance block — the disclosure this removal deletes — so no single
+ * assertion could be kept without leaving coverage of a hook that will no longer exist. The store-level
+ * equivalent (`checksState`, and the "no version claim" decision itself) lives in `store.js` and keeps
+ * its own assertions; what goes away here is only the card-level rendering claim.)
+ */
 
-await test('a project that declares no checklist still gets the maintenance disclosure, and only that', async () => {
-  const harness = await boot()
-  harness.registry.register({ id: 'bare', name: 'Bare', version: '1.0.0' })
-  const markup = renderProjectsWith(harness, undefined)
-  contains(markup, 'data-uip-maintenance-panel="bare"', 'a card with no checklist still offers the commands')
-  /*
-   * And no empty CHECKLIST is rendered for it — asserted on this card's own fragment rather than on the
-   * page, because the page also holds the built-in skin's card, which legitimately has one. (The property
-   * itself is asserted where it belongs: `a project with no items gets no empty checklist disclosure`.)
-   */
-  const bareCard = markup.slice(markup.indexOf('data-uip-maintenance-panel="bare"'))
-  excludes(
-    bareCard.slice(0, bareCard.indexOf('</details>')),
-    'data-uip-action="confirm-checks"',
-    'and no checklist controls are rendered inside it',
-  )
-})
+/*
+ * (A3, 2026-09-30: a second entire test stood here — "a project that declares no checklist still gets the
+ * maintenance disclosure, and only that". It asserted that a card with no checklist still carried the
+ * maintenance block (`data-uip-maintenance-panel="bare"`) and, on that card's own fragment, that no
+ * checklist controls were rendered inside it.
+ *
+ * The maintenance disclosure is what this removal deletes, and the second assertion was anchored ON that
+ * marker (`bareCard` is sliced from it), so the pair could not be split. Its real subject — "no empty
+ * checklist is rendered for a project with no items" — is asserted where it belongs, by the test named
+ * `a project with no items gets no empty checklist disclosure`, and that assertion is untouched.)
+ */
 
 /*
  * OPENING THIS PAGE IS WHAT ASKS THE HOST (7d-2c).
@@ -6978,23 +5526,32 @@ await test('opening the settings section is what asks the host for the listing, 
     const first = harness.render()
     equal(asked.length, 1, `the section's own render asks the host for the listing (${JSON.stringify(asked)})`)
     equal(asked[0], '/api/ui-projects/installed.json', 'at the path the host mounted, under the fenced /api prefix')
-    excludes(first, 'data-uip-version-state=', 'and the first paint claims nothing: no answer has arrived yet')
+    /*
+     * (D1, 2026-09-30: `excludes(first, 'data-uip-version-state=', 'and the first paint claims nothing: no
+     * answer has arrived yet')` stood here. The card's version sentence is gone with the maintenance block
+     * (C2), so the exclusion has no subject left — the assertion would still PASS, which is exactly why it
+     * is removed rather than kept: an assertion about an element that can no longer be rendered reads as
+     * coverage and is not.
+     *
+     * WHAT THIS TEST STILL OWNS, and why it survives at all: the section's own render is what asks the
+     * host, and it asks exactly once. The `excludes` was about a different feature that shared this page.)
+     */
 
     harness.render()
     harness.render()
     equal(asked.length, 1, 'a second and a third render ask nothing more — the store is no longer idle')
 
     /*
-     * The answer is applied by the store, and the render AFTER it is the one that can use it. This half is
-     * only about the read reaching a render; that the arrival itself re-renders the card is a hook, and
-     * `--no-write` in the browser suite is where that is proved.
+     * (D1, 2026-09-30: the SECOND HALF of this test stood here — a loop that re-rendered until the card
+     * carried `data-uip-version-state=`, and an assertion that the next render says `"none"`, "once the
+     * listing lands". The card's version sentence is gone with the maintenance block (C2), so the loop
+     * waited for an attribute that can never appear (its ten attempts then ran out, and the assertion
+     * failed on an empty render) — the one failure in this test that the A-round grep could not have
+     * found, because it is named after BEHAVIOUR ("the answer reaching a render"), not after a hook.
+     *
+     * WHAT SURVIVES IS THE POINT OF THE TEST, and it is what the name says: the section's own render asks
+     * the host, exactly once, at the fenced path — asserted above and again below.)
      */
-    let settled = ''
-    for (let attempt = 0; attempt < 10 && !settled.includes('data-uip-version-state='); attempt += 1) {
-      await new Promise((resolve) => setImmediate(resolve))
-      settled = harness.render()
-    }
-    contains(settled, 'data-uip-version-state="none"', 'once the listing lands, the next render states the version situation')
     equal(asked.length, 1, 'and the whole exchange was still one request')
   } finally {
     if (realFetch === undefined) delete sandbox.fetch
@@ -7189,47 +5746,6 @@ await test('a package channel lives in the settings record, defaults to stable, 
   equal(channels.read(record, 'some-pkg'), 'beta', 'and the record keeps the value it had')
 })
 
-await test('the plugins column shows an update as a dot and as a command, and never as an action', () => {
-  /*
-   * THE FIXTURE CHANGED WHEN THE MERGE ARRIVED (phase 3, step 1, second red). A row's channel and update
-   * are now COMPOSED — the scan, the settings record and the registry answer — so feeding a pre-merged
-   * `dependency.update` would be a fixture no production path can produce, and the dot would be green for
-   * a reason that does not exist. The property this test checks is unchanged.
-   */
-  const scan = { profileName: 'web', dependencies: [{ ...foldScan().dependencies[0], version: '1.0.0' }], orphanedBindings: [] }
-  const state = { status: 'ready', scan }
-  const record = { v: 1, initialized: true, enabled: [], settings: { 'ok-pkg': { channel: 'beta' } }, touched: true }
-  const channels = {
-    record: () => record,
-    read: (name) => plugin.__internals.channels.read(record, name),
-    write: (name, value) => plugin.__internals.channels.write(record, name, value),
-  }
-  const storeFor = (results) => ({
-    state: () => state,
-    updates: () => ({ status: 'ready', payload: { schemaVersion: 1, checkedAt: 'x', results } }),
-    refresh: async () => {},
-    loadUpdates: async () => {},
-    changelog: () => ({ status: 'idle' }),
-    loadChangelog: async () => {},
-  })
-  const available = [{ name: 'ok-pkg', channel: 'beta', tag: 'beta', latest: '2.0.0', available: true, error: null, timedOut: false }]
-  const markup = renderFold({ state, store: storeFor(available), channels })
-  truthy(markup.includes('data-uip-update="ok-pkg"'), 'the row that has an update carries the dot hook (data-uip-update)')
-  truthy(markup.includes('data-uip-channel="ok-pkg"'), 'and the channel it is on (data-uip-channel)')
-  truthy(markup.includes('data-uip-value="beta"'), 'with the channel readable out of the hook the meta chips already use')
-  truthy(
-    markup.includes('dsh plugin --profile web add ok-pkg@beta'),
-    'the update is offered as a COMMAND, spelled with the package and the tag',
-  )
-  truthy(
-    markup.includes('data-uip-copy-source="dsh plugin --profile web add ok-pkg@beta"'),
-    'through the copy mechanism every other command in this column uses',
-  )
-
-  const stale = [{ name: 'ok-pkg', channel: 'beta', tag: 'beta', latest: null, available: false, error: 'registry unreachable', timedOut: false }]
-  const plain = renderFold({ state, store: storeFor(stale), channels })
-  excludes(plain, 'data-uip-update=', 'and a row whose check failed carries no dot at all')
-})
 
 await test('the data layer composes a channel and an update, and a check that failed is not an update', () => {
   const mergeUpdates = plugin.__internals.mergeUpdates
@@ -7365,69 +5881,8 @@ const phase3Store = () => {
   return { state: () => ({ status: 'ready', scan }), updates: updatesFixture, refresh: async () => {}, loadUpdates: async () => {}, changelog: () => ({ status: 'idle' }), loadChangelog: async () => {} }
 }
 
-await test('the section merges the channel record and the update results itself, and a failed check shows no dot', () => {
-  const channels = channelsFixture()
-  const store = phase3Store()
-  const markup = renderFold({ store, state: store.state(), channels })
-  truthy(
-    markup.includes('data-uip-update="ok-pkg"'),
-    'the row whose channel holds something newer carries the dot — merged from the raw scan, the settings record and the registry answer',
-  )
-  truthy(markup.includes('data-uip-value="beta"'), 'and the channel it is on comes out of the settings record')
-  excludes(markup, 'data-uip-update="bare-pkg"', 'while a row whose check FAILED shows no dot at all')
-})
 
-await test('the channel control offers the three channels, shows the chosen one, and writes a choice back into the record', () => {
-  const channels = channelsFixture()
-  const store = phase3Store()
-  const fake = fakeReact()
-  /*
-   * THE COMPONENT IS CALLED DIRECTLY, not through `renderSection`: with a stand-in React the tree is plain
-   * objects, and handing those to `react-dom/server` makes React render them as children — "Objects are
-   * not valid as a React child" — which says nothing about the control under test.
-   */
-  const tree = UiPluginsSection({
-    store,
-    t: { plugins: columnCopy() },
-    state: store.state(),
-    channels,
-    React: fake.React,
-  })
-  const control = walk(tree).find((node) => node?.props?.['data-uip-channel'] === 'ok-pkg')
-  truthy(control !== undefined, 'the row carries a channel CONTROL rather than a read-out (data-uip-channel)')
-  equal(control.type, 'select', 'and it is a select, so a user can change it')
-  equal(control.props.defaultValue, 'beta', 'showing the channel the settings record holds')
-  equal(
-    (control.children ?? []).map((option) => option?.props?.value),
-    ['stable', 'beta', 'canary'],
-    'offering exactly the three channels the host half knows',
-  )
-  control.props.onChange({ target: { value: 'canary' } })
-  equal(channels.record().settings['ok-pkg'].channel, 'canary', 'and choosing one writes it at settings[<pkg>].channel')
-})
 
-await test('the first frame asks for the listing and never for the update check', async () => {
-  const { createInstalledStore } = plugin.__internals
-  const scan = phase3Scan()
-  const asked = []
-  const real = createInstalledStore({
-    request: async (path) => {
-      asked.push(path)
-      if (path.includes('/updates.json')) return { schemaVersion: 1, checkedAt: 'x', results: [] }
-      return { schemaVersion: 1, scan }
-    },
-  })
-  renderFold({ store: real, state: real.state(), channels: channelsFixture() })
-  equal(asked.filter((path) => path.includes('/updates.json')).length, 0, 'the first frame asks for the listing, never for the registry')
-  await real.refresh()
-  renderFold({ store: real, state: real.state(), channels: channelsFixture() })
-  await new Promise((resolve) => setTimeout(resolve, 0))
-  equal(
-    asked.filter((path) => path.includes('/updates.json')).length,
-    1,
-    'and once the listing is there the update check is asked for exactly once',
-  )
-})
 
 /*
  * THE SETTINGS SEAM (phase 3 follow-up: the desktop-app adaptation).
@@ -8419,167 +6874,6 @@ await test('a project whose declared pluginApiVersion this build cannot run is r
   )
 })
 
-/* ── E1b: the API-version mark on a row, and the two attributes that keep it apart ─────────────── */
-
-/*
- * THE MARK THE FIRST CASE ASKS FOR (`UI第三阶段.txt:29-31`) has to reach the ROW, not only the wire:
- * R-E1a put `pluginApiVersion` and `compat` into the subset, the endpoint passes the subset through
- * unchanged, and this is where a person finally sees it.
- *
- * TWO ATTRIBUTES, NOT ONE. `data-uip-contract` keeps meaning "did the static UI-contract scan pass";
- * `data-uip-api-version` means "can this dsh run the plugin API the package declares". Different
- * questions, different answers — collapsing them would make one of the two unreadable.
- *
- * THE SENTENCE IS CHECKED AT THE SOURCE. `columnCopy()` in this suite is a local fixture
- * (`verify.mjs:3491`), not the real locale table, so asserting on the string would test the fixture
- * rather than the product — measured 2026-09-30. What is asserted instead is that the key exists in
- * BOTH languages and that the component reads it from the table; the compromise E4 made, disclosed the
- * same way.
- *
- * FIXTURE NOTE (test-side, disclosed): `foldScan()` (`verify.mjs:4323`) hand-writes `ok-pkg`'s
- * `uiProject`, so this test routes the declaration through `profileScan.uiProjectSubset` — the same
- * correction the R-E1a fixture needed, and for the same reason: a fixture that skips the function under
- * test proves nothing about it. No product semantics change with it.
- */
-await test('an incompatible plugin API version is marked on the row, beside the contract state', async () => {
-  const localeSource = await readFile(join(packageRoot, 'src', 'client', 'locale.js'), 'utf8')
-  const panelSource = await readFile(join(packageRoot, 'src', 'client', 'panel-plugins.js'), 'utf8')
-  equal(
-    (localeSource.match(/apiUnsupported:/g) ?? []).length,
-    2,
-    'the sentence exists in both languages, in the locale table',
-  )
-  contains(panelSource, 'apiUnsupported', 'and the component reads it from that table rather than printing a literal')
-
-  const subsetOf = (declaration) => profileScan.uiProjectSubset({ uiProject: declaration })
-  /** Render the fold with `ok-pkg` declaring exactly this project (or none), through the real subset. */
-  const renderWith = (declaration) => {
-    const scan = foldScan()
-    scan.dependencies[0].uiProject = declaration === null ? null : subsetOf(declaration)
-    const ready = { status: 'ready', scan }
-    return renderFold({
-      state: ready,
-      store: {
-        state: () => ready,
-        refresh: async () => {},
-        changelog: () => ({ status: 'ready', payload: { reason: null, sections: [] } }),
-        loadChangelog: async () => {},
-      },
-    })
-  }
-
-  const okRow = rowSplit(renderWith({ pluginApiVersion: 1 }), 'ok-pkg').visible
-  equal(okRow.includes('data-uip-api-version="ok"'), true, 'a supported API version reads ok on the row')
-  equal(
-    rowSplit(renderWith({ pluginApiVersion: 99 }), 'ok-pkg').visible.includes('data-uip-api-version="unsupported"'),
-    true,
-    'an unsupported one reads unsupported — the mark case A asks for',
-  )
-  equal(
-    rowSplit(renderFold(), 'bare-pkg').visible.includes('data-uip-api-version="unknown"'),
-    true,
-    'and a package declaring no project reads unknown — a different sentence from "broken"',
-  )
-  equal(
-    okRow.includes('data-uip-contract=') && okRow.includes('data-uip-api-version='),
-    true,
-    'and the two questions keep two attributes: the contract state is still its own',
-  )
-})
-
-/* ── E3: the upgrade check — the list, and the two things a reader can do about it ─────────────── */
-
-/*
- * THE THIRD CASE (`UI第三阶段.txt:37-40`): after a dsh upgrade, list the installed packages whose declared
- * plugin API this build cannot run, and let a reader act — update it, or turn it off — while "postpone the
- * dsh upgrade" stays ADVICE, because nothing in this plugin can roll back a host.
- *
- * WHAT CROSSES ALREADY: each row carries `uiProject.compat` (`profile-scan.js`, `unsupported` for a
- * package this build cannot run), its `version`, and — from the update check — an `update` describing the
- * tag and the latest version. Measured 2026-09-30: the panel renders the dot and a maintenance block, and
- * no list that says WHY a package cannot be enabled.
- *
- * FIXTURE NOTE (test-side, disclosed): this test builds its own scan from `foldScan()`, giving one row a
- * subset produced by `profileScan.uiProjectSubset` (so `compat` is real, not hand-written) and an `update`
- * in the shape the channel tests already use (`verify.mjs:7117`:
- * `{ name, channel, tag, latest, available, error, timedOut }`). No product semantics change with it.
- *
- * THE HONEST LIMIT, ASSERTED: turning a PACKAGE off is the loader's job, not this plugin's, so the row
- * offers the project switch it can really flip and the `dsh plugin … remove` command as TEXT. The command
- * texts are never executed — the same rule the snapshot and update rows already follow.
- */
-await test('an incompatible package is listed with the two ways out of it, and the third is only advice', async () => {
-  /* 1. THE HOST SIDE: the incompatible rows can be aggregated from the listing alone. */
-  const endpoint = await import('../src/host/installed-endpoint.js').catch(() => null)
-  const subsetOf = (declaration) => profileScan.uiProjectSubset({ uiProject: declaration })
-  const handler = endpoint.createInstalledHandler({
-    scan: async () => ({
-      profileName: 'web',
-      dependencies: [
-        { name: 'ok-pkg', version: '1.0.0', resolved: true, kind: 'ui-project', uiProject: subsetOf({ pluginApiVersion: 1 }) },
-        { name: 'old-pkg', version: '0.9.0', resolved: true, kind: 'ui-project', uiProject: subsetOf({ pluginApiVersion: 99 }) },
-      ],
-      orphanedBindings: [],
-    }),
-  })
-  const payload = await (await handler({ url: 'https://x/api/ui-projects/installed.json' })).json()
-  const rows = payload?.scan?.dependencies ?? []
-  equal(
-    rows.filter((row) => row.uiProject?.compat === 'unsupported').map((row) => row.name),
-    ['old-pkg'],
-    'the incompatible packages can be aggregated from the rows alone — no second scan, no new endpoint',
-  )
-
-  /* 2-5. THE PANEL: the list lives in the fold, with two real actions and one sentence. */
-  const scan = foldScan()
-  scan.dependencies[0].uiProject = subsetOf({ pluginApiVersion: 99 })
-  const ready = { status: 'ready', scan }
-  const markup = renderFold({
-    state: ready,
-    store: {
-      state: () => ready,
-      refresh: async () => {},
-      changelog: () => ({ status: 'ready', payload: { reason: null, sections: [] } }),
-      loadChangelog: async () => {},
-      /*
-       * THE UPDATE COMES FROM THE UPDATES PAYLOAD, NOT FROM THE SCAN ROW (test-side correction,
-       * disclosed): `mergeUpdates` (`src/client/channels.js:89-91`) spreads every dependency and then
-       * REBUILDS `update` from what the check answered — measured 2026-09-30, where a hand-written
-       * `update` on the scan row was silently replaced, `available` came back false, and the update
-       * command never rendered. Feeding the payload is also the only honest fixture: a real panel never
-       * sees an `update` the check did not produce.
-       */
-      updates: () => ({
-        payload: {
-          results: [{ name: 'ok-pkg', channel: 'beta', tag: 'beta', latest: '2.0.0', available: true, error: null, timedOut: false }],
-        },
-      }),
-    },
-  })
-  const folded = rowSplit(markup, 'ok-pkg').folded
-  const copy = columnCopy()
-  contains(folded, 'data-uip-upgrade-check', 'the fold carries the upgrade check')
-  contains(folded, 'ok-pkg@1.0.0', 'and names the package and the version a reader would update from')
-  /*
-   * THE SENTENCE IS CHECKED AT THE SOURCE, for the reason E1b recorded: `columnCopy()` is this suite's own
-   * table (`verify.mjs:3491`), so asserting on its value would test the fixture. The key list above
-   * (`READ_KEYS`) already holds every name the component may read; this pins that the locale table really
-   * carries them, in both languages.
-   */
-  const upgradeLocale = await readFile(join(packageRoot, 'src', 'client', 'locale.js'), 'utf8')
-  equal(
-    (upgradeLocale.match(/upgradeCheckIncompatible:/g) ?? []).length,
-    2,
-    'and the sentence that says what is wrong exists in both languages, in the locale table',
-  )
-  contains(folded, 'add ok-pkg@beta', 'the update is a COMMAND, printed and never run — the channel visible in the spec')
-  contains(folded, 'data-uip-disable-project', 'turning it off offers the project switch this plugin can really flip')
-  contains(folded, 'dsh plugin', 'and names the package-level command as TEXT, because removing a package is the loader’s job')
-  contains(folded, 'remove', 'a command that really does remove')
-  contains(folded, copy.upgradeDeferredNote, 'while postponing the dsh upgrade is a sentence, not a control')
-  equal(folded.includes('data-uip-upgrade-deferred-action'), false, 'no button pretends to postpone a host upgrade')
-})
-
 /* ── Step 3: the plugin API version, said once and judged in one place ─────────────────────────── */
 
 /*
@@ -8642,355 +6936,6 @@ await test('the plugin API version is declared once, and judged in one place', a
   contains(clientIndex, 'dshPluginApiVersion', 'and so does the client half')
 })
 
-/* ── Step 4, segment 1: the ten-item test checklist, and the gate it guards ────────────────────── */
-
-/*
- * `UI第三阶段.txt:51-57` (step 4, second half): Settings ▸ Plugins offers "生成测试清单", the list has TEN
- * items — 亮色 / 暗色 / 移动端 / 弹窗 / 下拉 / 输入框 / 首帧无闪烁 / 关闭无残留 / 焦点态 / 对比度 — every one
- * must be confirmed individually, and only then may "标记通过" be pressed. A CHANGELOG draft may not be
- * generated before that mark exists.
- *
- * THE GATE LIVES IN THE JUDGEMENT, NOT IN THE BUTTON. A disabled button is a suggestion; the refusal is
- * what makes the rule true, so `markTested` must refuse an incomplete record — that is what this test
- * asks for, and the UI is asked for separately (`data-uip-checklist`, rendered by a plain function: the
- * suite names the two hook-bearing functions in `panel-plugins.js` and this must not become a third).
- *
- * STORAGE IS THE SETTINGS DOCUMENT, beside the channel a package already keeps there (`channels.js`:
- * `settings['<pkg>'].channel`), because that record is the user's, not the package's — it survives the
- * package being uninstalled, which is exactly what "you tested this version" has to do.
- *
- * RED TODAY: `src/host/test-checklist.js` does not exist.
- */
-await test('the test checklist is ten named items, and an incomplete one cannot be marked passed', async () => {
-  const checklist = await import('../src/host/test-checklist.js').catch(() => null)
-  truthy(checklist !== null, 'src/host/test-checklist.js exists — the checklist is data, not a paragraph in a doc')
-  equal(Array.isArray(checklist?.CHECKLIST_ITEMS), true, 'and exports CHECKLIST_ITEMS')
-  equal(checklist?.CHECKLIST_ITEMS?.length, 10, 'with exactly ten items, as the spec counts them')
-  equal(
-    (checklist?.CHECKLIST_ITEMS ?? []).map((item) => item?.id).sort(),
-    [
-      'close-no-residue', 'contrast', 'dark', 'dropdown', 'first-frame-no-flicker',
-      'focus', 'input', 'light', 'mobile', 'modal',
-    ],
-    'and the ten ids name the ten things the spec lists, once each',
-  )
-  equal(
-    (checklist?.CHECKLIST_ITEMS ?? []).every((item) => typeof item?.labelKey === 'string' && item.labelKey.length > 0),
-    true,
-    'each with a locale key, so both languages come from the table',
-  )
-
-  equal(typeof checklist?.isComplete, 'function', 'isComplete(record) answers whether every item is confirmed')
-  equal(checklist?.isComplete?.({}), false, 'an empty record is not complete')
-  const nine = Object.fromEntries((checklist?.CHECKLIST_ITEMS ?? []).slice(0, 9).map((item) => [item.id, true]))
-  equal(checklist?.isComplete?.(nine), false, 'nine of ten is not complete — the tenth is the point')
-  const ten = Object.fromEntries((checklist?.CHECKLIST_ITEMS ?? []).map((item) => [item.id, true]))
-  equal(checklist?.isComplete?.(ten), true, 'and ten of ten is')
-
-  const refused = (() => {
-    try {
-      checklist?.markTested?.({}, 'ok-pkg')
-      return null
-    } catch (error) {
-      return error
-    }
-  })()
-  equal(typeof checklist?.markTested, 'function', 'markTested is the ONE way to record a pass')
-  truthy(refused !== null, 'and it REFUSES an incomplete record — the gate is a refusal, not a disabled button')
-  contains(String(refused?.message ?? ''), 'checklist', 'the refusal says which gate it is')
-
-  /* THE STORAGE SLOT, beside the channel the same record already carries. */
-  const channelsSource = await readFile(join(packageRoot, 'src', 'client', 'channels.js'), 'utf8')
-  contains(channelsSource, 'checklist', 'the client stores the checklist beside the channel, in the same per-package record')
-
-  /* THE PANEL: a plain function, marked, and not a third hook-bearing one. */
-  const markup = renderFold()
-  /*
-   * THE BLOCK IS NOT RENDERED YET (segment 1 is landed in two steps: the judgement and the sentences are
-   * in place, the panel block is not). This assertion is what asks for it, and it is kept as written rather
-   * than relaxed — a checklist nobody can see is not a checklist.
-   */
-  contains(rowSplit(markup, 'ok-pkg').folded, 'data-uip-checklist', 'the fold renders the ten-item checklist')
-
-  /* BOTH LANGUAGES, from the table: each label key appears twice in the locale file. */
-  const localeSource = await readFile(join(packageRoot, 'src', 'client', 'locale.js'), 'utf8')
-  const missing = (checklist?.CHECKLIST_ITEMS ?? [])
-    .map((item) => item.labelKey)
-    .filter((key) => (localeSource.match(new RegExp('\\n\\s*' + key + ':', 'g')) ?? []).length !== 2)
-  equal(missing, [], 'and every label key exists in both languages, once each')
-})
-
-/* Two more questions the checklist has to answer (step 4). */
-
-await test('the checklist is refused by name, and the two halves of it cannot drift apart', async () => {
-  const host = await import('../src/host/test-checklist.js').catch(() => null)
-  const mirror = await import('../src/client/checklist-items.js').catch(() => null)
-  truthy(mirror !== null, 'src/client/checklist-items.js exists — the client-side mirror')
-
-  /*
-   * THE MIRROR IS HELD EQUAL ITEM BY ITEM, ids and label keys both: the two halves are separate bundles
-   * (`checklist-items.js` explains why), so this assertion is the only thing standing between a renamed
-   * item and a checkbox nobody can label.
-   */
-  equal(
-    (mirror?.CHECKLIST_ITEMS ?? []).map((item) => item?.id + ':' + item?.labelKey),
-    (host?.CHECKLIST_ITEMS ?? []).map((item) => item?.id + ':' + item?.labelKey),
-    'and carries exactly the host list, id and label key for every item',
-  )
-
-  /*
-   * THE SAME HOLD ON THE SIX CATEGORIES (step 4). These strings are not decoration: they are the words
-   * that end up in `CHANGELOG.md`, and `renderVersionSection` groups by them — a dropdown offering a
-   * category the writer does not know would produce a section nobody ever sees, silently.
-   */
-  const categories = await import('../src/client/changelog-categories.js').catch(() => null)
-  const draftModule = await import('../src/host/changelog-draft.js').catch(() => null)
-  truthy(categories !== null, 'src/client/changelog-categories.js exists — the client mirror of the six')
-  equal(
-    categories?.CHANGELOG_CATEGORIES,
-    draftModule?.CHANGELOG_CATEGORIES,
-    'and carries exactly the host list, in the same order',
-  )
-  equal(categories?.CHANGELOG_CATEGORIES?.length, 6, 'six categories, as the spec lists them')
-
-  const channels = await import('../src/client/channels.js').catch(() => null)
-  equal(typeof channels?.writeChecklist, 'function', 'the client can write one checklist item')
-  const refused = (() => {
-    try {
-      channels?.writeChecklist({ settings: {} }, 'ok-pkg', 'not-a-real-item', true)
-      return null
-    } catch (error) {
-      return error
-    }
-  })()
-  truthy(refused !== null, 'and REFUSES an item id this build does not know, rather than writing a key nobody reads')
-  contains(String(refused?.message ?? ''), 'checklist', 'the refusal says which list it is about')
-})
-
-/* ── Step 4, segment 2: the CHANGELOG draft, built from evidence or not at all ─────────────────── */
-
-/*
- * `UI第三阶段.txt:59-69` (step 4, first half). The flow is: collect the changes, classify them, suggest a
- * semver bump, show a DRAFT for item-by-item confirmation, and — when the evidence is not there — say so
- * instead of writing something plausible. Only after a person confirms does anything reach `CHANGELOG.md`
- * and `package.json`, and even then nothing is published or committed (that is the next segment's module).
- *
- * THE HARD RULE IS THE EMPTY ONE: with no evidence the answer is `insufficient` and the entries are EMPTY.
- * A generated changelog that invents entries is worse than no changelog, because it is wrong in a way the
- * reader has no way to notice — so "invents nothing" is asserted, not merely described.
- *
- * Decisions taken 2026-09-30: the bump takes the HIGHEST level present (Removed ⇒ major; Added/Changed/
- * Security ⇒ minor; Fixed/Performance ⇒ patch), and the six categories are the ones the spec lists.
- *
- * RED TODAY: `src/host/changelog-draft.js` does not exist.
- */
-await test('a changelog draft is built from evidence, and says so when there is none', async () => {
-  const draft = await import('../src/host/changelog-draft.js').catch(() => null)
-  truthy(draft !== null, 'src/host/changelog-draft.js exists — the draft builder')
-  equal(typeof draft?.draftChangelog, 'function', 'and exports draftChangelog(input)')
-  equal(
-    draft?.CHANGELOG_CATEGORIES,
-    ['Added', 'Changed', 'Fixed', 'Removed', 'Security', 'Performance'],
-    'with the six categories named once, in the spec’s order',
-  )
-
-  /* NO EVIDENCE, NO DRAFT — and in particular no invented entries. */
-  const nothing = draft?.draftChangelog?.({
-    gitLog: null,
-    snapshotDiff: null,
-    currentVersion: '0.1.0',
-    previousVersion: '0.1.0',
-  })
-  equal(nothing?.status, 'insufficient', 'no evidence at all is "insufficient", not an empty changelog dressed up as one')
-  equal(nothing?.entries, [], 'and it invents nothing to fill the gap')
-  equal(nothing?.suggestedBump, null, 'with no bump suggested, because there is nothing to bump for')
-  contains(String(nothing?.reason ?? ''), 'insufficient', 'and the reason says which situation this is')
-
-  /* A LOG IS ENOUGH EVIDENCE, and the bump is the highest level it contains. */
-  const onlyFixes = draft?.draftChangelog?.({
-    gitLog: 'fix: repair the contrast of the focus ring',
-    snapshotDiff: null,
-    currentVersion: '0.1.0',
-    previousVersion: null,
-  })
-  equal(onlyFixes?.status, 'ok', 'a log that says what changed is enough evidence')
-  equal(onlyFixes?.suggestedBump, 'patch', 'and fixes alone are a patch')
-
-  const withFeature = draft?.draftChangelog?.({
-    gitLog: 'feat: add the test checklist\nfix: repair the focus ring',
-    snapshotDiff: null,
-    currentVersion: '0.1.0',
-    previousVersion: null,
-  })
-  equal(withFeature?.suggestedBump, 'minor', 'a feature anywhere makes it a minor, whatever else is in the log')
-
-  const withBreaking = draft?.draftChangelog?.({
-    gitLog: 'feat!: drop the four-state contract badge\n\nBREAKING CHANGE: the attribute changed name',
-    snapshotDiff: null,
-    currentVersion: '0.1.0',
-    previousVersion: null,
-  })
-  equal(withBreaking?.suggestedBump, 'major', 'and a breaking change outranks both: the highest level present wins')
-})
-
-/* ── Step 4, segment 3: the ONE module allowed to write, behind the checklist gate ─────────────── */
-
-/*
- * `UI第三阶段.txt:59-69`. Everything up to here produced DATA: `changelog-draft.js` classifies and
- * suggests, the checklist records what a person confirmed. This segment is the only place in the plugin
- * that touches a file on disk, and it exists so that "who may write" has exactly one answer:
- * `src/host/changelog-write.js`. The read-only assertion over the whole host directory (upgraded in
- * `scripts/check-installed.test.mjs`) names that same file as its only exception.
- *
- * THE GATE IS CHECKED HERE, in the module that writes — not in a button. `checklistRecord` must satisfy
- * `isComplete` from `src/host/test-checklist.js`, or nothing is written at all. And even when it passes,
- * this module writes exactly two files, appends rather than rewrites, and does NOT commit, publish, or go
- * anywhere near the harness home directory: those are the user's acts, and the suite asserts the absence
- * of each rather than trusting the prose above.
- *
- * RED TODAY: `src/host/changelog-write.js` does not exist.
- */
-await test('a changelog is written only by the one module that may write, and only after the checklist passes', async () => {
-  const { mkdtemp, readFile, writeFile, rm } = await import('node:fs/promises')
-  const { tmpdir } = await import('node:os')
-  const write = await import('../src/host/changelog-write.js').catch(() => null)
-  const checklist = await import('../src/host/test-checklist.js').catch(() => null)
-
-  truthy(write !== null, 'src/host/changelog-write.js exists — the ONLY host module allowed to write files')
-  equal(typeof write?.writeChangelog, 'function', 'and exports writeChangelog(input)')
-
-  const complete = Object.fromEntries((checklist?.CHECKLIST_ITEMS ?? []).map((item) => [item.id, true]))
-  const input = {
-    packageDir: '',
-    version: '0.2.0',
-    date: '2026-09-30',
-    entries: [{ category: 'Added', text: 'the ten-item test checklist' }],
-    checklistRecord: complete,
-  }
-
-  /*
-   * THE GATE FIRST: an unconfirmed checklist writes NOTHING.
-   *
-   * AWAITED, AND THAT IS THE POINT. `writeChangelog` is async: it rejects, it does not throw, so a bare
-   * `try/catch` around the call catches nothing and the rejection escapes as an unhandled one — measured
-   * 2026-09-30, where the first version of this test crashed the run instead of asserting the refusal. The
-   * red was written before the module existed, which is exactly why the shape could not be seen then.
-   */
-  const incomplete = await (async () => {
-    try {
-      await write?.writeChangelog({ ...input, checklistRecord: {} })
-      return null
-    } catch (error) {
-      return error
-    }
-  })()
-  truthy(incomplete !== null, 'an unconfirmed checklist is REFUSED — the gate is a refusal, not a hidden button')
-  equal(incomplete instanceof TypeError, true, 'and the refusal is a TypeError, like the other refusals in this plugin')
-  contains(String(incomplete?.message ?? ''), 'checklist', 'and the refusal names the checklist')
-
-  /* THEN THE WRITE ITSELF, in a temporary directory: two files, appended, and nothing else. */
-  const dir = await mkdtemp(join(tmpdir(), 'uip-changelog-'))
-  try {
-    const before = '# Changelog\n\n## Round 9 — tidy\n\n- an older, round-based section\n'
-    await writeFile(join(dir, 'CHANGELOG.md'), before, 'utf8')
-    await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'fixture-pkg', version: '0.1.0' }, null, 2) + '\n', 'utf8')
-
-    await write?.writeChangelog({ ...input, packageDir: dir })
-
-    const changelog = await readFile(join(dir, 'CHANGELOG.md'), 'utf8')
-    contains(changelog, '## [0.2.0]', 'the version-based section is written')
-    contains(changelog, 'the ten-item test checklist', 'with the confirmed entry in it')
-    contains(changelog, 'Round 9 — tidy', 'and the older round-based section is still there: this APPENDS, it does not rewrite')
-    const manifest = JSON.parse(await readFile(join(dir, 'package.json'), 'utf8'))
-    equal(manifest.version, '0.2.0', 'and package.json carries the version the section names')
-    equal(manifest.name, 'fixture-pkg', 'with everything else in the manifest untouched')
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-
-  /* WHAT THIS MODULE MUST NEVER DO, asserted on its source. */
-  const source = await readFile(join(packageRoot, 'src', 'host', 'changelog-write.js'), 'utf8').catch(() => '')
-  equal(/\bgit\s+commit\b|simple-git|child_process/.test(source), false, 'it does not commit, and it shell out to nothing')
-  equal(/npm\s+publish|publishConfig/.test(source), false, 'it does not publish')
-  equal(source.includes('19103') || source.includes('.dsh'), false, 'and it never touches the harness home directory')
-})
-
-/* ── Step 4, segment 4: the author's tools, behind their own fold ──────────────────────────────── */
-
-/*
- * `UI第三阶段.txt:59-69`. The row serves TWO readers, and the decision of 2026-09-30 keeps them apart:
- * a USER reads versions, updates, rollback, removal and the changelog — that stays where it is — while an
- * AUTHOR tests, marks a version tested, drafts a changelog and writes it. The author's side is new, and it
- * goes into its own sub-fold (`data-uip-dev-tools`, `open: false`) rather than onto the row.
- *
- * NOTHING HERE RUNS A COMMAND (decision 1). The draft takes `gitLog` as TEXT a person pastes in, falls back
- * to the snapshot difference, and says `insufficient` when neither exists — the plugin never shells out.
- * The git tag rule (c) is a STATIC sentence at the foot of the sub-fold: reading real tags would mean
- * running git, which is precisely what this decision rules out.
- *
- * THE GATE IS CHECKED TWICE, ON PURPOSE. The panel disables the buttons, and the host refuses anyway:
- * `writeChangelog` already throws on an incomplete checklist (segment 3), so the write route cannot be
- * talked into writing by a hand-made request. `testedAt` carries the VERSION it was made against
- * (decision 3), because a mark that survives a version bump is a mark about nothing.
- *
- * RED TODAY: the panel has no sub-fold, and the host has neither route.
- */
-await test('the author tools live behind their own fold, and every gate refuses on the host side too', async () => {
-  const endpointSource = await readFile(join(packageRoot, 'src', 'host', 'installed-endpoint.js'), 'utf8')
-  const channelsSource = await readFile(join(packageRoot, 'src', 'client', 'channels.js'), 'utf8')
-  const panelSource = await readFile(join(packageRoot, 'src', 'client', 'panel-plugins.js'), 'utf8')
-  const localeSource = await readFile(join(packageRoot, 'src', 'client', 'locale.js'), 'utf8')
-
-  /* 1-2. THE SUB-FOLD, and the three buttons inside it. */
-  const folded = rowSplit(renderFold(), 'ok-pkg').folded
-  contains(folded, 'data-uip-dev-tools', 'the row carries the author tools as their own sub-fold')
-  /*
-   * CLOSED BY DEFAULT, asserted where it can actually be seen: not "it is in the fold" (which the line
-   * above already says) but "it is NOT in the default view". Only the second one can fail if the sub-fold
-   * is rendered open, which is the whole point of hiding the author's tools from a reader.
-   */
-  equal(
-    rowSplit(renderFold(), 'ok-pkg').visible.includes('data-uip-dev-tools'),
-    false,
-    'the dev-tools fold is CLOSED by default',
-  )
-  contains(folded, 'data-uip-mark-tested', 'the mark-tested button')
-  contains(folded, 'data-uip-generate-draft', 'the generate-draft button')
-  contains(folded, 'data-uip-commit-changelog', 'and the write-changelog button')
-
-  /* 3-5-7. THE GATES, at the panel and again at the host. */
-  contains(panelSource, 'isComplete', 'the panel consults the checklist before it offers to mark a version tested')
-  contains(channelsSource, 'testedAt', 'the mark records when it was made')
-  contains(channelsSource, 'changelogDraft', 'and the draft has a home in the same per-package record')
-  contains(panelSource, 'testedAt', 'the draft button compares that mark against the version being drafted for')
-
-  /* 6. THE DRAFT AREA: entries a person can edit, not a paragraph to accept. */
-  contains(folded, 'data-uip-changelog-draft', 'the draft area is rendered')
-  equal(/data-uip-changelog-entry/.test(panelSource), true, 'and its entries are individual, editable rows')
-
-  /* 8-9. THE TWO ROUTES, and the refusal that outlives the disabled button. */
-  contains(endpointSource, 'changelog-draft', 'the host offers the draft route')
-  contains(endpointSource, 'changelog-write', 'and the write route')
-  contains(endpointSource, 'writeChangelog', 'which calls the one module allowed to write')
-  contains(endpointSource, 'isComplete', 'and re-checks the checklist itself, so a hand-made request cannot skip the gate')
-
-  /*
-   * 10-11. THE TAG RULE IS A SENTENCE — and nothing here runs a command.
-   *
-   * COMMENTS ARE STRIPPED FIRST, and that is the whole fix (measured 2026-09-30): the guard used to scan
-   * the raw source, so the paragraph ABOVE the routes — which names `child_process`, `exec` and `spawn` in
-   * order to say they are absent — tripped the very check it was describing. Same family as `open(p, 'r')`
-   * in `changelog.js`: a source-scanning guard cannot tell code from prose unless it removes the prose.
-   */
-  equal((localeSource.match(/\n\s*devToolsTagHint:/g) ?? []).length, 2, 'the git-tag rule is stated in both languages')
-  const endpointCode = endpointSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
-  equal(
-    /child_process|\bexec\(|\bspawn\(/.test(endpointCode),
-    false,
-    'and no route reaches for a command runner (comments excluded: naming a thing is not using it)',
-  )
-})
-
 /* ── Step 5: what the page can see, and a button that copies it ─────────────────────────────────── */
 
 /*
@@ -9010,54 +6955,6 @@ await test('the author tools live behind their own fold, and every gate refuses 
  * RED TODAY: `src/client/diagnostics.js` does not exist, the endpoint does not send `spec`/`via`/
  * `versions`, and the panel has no `data-uip-diagnostics` block.
  */
-await test('the diagnostics are built in the client, from what the page can actually see', async () => {
-  const diagnostics = await import('../src/client/plugin-diagnostics.js').catch(() => null)
-  truthy(diagnostics !== null, 'src/client/plugin-diagnostics.js exists — the text is assembled where the facts are')
-  equal(typeof diagnostics?.buildDiagnostics, 'function', 'and exports buildDiagnostics(dependency, versions)')
-
-  const built = diagnostics?.buildDiagnostics?.(
-    {
-      name: 'ok-pkg',
-      version: '1.0.0',
-      spec: 'link:E:/dsh/plugins/ok-pkg',
-      via: 'link',
-      resolved: true,
-      kind: 'ui-project',
-      projectId: 'ok-project',
-      problems: [{ code: 'UI_CONTRACT_HARD_COLOUR', message: 'a hard colour' }],
-      update: { available: true, latest: '2.0.0', error: null },
-    },
-    [{ name: 'snap-1', version: '0.9.0', createdAt: '2026-09-01T00:00:00.000Z', files: 12, bytes: 4096, ours: true }],
-  )
-  equal(typeof built?.text, 'string', 'a copyable text, not only a structure')
-  equal(built?.text?.includes('\n'), true, 'which is multi-line, because it carries several facts')
-  contains(String(built?.text ?? ''), 'ok-pkg@1.0.0', 'and names the package and the version it describes')
-  contains(String(built?.text ?? ''), 'link', 'and where it came from')
-  contains(String(built?.text ?? ''), 'snap-1', 'and the update history it was given')
-  equal(Array.isArray(built?.lines), true, 'the same facts as structured lines, for the panel to render')
-
-  /* THE ENDPOINT MUST SEND WHAT THE TEXT DESCRIBES. */
-  const endpointSource = await readFile(join(packageRoot, 'src', 'host', 'installed-endpoint.js'), 'utf8')
-  contains(endpointSource, 'spec:', 'the projection carries the spec a package was installed from')
-  contains(endpointSource, 'via:', 'and how it resolved — a link and a store copy are different answers')
-  contains(endpointSource, 'versions', 'and the version-snapshot history')
-
-  /* THE PANEL: a block, a copy button, and the same fold discipline as everything else. */
-  const folded = rowSplit(renderFold(), 'ok-pkg').folded
-  contains(folded, 'data-uip-diagnostics', 'the row carries the diagnostics block')
-  contains(folded, 'data-uip-copy-diagnostics', 'with a button that copies it')
-
-  /* THE FAILURE HISTORY: kept in the user record, capped, and only for failures. */
-  const channelsSource = await readFile(join(packageRoot, 'src', 'client', 'channels.js'), 'utf8')
-  contains(channelsSource, 'updateFailures', 'the per-package record has a place for update failures')
-  contains(channelsSource, 'FAILURE_HISTORY_LIMIT', 'capped by a named limit rather than a literal in a loop')
-
-  /* BOTH LANGUAGES, from the table. */
-  const localeSource = await readFile(join(packageRoot, 'src', 'client', 'locale.js'), 'utf8')
-  const wanted = ['diagnosticsTitle', 'diagnosticsCopy', 'diagnosticsUnknown', 'diagnosticsFailures', 'diagnosticsRollbackHint']
-  const missing = wanted.filter((key) => (localeSource.match(new RegExp('\\n\\s*' + key + ':', 'g')) ?? []).length !== 2)
-  equal(missing, [], 'and every diagnostics sentence exists in both languages, once each')
-})
 
 /* ── Step 5, the last piece: the store REPORTS a failed check, per package ───────────────────────── */
 
@@ -9073,27 +6970,24 @@ await test('the diagnostics are built in the client, from what the page can actu
  * through the store, and this suite has none — inventing one here would be a bigger change than the code it
  * tests. Stated plainly rather than dressed up.
  */
-await test('the store reports each failed update check through the injected callback', async () => {
-  const storeSource = await readFile(join(packageRoot, 'src', 'client', 'installed.js'), 'utf8')
-  contains(storeSource, 'deps.onUpdateFailure?.(', 'the store REPORTS an update failure through the injected callback')
-  contains(storeSource, 'payload?.results ?? []', 'reading the results the check actually returned, per package')
-  contains(storeSource, 'result?.timedOut === true', 'a timed-out check counts as a failure, not as "up to date"')
-  /*
-   * AND IT IS NOT RECORDED PER CHECK: the callback is called inside the per-result loop, which only exists
-   * because one unreachable registry must not mark every package as failed.
-   */
-  equal(/catch[\s\S]{0,400}onUpdateFailure/.test(storeSource), false, 'and nothing records failures from the whole-check catch')
+/* ── Slimming: the "UI plugins" column is gone, and the clipboard moved out of it ───────────────── */
 
-  /*
-   * AND THE ROW CARRIES THEM (step 5, the last line). The record is the user's, so the scan projection
-   * cannot carry it: without this field the diagnostics render an empty failure list, which reads as
-   * "nothing ever failed" rather than as "this build does not show it". Precise to the FIELD NAME for the
-   * same reason the assertions above are: `readUpdateFailures` is a function name that the unit tests
-   * already exercise, and a bare mention of it would pass without the row ever carrying anything.
-   */
-  const channelsForRow = await readFile(join(packageRoot, 'src', 'client', 'channels.js'), 'utf8')
-  contains(channelsForRow, 'updateFailures: readUpdateFailures(record, dependency.name)', 'the row carries the failures the record holds')
-})
+/*
+ * ONE SETTINGS COLUMN, NOT TWO (decision 2026-09-30). The plugins column showed every installed package —
+ * framework, non-UI plugins and all — with a contract badge, a channel selector, an update dot, a
+ * maintenance block, an author's sub-fold and a diagnostics block. It is being removed, and the few parts
+ * a person actually needs move onto the "界面" card's own "more actions" menu.
+ *
+ * WHAT THIS TEST HOLDS is deliberately about the SEAM rather than about the removal:
+ *   · the second slot contribution is gone from `src/client/index.js`;
+ *   · `copyCommandText` now lives in its own module, imported by BOTH panels — a function that lives inside
+ *     a deleted file takes the copy button with it;
+ *   · the clipboard module is in `MODULE_ORDER`, before the two panels that import it (the list is a
+ *     dependency order; a client module missing from it is bundled nowhere — measured three times here).
+ *
+ * RED TODAY: no `clipboard.js`, the plugins-section contribution is still there, and `MODULE_ORDER` has
+ * never heard of the clipboard.
+ */
 
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
 if (onlyTest !== '') {

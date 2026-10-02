@@ -71,6 +71,15 @@ const MODULE_ORDER = [
   /* Before `panel-plugins.js`, which builds the copyable diagnostics from it. NOTE: this is NOT the
    * existing `diagnostics.js` — that one is the instrumentation toggle and is untouched. */
   'plugin-diagnostics.js',
+  /*
+   * THE CLIPBOARD, OUT OF THE COLUMN THAT IS GOING AWAY (2026-09-30). `copyCommandText` used to live inside
+   * `panel-plugins.js`; the copy button survives that removal (uninstall, view CHANGELOG, copy diagnostics),
+   * so the function moved into a module of its own and this list has to know about it.
+   *
+   * Placed here rather than beside the panels: `panel.js` and `panel-plugins.js` are listed later in this
+   * array, so this position satisfies "before both", and it keeps the dependency order the whole list is.
+   */
+  'clipboard.js',
   'channels.js',
   'boot-presence.js',
   'service.js',
@@ -81,7 +90,6 @@ const MODULE_ORDER = [
   'locale.js',
   'preview.js',
   'panel.js',
-  'panel-plugins.js',
   'styles/core.css',
   'index.js',
 ]

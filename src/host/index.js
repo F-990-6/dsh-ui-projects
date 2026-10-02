@@ -182,7 +182,7 @@ export function apply(ctx) {
       if (endpointMounted) return
       noticeFired = true
       console.error(
-        `[dsh-ui-projects] still waiting for the connection service after ${Math.round(CONNECTION_WAIT_NOTICE_MS / 1000)}s: the installed-package endpoint mounts when it arrives, and Settings › UI plugins says it cannot read the listing until then`,
+        `[dsh-ui-projects] still waiting for the connection service after ${Math.round(CONNECTION_WAIT_NOTICE_MS / 1000)}s: the installed-package endpoint mounts when it arrives, and Settings › UI says it cannot read the listing until then`,
       )
     }, CONNECTION_WAIT_NOTICE_MS)
     return () => clearTimeout(notice)
@@ -232,7 +232,7 @@ export function apply(ctx) {
        * as before; what changes is that this row's own pair of facts gets its ending either way.
        */
       console.error(
-        `[dsh-ui-projects] the connection service arrived but the installed-package endpoint could not be mounted (${String(error)}); Settings › UI plugins will say it cannot read the listing`,
+        `[dsh-ui-projects] the connection service arrived but the installed-package endpoint could not be mounted (${String(error)}); Settings › UI will say it cannot read the listing`,
       )
       throw error
     }

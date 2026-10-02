@@ -273,7 +273,7 @@ dsh plugin --profile web add E:\dsh\plugins\dsh-plugin-example
 ```
 
 The composition is read at boot, so the running process does not see the package until it restarts. On the
-next boot the card appears in **Settings › UI plugins** with its contract badge, and in **Settings › UI**
+next boot the card appears in **Settings › UI** with its contract badge, and in **Settings › UI**
 with a switch, the maintenance block, and a checklist when the manifest declares `testItems`.
 
 ## Writing a plain client plugin

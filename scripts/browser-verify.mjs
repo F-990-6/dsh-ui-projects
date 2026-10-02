@@ -1382,21 +1382,6 @@ async function gotoProjectsPage(session) {
  * renderer writes, so a copy edit in either language cannot break those.
  * @param {{ send: Function }} session
  */
-async function gotoPluginsPage(session) {
-  await ensurePanel(session)
-  const clicked = await evaluate(
-    session,
-    `(() => {
-      const items = Array.from(document.querySelectorAll('button,[role="button"],[role="tab"],a'))
-      const wanted = items.find((el) => /UI 插件|UI plugins/.test((el.textContent || '').trim()))
-      if (!wanted) return { ok: false, seen: items.slice(0, 12).map((el) => (el.textContent || '').trim().slice(0, 16)) }
-      wanted.click()
-      return { ok: true }
-    })()`,
-  )
-  truthy(clicked?.ok === true, `the UI plugins nav item exists (saw ${JSON.stringify(clicked?.seen ?? [])})`)
-  await waitFor(session, `document.querySelector('[data-uip-plugins="ready"]') !== null`, 'the plugins column to be ready')
-}
 
 /**
  * The names the HOST says are installed, read from the endpoint the column reads.
@@ -2677,27 +2662,14 @@ try {
      * A click on a disabled button is dropped without a trace, and the failure it produces is a
      * timeout three steps later. Same lesson as the switch: wait, then click.
      */
-    await waitFor(
-      session,
-      `(() => {
-        const button = document.querySelector('li.uip-card[data-project="liquid-glass"] button[data-uip-action="reset-one"]')
-        return button !== null && !button.disabled
-      })()`,
-      'the card reset to accept input',
-    )
-
-    // The reset button, found by its hook rather than by its translated label.
-    const reset = await evaluate(
-      session,
-      `(() => {
-        const button = document.querySelector('li.uip-card[data-project="liquid-glass"] button[data-uip-action="reset-one"]')
-        if (button === null) return { error: 'no reset button' }
-        if (button.disabled) return { error: 'the reset button is disabled' }
-        button.click()
-        return { ok: true }
-      })()`,
-    )
-    truthy(reset.ok, `the card reset was clicked (${JSON.stringify(reset)})`)
+    /*
+     * (B1, 2026-09-30: the card-reset steps stood here — a `waitFor` that the button accepted input (the
+     * panel disables its buttons while an action is pending, and a click on a disabled button is dropped
+     * without a trace), then an `evaluate` that clicked
+     * `li.uip-card[data-project="liquid-glass"] button[data-uip-action="reset-one"]`, then the assertions
+     * that followed it. The reset control is one of the three blocks being removed from the card, so the
+     * wait, the click and the withdrawal assertions that depended on them go together.)
+     */
 
     await waitFor(
       session,
@@ -2708,6 +2680,43 @@ try {
     equal(cleared.record, null, 'the card no longer claims a verification')
     equal(cleared.withdrawOffered, false, 'and offers no withdrawal for a record that is gone')
     equal(cleared.ticked, 0, 'the ticks went with the record, so nothing is left half-claimed')
+
+    /*
+     * THE "UI PLUGINS" COLUMN IS GONE, AND WHAT REMAINS SHOWS ONLY UI PROJECTS (2026-09-30).
+     *
+     * The cards come from `store.js:236` — `projects: registry.list().map(…)`, the UI-project registry —
+     * so the framework row and non-UI plugins, which live in the INSTALLED-PACKAGE scan and are never
+     * registered here, cannot appear in this column. Asserted rather than assumed: it is the one effect of
+     * the removal a reader would notice, and swapping the data source is the kind of refactor that would
+     * change it silently.
+     *
+     * NO HARD-CODED COUNT, deliberately: the number of cards is whatever this fixture registered, and a
+     * literal here would have to be maintained twice. The self-consistent form below says the same thing —
+     * one card per distinct registered id, none of them the framework — and cannot rot.
+     */
+    const cards = await evaluate(
+      session,
+      `(() => {
+        const list = Array.from(document.querySelectorAll('li.uip-card'))
+        const ids = list.map((card) => card.getAttribute('data-project'))
+        return {
+          count: list.length,
+          distinct: new Set(ids).size,
+          ids,
+          menu: {
+            uninstall: document.querySelector('li.uip-card [data-uip-action="uninstall"]') !== null,
+            changelog: document.querySelector('li.uip-card [data-uip-action="view-changelog"]') !== null,
+            diagnostics: document.querySelector('li.uip-card [data-uip-action="copy-diagnostics"]') !== null,
+          },
+        }
+      })()`,
+    )
+    truthy(cards.count > 0, 'the remaining column renders at least one card')
+    equal(cards.count, cards.distinct, 'one card per registered UI project, and nothing else')
+    equal(cards.ids.includes('dsh-ui-projects'), false, 'the framework is NOT one of the cards: it is never registered as a UI project')
+    equal(cards.menu.uninstall, true, 'and the card menu offers to copy the uninstall command')
+    equal(cards.menu.changelog, true, 'to open the CHANGELOG it already has')
+    equal(cards.menu.diagnostics, true, 'and to copy the diagnostics this build can actually see')
     /*
      * The reset is "back to the shipped default", and this skin's default is OFF — so the assertion
      * is that it went off, not that it stayed on. The state is then put back, because every phase
@@ -3167,79 +3176,6 @@ try {
    */
   let errorsAtGroupStart = 0
 
-  await test('the plugins column opens, fetches the listing, and settles', async () => {
-    // `ensurePanel` is the suite's idempotent opener. The raw trigger expression fails when the
-    // panel is ALREADY open — which it is, because the tests before this group leave it that way — and
-    // that single failure is what made the next three assertions look for a nav item inside no panel.
-    await ensurePanel(page)
-
-    // The console baseline: the run-wide collector check is written as the last word on the collector,
-    // so anything this group throws would otherwise be invisible. Assignment, not declaration — the
-    // comparison happens in the group's last test.
-    errorsAtGroupStart = pageErrors.length
-
-    // The nav item is the only handle the shell offers — it renders our label() and nothing else —
-    // so the CLICK matches copy, and every assertion after it reads the data-* hooks our own
-    // renderer writes, which a copy edit in either language cannot break.
-    const clicked = await evaluate(session, `(() => {
-      const items = Array.from(document.querySelectorAll('button,[role="button"],[role="tab"],a'))
-      const wanted = items.find((el) => /UI 插件|UI plugins/.test((el.textContent || '').trim()))
-      if (!wanted) return { ok: false, seen: items.slice(0, 12).map((el) => (el.textContent || '').trim().slice(0, 16)) }
-      wanted.click()
-      return { ok: true }
-    })()`)
-    truthy(clicked?.ok === true, `the UI plugins nav item exists (saw ${JSON.stringify(clicked?.seen ?? [])})`)
-
-    /*
-     * `waitFor` THROWS on timeout and returns nothing on success — it is not a boolean. Read as one
-     * (`truthy(rendered === true, …)`, which this test did until now), the assertion can never pass, and
-     * that is what made two runs report `expected truthy, got false` while the column was there all along.
-     * Caught, so a real timeout is reported AFTER the samples rather than instead of them.
-     */
-    let mounted = true
-    try {
-      await waitFor(session, `document.querySelector('[data-uip-plugins]') !== null`, 'the plugins column renders')
-    } catch {
-      mounted = false
-    }
-    /*
-     * THE SEQUENCE IS THE DIAGNOSTIC. A column that never leaves `loading` beside an endpoint that answers
-     * in milliseconds is the difference between "the host is slow" and "the render never learned" — and
-     * "expected ready, got loading" says neither. Six samples, a refresh, four more, and two timed probes,
-     * all printed whether or not the assertion passes.
-     */
-    const SAMPLER = '(async () => { const seen = []; for (let i = 0; i < 6; i += 1) {' +
-      " seen.push(document.querySelector('[data-uip-plugins]')?.getAttribute('data-uip-plugins') ?? null);" +
-      ' await new Promise((done) => setTimeout(done, 500)) }' +
-      " document.querySelector('[data-uip-plugins-action=\"refresh\"]')?.click();" +
-      ' for (let i = 0; i < 4; i += 1) { await new Promise((done) => setTimeout(done, 500));' +
-      " seen.push(document.querySelector('[data-uip-plugins]')?.getAttribute('data-uip-plugins') ?? null) }" +
-      ' return seen })()'
-    const samples = await evaluate(session, SAMPLER)
-    process.stdout.write('         note  plugin-column states, 500ms apart: ' + JSON.stringify(samples) + '\n')
-
-    const PROBE = '(async () => { const started = performance.now(); try {' +
-      " const response = await fetch('/api/ui-projects/installed.json', { credentials: 'same-origin' });" +
-      ' return { status: response.status, ms: Math.round(performance.now() - started) }' +
-      ' } catch (error) { return { status: 0, ms: Math.round(performance.now() - started), error: String(error) } } })()'
-    const immediate = await evaluate(session, PROBE)
-    await sleep(3000)
-    const delayed = await evaluate(session, PROBE)
-    process.stdout.write('         note  endpoint probe: immediate ' + JSON.stringify(immediate) + ', after 3s ' + JSON.stringify(delayed) + '\n')
-
-    /*
-     * The assertions come LAST, and both carry the sequence. Written the other way round, a column that
-     * never appears fails the mount assertion first and the samples above are never collected — which is
-     * exactly the run that needed them.
-     */
-    truthy(mounted === true, 'the column mounts — states: ' + JSON.stringify(samples))
-
-    const settledState = await evaluate(session, "document.querySelector('[data-uip-plugins]')?.getAttribute('data-uip-plugins') ?? null")
-    truthy(
-      settledState === 'ready' || settledState === 'failed',
-      'the column settles instead of resting on the reading state: ' + String(settledState) + ' after ' + JSON.stringify(samples),
-    )
-  })
 
   await test('the page can fetch the endpoint the host mounted', async () => {
     const probe = await evaluate(
@@ -3253,97 +3189,6 @@ try {
     equal(typeof probe?.body?.scan?.profileName, 'string', 'and the profile it describes, by name')
   })
 
-  await test('the listing renders a row per package, and marks the framework unremovable', async () => {
-    const frameworkRow = await evaluate(
-      session,
-      `(() => {
-        const row = document.querySelector('[data-uip-plugin="dsh-ui-projects"]')
-        if (row === null) return null
-        return { text: row.textContent.trim().slice(0, 80), command: row.querySelector('[data-uip-command]') !== null }
-      })()`,
-    )
-    truthy(frameworkRow !== null, 'the framework itself is listed')
-    contains(frameworkRow?.text ?? '', '@', 'the row names the package and its version')
-    equal(frameworkRow?.command, false, 'and carries no command that would remove the thing rendering the list')
-
-    const rows = await evaluate(session, `document.querySelectorAll('[data-uip-plugin]').length`)
-    truthy(rows >= 1, `at least one package row rendered (${rows})`)
-
-    const commands = await evaluate(
-      session,
-      `Array.from(document.querySelectorAll('[data-uip-command] pre')).map((el) => el.textContent.trim())`,
-    )
-    const removeCommand = (commands ?? []).find((line) => /^dsh plugin /.test(line))
-    truthy(removeCommand !== undefined, `a row offers the exact command (${JSON.stringify(commands ?? [])})`)
-    contains(String(removeCommand), 'dsh plugin --profile', 'and it is the loader invocation, not a paraphrase')
-
-    const restart = await evaluate(
-      session,
-      `({
-        hint: document.querySelector('[data-uip-restart="hint"]') !== null,
-        block: document.querySelector('[data-uip-restart="block"]') !== null,
-      })`,
-    )
-    equal(restart?.hint, true, 'the restart instruction is present, matched by hook rather than by copy')
-    equal(restart?.block, true, 'and so is the block a person copies')
-
-    /*
-     * The three groups beside the command, in a real page and in the interface's own language: what the
-     * framework removes on its own, what the command removes, and what is deliberately left alone. This
-     * is the real-render half of the pair whose unit half is `the uninstall block answers all three
-     * questions` in the suite — that one proves the copy exists, this one proves it reaches the page.
-     */
-    const uninstallRows = await evaluate(
-      session,
-      `document.querySelectorAll('[data-uip-command]').length`,
-    )
-    truthy(uninstallRows >= 1, `at least one row offers a removal command (${uninstallRows})`)
-    const unexplained = await evaluate(
-      session,
-      `Array.from(document.querySelectorAll('[data-uip-command]')).filter((block) =>
-        ['automatic','command','kept'].some((group) => block.querySelector('[data-uip-uninstall="' + group + '"]') === null)
-      ).length`,
-    )
-    equal(
-      unexplained,
-      0,
-      'every row that offers a removal command says what goes on its own, what the command does, and what is left alone',
-    )
-
-    /*
-     * The maintenance commands (7d-1), matched by hook rather than by copy.
-     *
-     * Without these, a browser run after that round could only show that the columns still worked -- not
-     * that anything new reached the page. "Not broken" and "delivered" are different claims, and this is
-     * the suite that can tell them apart.
-     */
-    const maintenanceRows = await evaluate(
-      session,
-      `document.querySelectorAll('[data-uip-maintenance]').length`,
-    )
-    truthy(maintenanceRows >= 1, `at least one row prints maintenance commands (${maintenanceRows})`)
-    const missingMaintenance = await evaluate(
-      session,
-      `Array.from(document.querySelectorAll('[data-uip-maintenance]')).filter((block) =>
-        ['snapshot','update','rollback'].some((verb) => block.querySelector('[data-uip-command-maintenance="' + verb + '"]') === null)
-      ).length`,
-    )
-    equal(
-      missingMaintenance,
-      0,
-      'and every one of them offers all three commands: snapshot, update and rollback',
-    )
-    /*
-     * EVERY ROW, the framework's included — the assertion whose absence let a real bug ship. The
-     * maintenance block was rendered inside the removal block, which the framework row skips on purpose,
-     * so the package whose ordinary case is updating-and-rolling-back had no commands at all.
-     */
-    const rowsWithoutMaintenance = await evaluate(
-      session,
-      `Array.from(document.querySelectorAll('[data-uip-plugin]')).filter((row) => row.querySelector('[data-uip-maintenance]') === null).length`,
-    )
-    equal(rowsWithoutMaintenance, 0, 'every package row carries a maintenance block, the framework row included')
-  })
 
   /*
    * THE BLOCK A PERSON COPIES CARRIES THAT ROW'S OWN NAME (8d review).
@@ -3404,96 +3249,30 @@ try {
    * of having to work out which of a dozen assertions in a bigger test produced it — and an assertion
    * inside an existing test prints nothing of its own, so only the count would ever show it had run.
    */
-  await test('a project card offers the maintenance commands, folded and hooked', async () => {
-    /*
-     * BOTH DIRECTIONS, OWNED BY THIS TEST.
-     *
-     * `ensurePanel` does not mean "the panel is open": it early-returns on `.uip-root`, the PROJECTS page's
-     * root, and otherwise clicks the UI section — so it is how a test gets to this page. That is this
-     * test's precondition, and it takes it here.
-     *
-     * The first fix for the isolation bug removed this line and kept the switch back at the end: the "go"
-     * without the "return". The test then looked for `[data-uip-maintenance-panel]` while the panel was
-     * still on the plugins page, found none, and failed with `[]` — a fix that moved the failure rather
-     * than removing it. What the earlier test left dirty was never "having switched" but "not switching
-     * back", so the repair is both halves in the same test, which is also the contract stated at the end.
-     *
-     * THE CONTRACT, for the next person adding a test: go where you need to go, and hand the panel back on
-     * the PLUGINS page, where the tests that follow look for their controls. Making a test independent
-     * makes its failure readable; it does not make its side effects go away.
-     */
-    await ensurePanel(page)
-    const cards = await evaluate(
-      session,
-      `Array.from(document.querySelectorAll('[data-uip-maintenance-panel]')).map((node) => ({
-        project: node.getAttribute('data-uip-maintenance-panel'),
-        commands: Array.from(node.querySelectorAll('pre')).map((pre) => pre.textContent.trim()),
-      }))`,
-    )
-    truthy(
-      Array.isArray(cards) && cards.length >= 1,
-      `at least one project card carries the maintenance block (${JSON.stringify(cards ?? null)})`,
-    )
-    const withCommands = (cards ?? []).filter(
-      (card) =>
-        card.commands.some((command) => command.startsWith('install.ps1 -Snapshot')) &&
-        card.commands.some((command) => command.startsWith('install.ps1 -Update')) &&
-        card.commands.some((command) => command.startsWith('install.ps1 -Rollback')),
-    )
-    equal(
-      withCommands.length,
-      (cards ?? []).length,
-      `every card carrying the block prints all three commands (${JSON.stringify(cards ?? null)})`,
-    )
-    const open = await evaluate(
-      session,
-      `Array.from(document.querySelectorAll('details[data-uip-maintenance-panel]')).filter((node) => node.open === true).length`,
-    )
-    equal(open, 0, 'and they start folded, so a card stays a card')
-
-    /*
-     * THE WIRING, which is what a unit test cannot see: the section receives the installed store from its
-     * own closure (`index.js`), because the shell calls a registered renderer with no arguments. When that
-     * line was missing, four states existed and production reached only the silent one — every unit test
-     * passed, because each of them passed the prop in by hand.
-     *
-     * Requires a host whose code carries the `versions` field (i.e. a dsh web restarted after 7d-1); with
-     * an older process the honest answer is a card that says so, which is a different failure to read.
-     */
-    /*
-     * THE CLEANUP RUNS EVEN WHEN AN ASSERTION ABOVE FAILS, and that is not tidiness: the first version of
-     * this test put the switch back at the end of the body, so when an assertion threw the panel stayed on
-     * the projects page and the NEXT test — the one guarding the unreadable-listing path — failed with
-     * `no refresh control`. One failure became two, and the second one lied about its cause.
-     *
-     * The contract, stated where it is kept: go where you need to go, hand the panel back on the PLUGINS
-     * page, and do it in a `finally` so a failure cannot skip it.
-     */
-    try {
-      const versionStates = await evaluate(
-        session,
-        `Array.from(document.querySelectorAll('[data-uip-maintenance-panel]')).map((node) =>
-          node.querySelector('[data-uip-version-state]')?.getAttribute('data-uip-version-state') ?? null
-        )`,
-      )
-      truthy(
-        Array.isArray(versionStates) && versionStates.some((state) => state !== null),
-        `at least one card states its version situation (it needs the section wired to the installed store AND that store already read): ${JSON.stringify(versionStates ?? null)}`,
-      )
-    } finally {
-      await evaluate(
-        session,
-        `(() => {
-          const items = Array.from(document.querySelectorAll('button,[role="button"],[role="tab"],a'))
-          const wanted = items.find((el) => /UI 插件|UI plugins/.test((el.textContent || '').trim()))
-          if (!wanted) return { ok: false }
-          wanted.click()
-          return { ok: true }
-        })()`,
-      )
-      await sleep(300)
-    }
-  })
+  /*
+   * (B2, 2026-09-30: an entire test stood here — "a project card offers the maintenance commands, folded
+   * and hooked". It read `[data-uip-maintenance-panel]` off the live page, asserted at least one card
+   * carried the block, that every such card printed all three commands (`install.ps1 -Snapshot`, `-Update`,
+   * `-Rollback`), that they started folded, and — behind a `try`/`finally` — that at least one card stated
+   * its version situation.
+   *
+   * THREE THINGS WORTH KEEPING IN WRITING, each one paid for:
+   *
+   *   · WHY IT WAS ITS OWN TEST. "When this fails, the reader should see 'the card's block did not render'
+   *     instead of having to work out which of a dozen assertions in a bigger test produced it — and an
+   *     assertion inside an existing test prints nothing of its own, so only the count would ever show it
+   *     had run."
+   *   · "A FIX THAT MOVED THE FAILURE RATHER THAN REMOVING IT." The isolation repair dropped the "go to
+   *     this page" line but kept the "come back" at the end; the test then looked for
+   *     `[data-uip-maintenance-panel]` while the panel was still on the plugins page, found none, and
+   *     failed with `[]`. What the earlier test left dirty was never "having switched" but "not switching
+   *     back".
+   *   · THE CONTRACT IS VOID WITH THE COLUMN. "Go where you need to go, hand the panel back on the PLUGINS
+   *     page" — this test's `finally` clicked the `UI 插件 | UI plugins` tab to do exactly that, and that
+   *     tab is what this removal deletes. Two preconditions elsewhere need revisiting with it: `ensurePanel`
+   *     (whose "return to the plugins page" half has no page left to return to) and the test that follows
+   *     below, whose version-state assertions were about the same card block.)
+   */
 
   /*
    * THE READER'S ROUTE (7d-2c), which this suite had never walked.
@@ -3510,11 +3289,15 @@ try {
    * else. The reload is what makes "the plugins page was never opened" true of this page instance rather
    * than a claim about the run's history.
    *
-   * WHICH state appears is not this test's business — `host-stale` (a host whose code predates the
-   * `versions` field: a restart that has not happened yet), `none`, `same` and `different` are all the
-   * page knowing something. The outcome it exists to catch is the fifth one: no attribute at all.
+   * (B3, 2026-09-30: this paragraph used to explain WHICH of the four version states appears —
+   * `host-stale` (a host whose code predates the `versions` field: a restart that has not happened yet),
+   * `none`, `same` and `different` — and said the test existed to catch the fifth: no attribute at all.
+   * The state assertions were about the card's maintenance block and went with it; the paragraph goes with
+   * them. THE FIFTH STATE IS STILL THIS TEST'S SUBJECT, and it is why the name keeps the word "once": what
+   * it catches is a page that never asked, which now reads as `calls !== 1` rather than as a missing
+   * attribute.)
    */
-  await test('opening the projects page alone asks the host once, and a card states its version', async () => {
+  await test('opening the projects page alone asks the host once', async () => {
     await navigate(pageUrl)
     try {
       /*
@@ -3541,37 +3324,25 @@ try {
       const scene = await evaluate(
         session,
         `(async () => {${HELPERS}
-          const cards = () => Array.from(document.querySelectorAll('details[data-uip-maintenance-panel]'))
           /*
-           * 500ms is the suite's own pacing; this waits longer only if the answer has genuinely not
-           * arrived, so a slow host reports the scene below instead of a bare timeout. Nothing here
-           * assumes the state will appear — the assertions are what decide that.
+           * (B3, 2026-09-30: this expression used to collect the cards and their version states —
+           * 'cards()' read 'details[data-uip-maintenance-panel]', it polled up to 8s for a
+           * '[data-uip-version-state]' to appear, expanded every card and returned '{ cards, states,
+           * visible, calls }'. All of that was about the card's maintenance block and went with it. What is
+           * left is the ONE thing this test is named for: how many times this page asked the host for the
+           * listing, counted by the patched 'fetch' installed above.)
            */
-          const startedAt = Date.now()
-          while (Date.now() - startedAt < 8000
-            && !cards().some((card) => card.querySelector('[data-uip-version-state]') !== null)) {
-            await new Promise((resolve) => setTimeout(resolve, 100))
-          }
-          for (const card of cards()) card.open = true
-          const states = cards().map((card) => card.querySelector('[data-uip-version-state]'))
-          return {
-            cards: cards().length,
-            states: states.map((node) => (node === null ? null : node.getAttribute('data-uip-version-state'))),
-            said: states.map((node) => (node === null ? '' : (node.textContent || '').trim())),
-            visible: states.filter((node) => node !== null && isVisible(node)).length,
-            calls: window.__uipInstalledCalls,
-          }
+          return { calls: window.__uipInstalledCalls }
         })()`,
       )
-      truthy(scene !== null && scene.cards >= 1, `the projects page rendered cards (${JSON.stringify(scene ?? null)})`)
-      truthy(
-        Array.isArray(scene?.states) && scene.states.some((state) => state !== null),
-        `at least one card states its version situation, having asked the host from this page alone (${JSON.stringify(scene ?? null)})`,
-      )
-      truthy(
-        scene?.visible >= 1,
-        `and the sentence is one a reader can see once the card is expanded (${JSON.stringify(scene ?? null)})`,
-      )
+      /*
+       * (B3, 2026-09-30: three assertions stood here — the page rendered cards, at least one card stated
+       * its version situation, and that sentence was visible once the card was expanded. All three read
+       * the card's maintenance block, which this removal deletes; the first is covered by the card-shape
+       * assertions added at the top of this round, and the other two have no subject left. What follows is
+       * this test's own claim, and the reason its name still ends in "once".)
+       */
+      equal(scene?.calls, 1, `this page asked the host for the listing exactly once (${JSON.stringify(scene ?? null)})`)
       equal(scene?.calls, 1, `this page asked the host for the listing exactly once (${JSON.stringify(scene ?? null)})`)
     } finally {
       await evaluate(
@@ -3584,86 +3355,19 @@ try {
         })()`,
       )
       /*
-       * The same contract the card test keeps: hand the panel back on the PLUGINS page, in a `finally`,
-       * because the test that follows looks for its refresh control there and a failure here must not
-       * become a second, misleading one there.
+       * (B3, 2026-09-30: the "hand the panel back" step stood here — it clicked the `UI 插件 | UI plugins`
+       * tab in this `finally`, under the contract the card test also kept: leave the panel where the NEXT
+       * test looks for its controls. That tab is the column this removal deletes, so there is no page to
+       * hand back to and the click would find nothing (it returns `{ ok: false }` rather than throwing,
+       * which is why this is a contract to rewrite rather than a failure to read).
+       *
+       * TO-DO, recorded here because this is where the contract is kept: `ensurePanel`'s "return to the
+       * plugins page" half is void for the same reason and needs revisiting once the tests that depend on
+       * that page are gone.)
        */
-      await evaluate(
-        session,
-        `(() => {
-          const items = Array.from(document.querySelectorAll('button,[role="button"],[role="tab"],a'))
-          const wanted = items.find((el) => /UI 插件|UI plugins/.test((el.textContent || '').trim()))
-          if (!wanted) return { ok: false }
-          wanted.click()
-          return { ok: true }
-        })()`,
-      )
-      await sleep(300)
     }
   })
 
-  await test('a listing that cannot be read degrades to a message, never to an empty list', async () => {
-    /*
-     * The endpoint works, so the failure is simulated IN THE PAGE: `fetch` is failed for this one
-     * path, the column is asked to read again, and the state must become `failed` — which is the
-     * difference between "we could not read it" and "there is nothing installed". The patch is
-     * reverted in the same expression, so nothing survives the assertion.
-     */
-    const result = await evaluate(
-      session,
-      `(async () => {
-        const real = window.fetch
-        try {
-          window.fetch = (input, init) => {
-            const url = typeof input === 'string' ? input : input?.url ?? ''
-            if (url.includes('/api/ui-projects/installed.json')) return Promise.reject(new Error('simulated network failure'))
-            return real(input, init)
-          }
-          const refresh = document.querySelector('[data-uip-plugins-action="refresh"]')
-          if (refresh === null) return { error: 'no refresh control' }
-          refresh.click()
-          for (let i = 0; i < 60; i += 1) {
-            await new Promise((done) => setTimeout(done, 50))
-            if (document.querySelector('[data-uip-plugins="failed"]') !== null) break
-          }
-          const root = document.querySelector('[data-uip-plugins]')
-          return {
-            state: root?.getAttribute('data-uip-plugins') ?? null,
-            message: document.querySelector('[data-uip-plugins-error]')?.textContent?.trim().slice(0, 120) ?? null,
-            rows: document.querySelectorAll('[data-uip-plugin]').length,
-          }
-        } finally {
-          window.fetch = real
-        }
-      })()`,
-    )
-    equal(result?.state, 'failed', `the column reports that it could not read the listing (${JSON.stringify(result?.error ?? '')})`)
-    truthy(typeof result?.message === 'string' && result.message.length > 0, 'with a reason a person can act on')
-    equal(result?.rows, 0, 'and with no package rows: an unreadable listing must not look like an empty one')
-
-    const recovered = await evaluate(
-      session,
-      `(async () => {
-        document.querySelector('[data-uip-plugins-action="refresh"]')?.click()
-        for (let i = 0; i < 60; i += 1) {
-          await new Promise((done) => setTimeout(done, 50))
-          if (document.querySelector('[data-uip-plugins="ready"]') !== null) break
-        }
-        return document.querySelector('[data-uip-plugins]')?.getAttribute('data-uip-plugins') ?? null
-      })()`,
-    )
-    equal(recovered, 'ready', 'and the refresh control recovers the column once the host answers again')
-
-    /*
-     * The group is done, so its console must be as clean as it was when it started. The run-wide collector
-     * check now runs BEFORE this group, which is exactly why this local one exists.
-     */
-    equal(
-      pageErrors.length,
-      errorsAtGroupStart,
-      'the plugins group added no page errors (' + JSON.stringify(pageErrors.slice(errorsAtGroupStart)) + ')',
-    )
-  })
 
   /* ── the two example packages, in a real page (9b) ───────────────────────────
    *
@@ -3870,145 +3574,7 @@ try {
     equal(await projectIsOn(session, 'liquid-glass'), true, 'and the skin is active again, as it was')
   })
 
-  await test('the plugins column shows the four contract states, and the framework row explains its own', async () => {
-    await requireExamplePackages(session)
-    await gotoPluginsPage(session)
-    /*
-     * Folded FIRST, then expanded — the two facts a reader gets are "the row stays a row" and "opening
-     * it shows what the scan found", and a test that expands before reading cannot assert the first.
-     */
-    const scene = await evaluate(
-      session,
-      `(() => {
-        const read = (name) => {
-          const row = document.querySelector('[data-uip-plugin="' + name + '"]');
-          if (row === null) return null;
-          const badge = row.querySelector('[data-uip-contract]');
-          const panel = row.querySelector('[data-uip-contract-panel]');
-          const summary = row.querySelector('[data-uip-contract-summary]');
-          return {
-            state: badge === null ? null : badge.getAttribute('data-uip-contract'),
-            text: badge === null ? null : (badge.textContent || '').trim(),
-            panel: panel !== null,
-            open: panel === null ? null : panel.open === true,
-            findings: row.querySelectorAll('[data-uip-contract-finding]').length,
-            note: row.querySelector('[data-uip-contract-note]') !== null,
-            /*
-             * THE SENTENCE, READ FROM ITS OWN HOOK. The whole row's text starts with the package name and
-             * version (dsh-ui-projects@0.1.0), so parsing digits out of IT found the 0 in the version and
-             * reported "expected 2, got 0" against a panel that was rendering correctly. No backticks in
-             * this comment on purpose: it lives inside a template literal, and one would end it.
-             */
-            summary: summary === null ? null : (summary.textContent || '').trim(),
-          };
-        };
-        const ROWS = [
-          ['example', ${JSON.stringify(EXAMPLE_PROJECT_PACKAGE)}],
-          ['dialog', ${JSON.stringify(EXAMPLE_DIALOG_PACKAGE)}],
-          ['framework', 'dsh-ui-projects'],
-        ];
-        const out = {};
-        for (const [key, name] of ROWS) out[key] = read(name);
-        for (const [key, name] of ROWS) {
-          const panel = document.querySelector('[data-uip-plugin="' + name + '"] [data-uip-contract-panel]');
-          if (panel !== null) panel.open = true;
-        }
-        for (const [key, name] of ROWS) {
-          const row = document.querySelector('[data-uip-plugin="' + name + '"]');
-          if (out[key] !== null && out[key] !== undefined && row !== null) out[key].shown = (row.textContent || '').trim();
-        }
-        return out;
-      })()`,
-    )
 
-    equal(scene?.example?.state, 'ok', `a clean client bundle is reported as clean (${JSON.stringify(scene?.example ?? null)})`)
-    truthy(scene?.example?.panel === true, 'and the clean row still opens: a green badge is not a promise')
-    equal(scene?.dialog?.state, 'warn', `the violating package is reported (${JSON.stringify(scene?.dialog ?? null)})`)
-    equal(
-      scene?.dialog?.findings,
-      1,
-      `with exactly the one finding its own package check pins (${JSON.stringify(scene?.dialog ?? null)})`,
-    )
-    contains(
-      scene?.dialog?.shown ?? '',
-      'custom-dialog',
-      'and the finding names the role that no stylesheet can select',
-    )
-    equal(scene?.dialog?.open, false, 'the panels start folded, so a row stays a row')
-
-    equal(
-      scene?.framework?.state,
-      'na',
-      `the contract is not applied to the framework itself, and the badge says so (${JSON.stringify(scene?.framework ?? null)})`,
-    )
-    /*
-     * THE ROW STILL OPENS, and the two accepted findings are inside it. Hiding them behind "n/a" was the
-     * first version of this badge, and the objection was right: a reader who never runs the CLI could
-     * not see that the framework's own bundle carries two colour literals — recorded, accepted, and
-     * pinned by `check-installed.test.mjs`'s snapshot rather than quietly narrowed out of the rule.
-     */
-    truthy(
-      scene?.framework?.panel === true,
-      `the framework's own row opens rather than hiding the decision (${JSON.stringify(scene?.framework ?? null)})`,
-    )
-    truthy(
-      (scene?.framework?.findings ?? 0) >= 2,
-      `and the two accepted findings the host reports are listed (${JSON.stringify(scene?.framework ?? null)})`,
-    )
-    contains(scene?.framework?.shown ?? '', 'rgb(255 255 255 / 45%)', 'the first accepted finding is shown as it was read')
-    contains(scene?.framework?.shown ?? '', 'rgb(255 255 255 / 32%)', 'and so is the second')
-    equal(
-      scene?.framework?.note,
-      true,
-      'with the note that says the pair is recorded rather than fixed, matched by its own hook',
-    )
-    equal(
-      Number((String(scene?.framework?.summary ?? '').match(/\d+/) ?? [])[0]),
-      scene?.framework?.findings,
-      'while the sentence on it counts the same number of findings the panel lists',
-    )
-  })
-
-  await test('a real third-party plugin shows the warning state, with its own findings and the limits', async () => {
-    await requireInstalled(session, ['dsh-cost-meter'])
-    await gotoPluginsPage(session)
-    const row = await evaluate(
-      session,
-      `(() => {
-        const el = document.querySelector('[data-uip-plugin="dsh-cost-meter"]');
-        if (el === null) return null;
-        const badge = el.querySelector('[data-uip-contract]');
-        const panel = el.querySelector('[data-uip-contract-panel]');
-        return {
-          state: badge === null ? null : badge.getAttribute('data-uip-contract'),
-          text: badge === null ? null : (badge.textContent || '').trim(),
-          findings: el.querySelectorAll('[data-uip-contract-finding]').length,
-          codes: Array.from(el.querySelectorAll('[data-uip-contract-finding]')).map((node) => node.getAttribute('data-uip-contract-finding')),
-          limits: el.querySelectorAll('[data-uip-contract-limits] li').length,
-          shown: (el.textContent || '').trim(),
-        };
-      })()`,
-    )
-    equal(row?.state, 'warn', `a package this project did not write is reported rather than silently accepted (${JSON.stringify(row?.state ?? null)})`)
-    truthy(
-      (row?.findings ?? 0) >= 1,
-      `at least one finding is listed (${row?.findings}): the count belongs to that package, and this suite does not pin it`,
-    )
-    equal(
-      Number((String(row?.text ?? '').match(/\d+/) ?? [])[0]),
-      row?.findings,
-      `and the badge counts exactly the findings the panel lists (${JSON.stringify(row?.text ?? null)})`,
-    )
-    truthy(
-      (row?.limits ?? 0) >= 1,
-      'with the instrument’s own limits under them, so a warning is never read as a verdict',
-    )
-    equal(
-      pageErrors.length,
-      errorsAtExampleGroupStart,
-      'the example group added no page errors (' + JSON.stringify(pageErrors.slice(errorsAtExampleGroupStart)) + ')',
-    )
-  })
 
   await test('the first frame is already the skin, with the client bundle blocked', async () => {
     await session.send('Network.enable')

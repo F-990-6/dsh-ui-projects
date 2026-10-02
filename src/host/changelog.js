@@ -1,5 +1,5 @@
 /**
- * A package's CHANGELOG, read for one row of Settings › UI plugins.
+ * A package's CHANGELOG, read for one row of Settings › UI.
  *
  * WHY THE HOST READS IT. The CHANGELOG is the only field §五 asks for that has real CONTENT behind it
  * — the framework's own file is 284 KB — and the page cannot see a package directory at all: the

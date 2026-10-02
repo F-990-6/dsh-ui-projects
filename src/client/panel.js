@@ -18,6 +18,16 @@ const { rankOf } = require('./project-constants.js')
  * kind of duplicated decision this package keeps paying for.
  */
 const { createPreview } = require('./preview.js')
+/*
+ * THE COPY BUTTON, from its own module (2026-09-30). `copyCommandText` used to live inside
+ * `panel-plugins.js` — the "UI plugins" column, which is being removed — and the copy button is one of the
+ * three things that survive that removal (uninstall, view CHANGELOG, copy diagnostics).
+ *
+ * `require`, not `import`: this file is CommonJS-dialect throughout, and one ESM line in the middle of it
+ * would be the only exception in 699 lines.
+ */
+const { copyCommandText } = require('./clipboard.js')
+const { buildDiagnostics } = require('./plugin-diagnostics.js')
 
 /**
  * @param {object} props
@@ -55,16 +65,15 @@ function UiProjectsSection(props) {
    * The listing the version sentence is derived from, read and SUBSCRIBED TO in the shape `live` above
    * already uses.
    *
-   * READING IT ONCE WAS NOT ENOUGH, and this block is the whole of that correction. `maintenanceFor`
-   * reads the store synchronously at render, and a store read once and never subscribed to cannot report
-   * that anything arrived: opening Settings › UI is what ASKS the host (`index.js` starts the read from
-   * the section's own render, because the slot API offers no mount hook), so the answer necessarily lands
-   * AFTER the first render — and with no subscription there is no second one. The card would stay silent
-   * for the rest of the session on the very page the reader is looking at, which is the failure this
-   * round exists to remove. The plugins column has always done this (`panel-plugins.js`: "a render that
-   * reads it once and never subscribes never learns that anything changed"); this panel was the half
-   * that did not, and the browser suite only ever reached it through the other page, where the listing
-   * was already in hand before the first render.
+   * READING IT ONCE WAS NOT ENOUGH, and this block is the whole of that correction. The card menu and the
+   * diagnostics read this store synchronously at render, and a store read once and never subscribed to
+   * cannot report that anything arrived: opening Settings › UI is what ASKS the host (`index.js` starts
+   * the read from the section's own render, because the slot API offers no mount hook), so the answer
+   * necessarily lands AFTER the first render — and with no subscription there is no second one. The menu
+   * would offer to copy a command for a package it never saw, for the rest of the session, on the very
+   * page the reader is looking at, which is the failure this round exists to remove. The browser suite
+   * only ever reached this page through the column that has since been removed, where the listing was
+   * already in hand before the first render — so the suite was green while this page was silent.
    *
    * A source that cannot notify still works: `useState` reads whatever it can, and the effect subscribes
    * only when there is something that can. Every unit test passes a bare `{ state }` stub, and a stub
@@ -103,78 +112,23 @@ function UiProjectsSection(props) {
   }
 
   /*
-   * Snapshot information for the maintenance block, read SYNCHRONOUSLY.
+   * (C5, 2026-09-30: `maintenanceFor(project)` stood here — the card's snapshot/version lookup, read
+   * synchronously from `installedState`, with four states: (1) no store or not ready → SAY NOTHING,
+   * because "no snapshots" would be a claim the page cannot support; (2) ready + no `versions` field → the
+   * host has no such code yet (a restart that has not happened), and saying "none" would be a different
+   * lie; (3) ready + the package's entry missing OR empty → `none`, which is the sentence that explains
+   * what `-Snapshot` is for; (4) entries → compare the newest with what is installed, without guessing
+   * which is newer.
    *
-   * `props.installed` is the plugins column's store, passed in optionally, and its state is held in
-   * `installedState` above. This panel never awaits it and never depends on it: when it is absent, or
-   * still loading, or failed, every card renders exactly as before and the version sentence is simply
-   * not there. That is the property the two columns' no-shared-state test protects — a listing that
-   * cannot be read must not take this page down — and here it is a decision in the code rather than a
-   * hope in a comment. It does LISTEN to it, for the reason stated where that state is declared.
+   * Two decisions in it are worth keeping beyond the block. NO FALLBACK: a project with no package
+   * identity used to answer `'dsh-ui-projects'` — a second copy of the store's own fallback, free to
+   * disagree with it, and a confident claim that the framework owned a project that never said so;
+   * `null` was the honest value. And WITHOUT A NAME, NOTHING ABOUT VERSIONS IS ASKED: `scan.versions[null]`
+   * is a miss and the `dependencies.find` is nothing, so the old code reported "this profile recorded no
+   * snapshot of it" for a package it could not even name.
    *
-   * FOUR STATES, in this order, and the third one is the correction:
-   *   1. no store, or status !== 'ready'  -> SAY NOTHING. Nothing has been read, so "no snapshots" would be
-   *                                          a claim the page cannot support.
-   *   2. ready + versions === undefined   -> the host has no such code yet (a restart that has not
-   *                                          happened): say THAT, do not say "none".
-   *   3. ready + versions[pkg] missing OR empty -> snapshotNone. "Missing" matters as much as "empty":
-   *                                          with `versions: {}` the lookup is undefined, and the first
-   *                                          version of this code treated that as unreadable and stayed
-   *                                          silent — which is exactly what the person saw, an empty block
-   *                                          with no hint that -Snapshot is the answer.
-   *   4. ready + entries                  -> compare the newest with what is installed, without guessing
-   *                                          which of the two is newer.
+   * Its only caller was the maintenance block (C2), so the function goes now that the block is gone.)
    */
-  const maintenanceFor = (project) => {
-    /*
-     * NO FALLBACK. The name comes from the store, which derives it once (`packageNameOf`); this used to
-     * answer a project with no package identity with `'dsh-ui-projects'` — a second copy of the same
-     * fallback as the store's, free to disagree with it, and a confident claim that the framework owns a
-     * project that never said so. `null` is the honest value, and the two branches below say what a card
-     * can and cannot claim without a name.
-     */
-    const packageName = project.package ?? null
-    /** @type {{ kind: string, name?: string, version?: string, when?: string, current?: string }} */
-    let version = { kind: 'unavailable' }
-    const scan = installedState !== null && installedState.status === 'ready' ? installedState.scan : undefined
-    /*
-     * WITHOUT A NAME, NOTHING ABOUT VERSIONS IS ASKED. `scan.versions[null]` is a miss and
-     * `dependencies.find(name === null)` is nothing, so the old code would have reported "this profile
-     * recorded no snapshot of it" — a claim about a package it cannot even name, and one that tells the
-     * reader to run `-Snapshot` for it. The card says nothing instead, which is the same answer the
-     * first two states give for a fact the page cannot support.
-     */
-    if (packageName !== null && scan !== undefined && scan !== null) {
-      if (scan.versions === undefined) {
-        version = { kind: 'host-stale' }
-      }
-      else {
-        const raw = scan.versions[packageName]
-        const list = Array.isArray(raw) ? raw : []
-        if (list.length === 0) {
-          /*
-           * Covers both "the package has no entry in the map" and "its entry is empty": once the store is
-           * READY, either one means this profile has recorded no snapshot of it, and that is a fact worth
-           * telling the reader — it is the sentence that explains what -Snapshot is for.
-           */
-          version = { kind: 'none' }
-        }
-        else {
-          const newest = list[0]
-          const installed = (scan.dependencies ?? []).find((entry) => entry.name === packageName)
-          const current = String(installed?.version ?? 'unknown')
-          version = {
-            kind: String(newest.version) === current ? 'same' : 'different',
-            name: String(newest.name ?? ''),
-            version: String(newest.version ?? 'unknown'),
-            when: String(newest.createdAt ?? ''),
-            current,
-          }
-        }
-      }
-    }
-    return { packageName, version }
-  }
 
   const activeNames = snapshot.projects.filter((project) => project.enabled).map((project) => project.name)
   const skinProjects = snapshot.projects.filter((project) => project.type === 'skin')
@@ -277,10 +231,18 @@ function UiProjectsSection(props) {
               outOfOrder: snapshot.outOfOrderId === project.id,
               conflictsHere: regionConflicts.filter((pair) => pair.ids.includes(project.id)),
               onToggle: () => run(project.id, store.toggle(project.id)),
-              onReset: () => run(project.id, store.resetOne(project.id)),
-              onConfirmChecks: (itemIds) => run(project.id, store.confirmChecks(project.id, itemIds)),
-              onClearChecks: () => run(project.id, store.clearChecks(project.id)),
-              maintenance: maintenanceFor(project),
+              onRun: (task) => run(project.id, task),
+              installed: installedState,
+              /* (C4, 2026-09-30: `onConfirmChecks` and `onClearChecks` were passed here, for the checklist
+               * block. That block is removed above, and its unit tests went with it in the same round, so
+               * nothing calls these handlers any more. `store.confirmChecks`/`clearChecks` lose their last
+               * caller and are recorded as a to-do rather than touched here: they are in the STORE, outside
+               * the three files this round is allowed to change.) */
+        /*
+         * (C6, 2026-09-30: `maintenance: maintenanceFor(project),` was passed here, for the card's
+         * maintenance disclosure. That block is gone (C2) and `maintenanceFor` goes with it (C5), so the
+         * card receives nothing about versions and snapshots any more.)
+         */
             }),
           ),
         ),
@@ -289,137 +251,175 @@ function UiProjectsSection(props) {
   return React_.createElement('section', { className: 'uip-root', 'aria-label': t.title }, children.filter(Boolean))
 }
 
+/*
+ * (C4, 2026-09-30: `Checklist(props)` stood here — the per-project manual verification checklist, removed
+ * with the author's tools. FOUR THINGS IT TAUGHT ARE WORTH KEEPING, because each one is a decision a
+ * future rewrite would otherwise have to rediscover:
+ *
+ *   · IT HAD TO BE A REAL COMPONENT, not another `createX` helper, "because it owns state: the boxes
+ *     ticked but not yet confirmed". `createCard` is a plain function called inside the section's render,
+ *     so hooks there would be attributed to the PARENT and break the moment the project list changed
+ *     length. A component gets its own hook scope.
+ *   · THE OPEN/CLOSED STATE WAS THE PLATFORM'S, not ours: a native `<details>` needs no hook, arrives with
+ *     keyboard support, and is announced as a disclosure — the same reasoning as using a real
+ *     `input[type=range]` for the project controls instead of rebuilding one.
+ *   · "THE CHECKBOXES ARE THE READING AND THE BUTTON IS THE ASSERTION."
+ *   · "CONFIRMING IS DELIBERATELY NOT AN AUTOMATIC CONSEQUENCE OF TICKING THE LAST BOX": "I looked at all
+ *     of these" is a claim a person makes, and the record should say who made it and against which version.
+ *
+ * The two decisions the BODY carried — the stable state hook, and why withdrawal was kept separate from
+ * the card's reset — are recorded where that body stood, below.)
+ */
+/*
+ * (C4, 2026-09-30, continued: `Checklist`'s BODY stood here. Two decisions inside it are worth keeping,
+ * for the same reason as the four above — a rewrite would otherwise have to rediscover them:
+ *
+ *   · "A STABLE HOOK, BECAUSE THIS BUTTON'S IDENTITY IS NOT ITS LABEL." The label is localized, and the
+ *     browser suite looked for the ENGLISH one: on a Chinese interface the button was never found, the
+ *     assertion read `null`, and the failure looked like the checklist refusing to work rather than a test
+ *     that only spoke one language. ASSERTIONS BELONG ON STATE; COPY BELONGS TO WHOEVER IS READING THE
+ *     SCREEN.
+ *   · "WITHDRAWING THE CONFIRMATION … SEPARATE FROM THE CARD'S RESET ON PURPOSE": retracting a claim
+ *     should not also cost the project's settings, and the card's reset is a bigger action than a person
+ *     who confirmed by mistake is asking for. It was not gated on the boxes — it was about the RECORD, not
+ *     the reading in progress — so it stayed available while the boxes were empty.
+ *
+ * The block that rendered this component is gone (C3), its call-site handlers are gone with it, and the
+ * store methods they called are recorded as a to-do: they are in the STORE, outside this round's files.)
+ */
+
+
 /**
- * The manual verification checklist for one project.
+ * THE CARD MENU (C8, 2026-09-30) — "more actions" for one card.
  *
- * A real component rather than another `createX` helper, because it owns state: the boxes ticked but
- * not yet confirmed. `createCard` is a plain function called inside the section's render, so hooks
- * there would be attributed to the parent and break the moment the project list changed length. A
- * component gets its own hook scope.
+ * A COMPONENT, not a bag of props handed to `createElement` inline: it owns state (which item is mid-copy,
+ * and whether the CHANGELOG is showing), and `createCard` is a plain function called inside the section's
+ * render — hooks there would be attributed to the PARENT and break the moment the project list changed
+ * length. The checklist had to be a component for exactly this reason, and that lesson is now recorded
+ * twice.
  *
- * The open/closed state is the platform's, not ours: a native `<details>` needs no hook, arrives
- * with keyboard support, and is announced as a disclosure. The same reasoning as using a real
- * `input[type=range]` for the project controls instead of rebuilding one.
+ * THE COPY FEEDBACK IS TEMPORARY AND THE TIMER IS OWNED: "Copied" that stays for ever is a button a reader
+ * cannot use twice, and a timer that outlives the component is a setState on something that no longer
+ * exists — one effect, one ref, one cleanup. The button is never disabled: a copy button that stops
+ * accepting clicks reads as broken.
  *
- * The checkboxes are the READING and the button is the ASSERTION. Confirming is deliberately not an
- * automatic consequence of ticking the last box: "I looked at all of these" is a claim a person
- * makes, and the record should say who made it and against which version.
+ * NOTHING HERE RUNS A COMMAND. The uninstall line is printed and copied; the CHANGELOG is read through the
+ * store; the diagnostics are assembled from facts the page already holds. The facts it does not have — the
+ * package's spec, where it was resolved from, its kind — render as "unknown", which is what
+ * `buildDiagnostics` does by design rather than something this call site fakes.
  * @param {object} props
  * @returns {any}
  */
-function Checklist(props) {
-  const { R, t, project, pending, onConfirm, onClear } = props
-  /*
-   * Seeded from the record whenever there IS one, not only while the record is still current.
-   *
-   * The boxes are the READING and the record is the CLAIM, and the two go out of date for different
-   * reasons: a new version, or an item added to the checklist, invalidates the claim — not the fact
-   * that somebody read these items. Seeding only from a current record threw that reading away, and it
-   * made re-confirming cost five clicks after the one item that changed. The record still reports
-   * itself as stale or incomplete; a tick means "this was read", nothing more.
-   */
-  const stored = project.checks
-  const hasRecord = project.checks !== undefined
-  const [ticked, setTicked] = React.useState(() => ({ ...(stored?.items ?? {}) }))
-  const all = project.testItems.length > 0 && project.testItems.every((item) => ticked[item.id] === true)
-
-  /*
-   * When the record goes away, the ticks go with it.
-   *
-   * The boxes are seeded from the stored confirmation at mount, so withdrawing that confirmation would
-   * otherwise leave a fully ticked checklist standing beside no record at all — a reading nobody can
-   * tell apart from the one that was just retracted, one click away from being recorded again.
-   */
+function CardMenu(props) {
+  const { R, t, project, name, pending, onRun, installed } = props
+  const [copied, setCopied] = React.useState('idle')
+  const [showChangelog, setShowChangelog] = React.useState(false)
+  const timer = React.useRef(undefined)
   React.useEffect(() => {
-    if (!hasRecord) setTicked({})
-  }, [hasRecord])
+    if (copied === 'idle') return undefined
+    timer.current = setTimeout(() => setCopied('idle'), COPY_FEEDBACK_MS)
+    return () => {
+      if (timer.current !== undefined) clearTimeout(timer.current)
+      timer.current = undefined
+    }
+  }, [copied])
 
-  const rows = project.testItems.map((item) =>
-    R.createElement(
-      'label',
-      { className: 'uip-check', key: item.id },
-      R.createElement('input', {
-        type: 'checkbox',
-        checked: ticked[item.id] === true,
-        disabled: pending,
-        onChange: (event) => setTicked((current) => ({ ...current, [item.id]: event.target.checked })),
-      }),
-      R.createElement('span', null, item.label),
-    ),
+  /** The same three labels the plugins column used: one table, so the words are the same too. */
+  const copyLabel = copied === 'copied' ? t.copyDone : copied === 'failed' ? t.copyFailed : t.copyCommand
+  const copy = (source) => {
+    void copyCommandText(source).then((outcome) => setCopied(outcome))
+  }
+
+  const scan = installed !== null && installed?.status === 'ready' ? installed.scan : undefined
+  const profileName = typeof scan?.profileName === 'string' && scan.profileName.length > 0 ? scan.profileName : null
+  const installedVersion = (scan?.dependencies ?? []).find((entry) => entry.name === project.package)?.version ?? null
+  const diagnosis = buildDiagnostics(
+    { name: project.package, version: installedVersion, problems: [], update: null },
+    scan?.versions?.[project.package],
   )
-  rows.push(
-    R.createElement(
-      'div',
-      { className: 'uip-actions', key: 'confirm' },
+  const changelog = typeof installed?.changelog === 'function' ? installed.changelog(project.package) : null
+
+  const items = []
+  if (profileName !== null) {
+    const command = 'dsh plugin --profile ' + profileName + ' remove ' + name
+    items.push(
       R.createElement(
         'button',
         {
           type: 'button',
-          className: 'uip-button',
-          /*
-           * A stable hook, because this button's identity is not its label.
-           *
-           * The label is localized, and the browser suite looked for the English one: on a Chinese
-           * interface the button was never found, the assertion read `null`, and the failure looked
-           * like the checklist refusing to work rather than a test that only spoke one language.
-           * Assertions belong on state; copy belongs to whoever is reading the screen.
-           */
-          'data-uip-action': 'confirm-checks',
-          disabled: !all || pending,
-          onClick: () => {
-            const itemIds = project.testItems.filter((item) => ticked[item.id] === true).map((item) => item.id)
-            onConfirm(itemIds)
-          },
+          className: 'uip-button uip-copyButton',
+          key: 'uninstall',
+          'data-uip-action': 'uninstall',
+          'data-uip-copy-source': command,
+          'aria-label': t.copyCommand + ': ' + command,
+          onClick: () => copy(command),
         },
-        t.tests.markPassed,
+        copyLabel,
       ),
-      /*
-       * Withdrawing the confirmation, shown only when there is one to withdraw.
-       *
-       * Separate from the card's reset on purpose: retracting a claim should not also cost the
-       * project's settings, and the card's reset is a bigger action than a person who confirmed by
-       * mistake is asking for. It is not gated on the boxes — it is about the RECORD, not the reading
-       * in progress — so it stays available while the boxes are empty.
-       */
-      hasRecord
-        ? R.createElement(
-            'button',
-            {
-              type: 'button',
-              className: 'uip-button',
-              'data-uip-action': 'clear-checks',
-              disabled: pending,
-              onClick: onClear,
-            },
-            t.tests.withdraw,
-          )
-        : null,
+    )
+  }
+  items.push(
+    R.createElement(
+      'button',
+      {
+        type: 'button',
+        className: 'uip-button',
+        key: 'changelog',
+        'data-uip-action': 'view-changelog',
+        disabled: pending,
+        onClick: () =>
+          onRun(() => {
+            setShowChangelog((open) => !open)
+            if (typeof installed?.loadChangelog === 'function') return installed.loadChangelog(project.package)
+            return undefined
+          }),
+      },
+      t.changelogTitle,
+    ),
+  )
+  items.push(
+    R.createElement(
+      'button',
+      {
+        type: 'button',
+        className: 'uip-button uip-copyButton',
+        key: 'diagnostics',
+        'data-uip-action': 'copy-diagnostics',
+        'data-uip-copy-source': diagnosis.text,
+        'aria-label': t.diagnosticsCopy + ': ' + project.package,
+        onClick: () => copy(diagnosis.text),
+      },
+      copyLabel,
     ),
   )
 
+  const body = [R.createElement('div', { className: 'uip-actions', key: 'menu-items' }, items)]
+  if (showChangelog) {
+    const sections = changelog?.payload?.sections
+    body.push(
+      R.createElement(
+        'details',
+        { className: 'uip-cardChangelog', key: 'changelog', 'data-uip-card-changelog': project.id, open: true },
+        R.createElement('summary', { 'data-uip-fold-summary': 'card-changelog' }, t.changelogTitle),
+        Array.isArray(sections) && sections.length > 0
+          ? sections.map((section, index) =>
+              R.createElement(
+                'div',
+                { key: 'section-' + index },
+                R.createElement('p', null, String(section?.title ?? section?.heading ?? '')),
+                R.createElement('pre', null, String(section?.lines ?? section?.body ?? '')),
+              ),
+            )
+          : R.createElement('p', { className: 'uip-hint' }, t.changelogUnavailable),
+      ),
+    )
+  }
+
   return R.createElement(
     'details',
-    { className: 'uip-tests', key: 'tests', 'data-project': project.id },
-    R.createElement('summary', { className: 'uip-testsSummary' }, t.tests.summary(project.testItems.length)),
-    project.checks === undefined
-      ? null
-      : R.createElement(
-          'p',
-          {
-            className: project.checksState === 'current' ? 'uip-description' : 'uip-hint',
-            // The confirmation's STATE, for the same reason as the button's hook: the sentence
-            // around it is translated, the state is not. Three values, because `stale` and
-            // `incomplete` are different findings and the sentence has to say which one it is.
-            'data-uip-checks': project.checksState,
-            'data-uip-checks-version': project.checks.version,
-          },
-          project.checksState === 'current'
-            ? t.tests.passed(project.checks.version)
-            : project.checksState === 'stale'
-              ? t.tests.stale(project.checks.version)
-              : t.tests.incomplete(project.checks.version),
-        ),
-    R.createElement('div', { className: 'uip-checks' }, rows),
+    { className: 'uip-menu', 'data-uip-menu': project.id, open: false },
+    R.createElement('summary', { 'data-uip-fold-summary': 'card-menu' }, t.cardMenuTitle),
+    body,
   )
 }
 
@@ -429,7 +429,11 @@ function Checklist(props) {
  * @returns {any}
  */
 function createCard(input) {
-  const { React: R, project, t, pending, activeNames, outOfOrder, conflictsHere, onToggle, onReset, onConfirmChecks, onClearChecks, maintenance } = input
+  /* (C7, 2026-09-30: `maintenance` was destructured here, for the card's maintenance disclosure. That
+   * block is gone (C2) and the prop with it (C6), so the field is no longer read.) */
+  /* (C4, 2026-09-30: `onConfirmChecks` and `onClearChecks` were destructured here, for the checklist block
+   * (removed above). `onReset` stays until the card menu replaces the reset control.) */
+  const { React: R, project, t, pending, activeNames, outOfOrder, conflictsHere, onToggle, onRun, installed } = input
   const name = project.name
 
   const badges = [
@@ -523,101 +527,49 @@ function createCard(input) {
     body.push(createControl({ R, control, t, pending }))
   }
   /*
-   * THE MAINTENANCE COMMANDS, folded away but not hidden.
+   * (C2, 2026-09-30: the card's MAINTENANCE DISCLOSURE stood here — a folded `<details>` carrying
+   * `data-uip-maintenance-panel`, three printed commands (`install.ps1 -Snapshot`, `-Update`,
+   * `-Rollback`), a hint, and a version sentence with its own badge when a recorded snapshot differed
+   * from what is installed.
    *
-   * The summary carries a badge exactly when a recorded version differs from the installed one, so the
-   * one state worth acting on is visible without expanding anything — a collapsed block that hides the
-   * only thing that changed is a block that hides its own reason for existing.
+   * Two things about it are worth keeping in writing. Its summary carried the badge precisely WHEN a
+   * recorded version differed, "so the one state worth acting on is visible without expanding anything — a
+   * collapsed block that hides the only thing that changed is a block that hides its own reason for
+   * existing". And its version sentence appeared ONLY when the page actually knew something: with no
+   * store, a loading store, or a failed one there was no `[data-uip-version-state]` at all, which is the
+   * difference between "nothing recorded" and "nothing read".
    *
-   * The version sentence appears ONLY when the page actually knows something (see `maintenanceFor`): with
-   * no store, a loading store, or a failed one, there is no `[data-uip-version-state]` element at all.
+   * A reader now gets the three things they act on through the card menu below, and the printed
+   * maintenance commands go with the "UI plugins" column. Those four states existed only here, which is
+   * why the suite's assertions about them were withdrawn with this block rather than left pointing at a
+   * marker that no longer renders.)
    */
-  const versionKind = maintenance?.version?.kind ?? 'unavailable'
-  const versionLine =
-    versionKind === 'host-stale'
-      ? t.snapshotHostStale
-      : versionKind === 'none'
-        ? t.snapshotNone
-        : versionKind === 'same'
-          ? t.snapshotNewer(maintenance.version.name, maintenance.version.version, maintenance.version.when)
-          : versionKind === 'different'
-            ? t.snapshotDifferent(
-                maintenance.version.name,
-                maintenance.version.version,
-                maintenance.version.current,
-              )
-            : null
+  /*
+   * (C3, 2026-09-30: the card's CHECKLIST block stood here — `if (project.testItems.length > 0)`, pushing
+   * `<Checklist>` with `onConfirm`/`onClear`. The confirmation it drove is gone with the author's tools,
+   * and the store-level half of it records a lesson worth keeping: `onConfirmChecks` ALREADY CLOSES OVER
+   * `project.id`, so the id must not be passed again. It was, once — the array of item ids bound to the
+   * callback's second parameter while `project.id` took its first, the store iterated the CHARACTERS of
+   * `'liquid-glass'`, matched none, and recorded `{ version, items: {} }`: a confirmation with nothing in
+   * it, written silently. `onClear` never had the bug because it passes no arguments at all.)
+   */
+  /*
+   * THE CARD'S "MORE ACTIONS" MENU (C8, 2026-09-30). Three things a reader acts on, and nothing that only
+   * looks like an action: copy the uninstall command, open the CHANGELOG this package already ships, copy
+   * the diagnostics this build can actually see. The reset control it replaces is gone, together with the
+   * printed maintenance commands (C2) and the checklist (C3).
+   */
   body.push(
-    R.createElement(
-      'details',
-      {
-        className: 'uip-tests',
-        key: 'maintenance',
-        'data-uip-maintenance-panel': project.id,
-      },
-      R.createElement(
-        'summary',
-        { className: 'uip-testsSummary' },
-        /*
-         * THE HEADING IS WHERE AN UNKNOWN PACKAGE HAS TO BE VISIBLE, because the block below it prints
-         * commands that address a package. `maintenanceTitle` is not taught to format `null` on purpose:
-         * a template that renders "the null package" renders the bug, and the call site choosing another
-         * sentence is the honest shape.
-         */
-        maintenance?.packageName === null || maintenance?.packageName === undefined
-          ? t.maintenanceTitleUnknown
-          : t.maintenanceTitle(maintenance.packageName),
-        versionKind === 'different'
-          ? R.createElement('span', { 'data-uip-maintenance-badge': 'different' }, ' · ' + t.maintenanceBadge)
-          : null,
-      ),
-      R.createElement('p', { className: 'uip-hint' }, t.maintenanceHint),
-      R.createElement('pre', null, t.maintenanceSnapshot),
-      R.createElement('pre', null, t.maintenanceUpdate),
-      R.createElement('pre', null, t.maintenanceRollback),
-      versionLine === null
-        ? null
-        : R.createElement('p', { className: 'uip-hint', 'data-uip-version-state': versionKind }, versionLine),
-    ),
-  )
-  if (project.testItems.length > 0) {
-    body.push(
-      R.createElement(Checklist, {
-        key: 'checklist',
-        R,
-        t,
-        project,
-        pending,
-        /*
-         * `onConfirmChecks` ALREADY CLOSES OVER `project.id` (see the call site in `UiProjectsSection`), so
-         * the id must not be passed again here. It was, once: the array of item ids then bound to the
-         * callback's second parameter while `project.id` took its first, the store iterated the characters
-         * of `'liquid-glass'`, matched none of them, and recorded `{ version, items: {} }` — a confirmation
-         * with nothing in it, written silently. `onClear` on the next line never had the bug because it
-         * passes no arguments at all.
-         */
-        onConfirm: (itemIds) => onConfirmChecks(itemIds),
-        onClear: () => onClearChecks(project.id),
-      }),
-    )
-  }
-  body.push(
-    R.createElement(
-      'div',
-      { className: 'uip-actions', key: 'actions' },
-      R.createElement(
-        'button',
-        {
-          type: 'button',
-          className: 'uip-button',
-          // Same reason as the checklist's buttons: the label is translated, the hook is not.
-          'data-uip-action': 'reset-one',
-          onClick: onReset,
-          disabled: pending,
-        },
-        t.resetOne(name),
-      ),
-    ),
+    CardMenu({
+      key: 'menu',
+      R,
+      t,
+      project,
+      name,
+      pending,
+      onRun,
+      installed,
+    }),
   )
 
   return R.createElement(
@@ -628,7 +580,7 @@ function createCard(input) {
   )
 }
 
-/**
+/** 
  * One control from a project's `controls` declaration.
  *
  * Everything specific to a control lives in the declaration (its range, its copy key) and
