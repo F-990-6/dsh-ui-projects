@@ -42,6 +42,13 @@ import { createFakeDom, setSandbox } from './fake-dom.mjs'
 const here = dirname(fileURLToPath(import.meta.url))
 const frameworkRoot = resolve(here, '..')
 const skeletonRoot = resolve(frameworkRoot, '..', 'dsh-ui-project-skeleton')
+/*
+ * The framework's own directory in the form the scan fixture reports it. `profile-scan.js` reads
+ * pnpm's `link:` specs and resolves real paths with forward slashes on every platform, so a fixture
+ * written with backslashes would not be the shape this endpoint ever sees. Derived rather than
+ * written out, so the fixture cannot go stale when the checkout moves.
+ */
+const frameworkRootPosix = frameworkRoot.replace(/\\/g, '/')
 
 let passed = 0
 let failed = 0
@@ -816,7 +823,7 @@ const scanFixture = {
   profileName: 'web',
   readAt: '2026-01-01T00:00:00.000Z',
   dependencies: [
-    { name: 'dsh-ui-projects', spec: 'link:E:/dsh/plugins/dsh-ui-projects', resolved: true, version: '0.1.0', dir: 'E:/dsh/plugins/dsh-ui-projects', realDir: 'E:/dsh/plugins/dsh-ui-projects', via: 'link', kind: 'bundle', bundled: true, problems: [] },
+    { name: 'dsh-ui-projects', spec: `link:${frameworkRootPosix}`, resolved: true, version: '0.1.0', dir: frameworkRootPosix, realDir: frameworkRootPosix, via: 'link', kind: 'bundle', bundled: true, problems: [] },
   ],
   bundles: { all: ['dsh-ui-projects'], inBox: [], fromDependencies: ['dsh-ui-projects'] },
   uiProjectPackages: [],

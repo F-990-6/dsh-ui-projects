@@ -235,7 +235,7 @@ that ends it renders the card through React and invokes the props the card hands
 **When you report where something came from, give the path the tool returned. A parent directory plus a
 filename is not a path, and it costs the reader a search.**
 
-A specification file was reported as living in `C:\Users\19103\.dsh\attachments\`. It was really read —
+A specification file was reported as living in `$env:USERPROFILE\.dsh\attachments\`. It was really read —
 the name came back from a glob and the file was read in full, and its content is what the Step 6 plan
 quoted — but the path quoted was the directory the glob SEARCHED, not the file it found. The reader
 looked there, saw only `v1`, and had to ask whether the citation had been invented. The real location is

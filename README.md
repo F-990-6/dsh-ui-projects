@@ -28,12 +28,15 @@ The plugin installs into a dsh **profile**, because a Loader row is what makes t
 
 ```powershell
 # 1. Build the browser bundle (no bundler needed; see scripts/build.mjs)
-cd E:\dsh\plugins\dsh-ui-projects
+cd <path-to-dsh-ui-projects>
 npm run build
 
 # 2. Register it in the web profile
-dsh plugin --profile web add E:\dsh\plugins\dsh-ui-projects
+dsh plugin --profile web add <path-to-dsh-ui-projects>
 ```
+
+`<path-to-dsh-ui-projects>` stands for this checkout: an absolute path works, and so does a relative
+one such as `plugins/dsh-ui-projects` when your shell is already in the dsh workspace.
 
 That command links the package into `$DSH_HOME/profiles/web/node_modules`, adds it to
 the profile's `dsh.profile.bundles`, and applies this package's `cordis.patch.yml`,

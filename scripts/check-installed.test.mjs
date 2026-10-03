@@ -31,6 +31,12 @@ import { NAME_COLUMN_FLOOR, nameColumnWidth, pad } from './installed-columns.mjs
 
 const here = dirname(fileURLToPath(import.meta.url))
 const packageRoot = resolve(here, '..')
+/*
+ * This package's own directory in the forward-slash form a profile reports a `link:` dependency in.
+ * Derived rather than written out, so the preview fixture below cannot go stale when the checkout
+ * moves — and the preview only reads the `link:` prefix, so the value it carries changes nothing.
+ */
+const frameworkRootPosix = packageRoot.replace(/\\/g, '/')
 
 let passed = 0
 let failed = 0
@@ -256,7 +262,7 @@ equal(
   ['dsh', 'plugin', '--profile', 'web', 'update', 'dsh-ui-projects'],
   'and the update',
 )
-const linkRollback = previewCommand({ action: 'rollback', profileName: 'web', packageName: 'dsh-ui-projects', spec: 'link:E:/dsh/plugins/dsh-ui-projects', version: '0.1.0' })
+const linkRollback = previewCommand({ action: 'rollback', profileName: 'web', packageName: 'dsh-ui-projects', spec: `link:${frameworkRootPosix}`, version: '0.1.0' })
 equal(linkRollback.command, null, 'a link: dependency has no rollback command')
 check(linkRollback.note.includes('link:'), 'and the preview says why, rather than printing a command that would fail')
 equal(

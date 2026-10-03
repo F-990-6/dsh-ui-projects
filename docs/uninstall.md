@@ -83,7 +83,7 @@ Run these in order; each command is read-only up to the second one, which is the
    attribute on `<body>` and no `data-ui-perf`.
 
 5. **The user's data, which the removal must not touch.**
-   `Get-Content C:\Users\19103\.dsh\settings.yaml | Select-String -Pattern 'ui-projects' -Context 0,10`
+   `Get-Content $env:USERPROFILE\.dsh\settings.yaml | Select-String -Pattern 'ui-projects' -Context 0,10`
    Expect: the `ui-projects` block is still there, and a `checks` record — if the user had recorded one —
    is still in it.
 

@@ -87,7 +87,7 @@ const next = `/**
  *
  * Source: ${pkg.name}@${pkg.version} → package.json → dsh.uiProject, with \`package\` and \`version\`
  * taken from the package's own manifest. Regenerate with:
- *   node scripts/derive-manifest.mjs --package ${JSON.stringify(packageRoot.replace(/\\/g, '/'))}
+ *   node scripts/derive-manifest.mjs --package "<path-to-package>"
  */
 module.exports = {
   package: ${JSON.stringify(pkg.name)},
