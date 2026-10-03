@@ -46,11 +46,11 @@
   "author": "fn-x",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/xjl-resources/dsh-ui-projects.git"
+    "url": "git+https://github.com/F-990-6/dsh-ui-projects.git"
   },
-  "homepage": "https://github.com/xjl-resources/dsh-ui-projects#readme",
+  "homepage": "https://github.com/F-990-6/dsh-ui-projects#readme",
   "bugs": {
-    "url": "https://github.com/xjl-resources/dsh-ui-projects/issues"
+    "url": "https://github.com/F-990-6/dsh-ui-projects/issues"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "3.18.2"
