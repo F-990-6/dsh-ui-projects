@@ -367,7 +367,7 @@ function Get-ShortSha([string]$Value) {
 # The directory name one package's snapshots live under, inside the version store.
 #
 # THE ONE RULE THAT MAPS A PACKAGE NAME TO A DIRECTORY, and it exists because a scoped name is not a
-# directory name: `@xjl-resources/dsh-plugin-liquid-glass` would become a NESTED directory, and the host
+# directory name: `@fn-x/dsh-plugin-liquid-glass` would become a NESTED directory, and the host
 # half reads the store one level deep -- so the name and the directory have to be two different things,
 # with one agreed translation between them.
 #

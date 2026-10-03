@@ -43,7 +43,7 @@
     "node": ">=20"
   },
   "license": "MIT",
-  "author": "xjl-resources",
+  "author": "fn-x",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/xjl-resources/dsh-ui-projects.git"

@@ -86,7 +86,7 @@ destroy what `-Uninstall` compares against. If `lib/client.js` is missing it say
 before anything is read. The default name is `<version>-<stamp>`, the stamp being UTC
 `yyyyMMddTHHmmssZ` — which is why `0.1.0-20260927T044712Z` is one name and not three fields.
 
-**A scoped package's directory is not its name.** `@xjl-resources/dsh-plugin-liquid-glass` would be a
+**A scoped package's directory is not its name.** `@fn-x/dsh-plugin-liquid-glass` would be a
 nested directory, and the version store is read exactly one level deep, so the name and the directory are
 two different things with one agreed translation: `@scope/name` becomes `@scope+name`
 (`install.ps1`'s `Get-VersionsDirName`). `+` is the separator because npm forbids it in a package name —

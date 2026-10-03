@@ -110,14 +110,14 @@ a ruling.
 
 ## Writing a minimal UI project package
 
-The reference is `E:\dsh\plugins\dsh-plugin-example\` (`@xjl-resources/dsh-plugin-example`): the smallest
+The reference is `E:\dsh\plugins\dsh-plugin-example\` (`@fn-x/dsh-plugin-example`): the smallest
 package that is compliant, and the one the framework's scanner must find nothing in.
 
 ### `package.json`
 
 ```json
 {
-  "name": "@xjl-resources/dsh-plugin-example",
+  "name": "@fn-x/dsh-plugin-example",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -171,7 +171,7 @@ packages never collide:
 ```yaml
 - insert:
     - id: ui-project-example
-      name: "@xjl-resources/dsh-plugin-example"
+      name: "@fn-x/dsh-plugin-example"
 ```
 
 ### The host half — three statements
@@ -279,7 +279,7 @@ with a switch, the maintenance block, and a checklist when the manifest declares
 ## Writing a plain client plugin
 
 The reference is `E:\dsh\plugins\dsh-plugin-example-dialog\`
-(`@xjl-resources/dsh-plugin-example-dialog`): a third-party plugin written the way such a plugin usually is.
+(`@fn-x/dsh-plugin-example-dialog`): a third-party plugin written the way such a plugin usually is.
 It knows nothing about `dsh-ui-projects`, injects no service, and mounts its own DOM.
 
 - `package.json` declares `dsh.bundle`, `dsh.client` and `compatibility` — and **no** `dsh.uiProject`, and
@@ -321,7 +321,7 @@ One sentence per switch, as the source implements them (`plugins/dsh-ui-projects
 
 | Switch | What it does |
 | --- | --- |
-| `-Package <name>` | names the package this run is about, when it cannot be read from the source directory's own `package.json`; it selects the install record (`.dsh-ui-projects-install.<versions dir name>.json`) and the versions directory (`<profile>\.dsh-ui-projects-versions\<versions dir name>\`), where the versions dir name is the package name with `/` replaced by `+` for a scoped one (`@xjl-resources/dsh-plugin-liquid-glass` → `@xjl-resources+dsh-plugin-liquid-glass`); it is **not** an install switch |
+| `-Package <name>` | names the package this run is about, when it cannot be read from the source directory's own `package.json`; it selects the install record (`.dsh-ui-projects-install.<versions dir name>.json`) and the versions directory (`<profile>\.dsh-ui-projects-versions\<versions dir name>\`), where the versions dir name is the package name with `/` replaced by `+` for a scoped one (`@fn-x/dsh-plugin-liquid-glass` → `@xjl-resources+dsh-plugin-liquid-glass`); it is **not** an install switch |
 | `-Snapshot` | records the version that is running now — `package.json`, `cordis.patch.yml`, `CHANGELOG.md` and `lib/**`, plus a manifest with a sha256 per file — under the profile's versions directory, reads every written file back, and keeps the newest `-Keep` (default 3) |
 | `-Update` | the read-only plan: it fingerprints the source tree (excluding `.git`, `node_modules`, `lib`), prints the newest `-Changes` (default 1) changelog section(s), reports the registry capability instead of querying it, and records `lastVerified` beside the existing baseline; it never restores, never installs and never calls git |
 | `-Rollback -To <name>` | the only mode allowed to write inside the source tree, and it writes exactly two things: `package.json` and `lib/**`, after backing up what was there and verifying the snapshot against its own manifest; `cordis.patch.yml` and `CHANGELOG.md` are in the snapshot and are deliberately not restored (*stop `dsh web` first*) |

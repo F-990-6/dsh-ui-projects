@@ -8,7 +8,7 @@
 
 ## 现象（2026-09-30 于桌面端实测）
 
-1. 在「设置 → 界面」打开某个 UI 项目（实测用 `@xjl-resources/dsh-plugin-liquid-glass`）后，
+1. 在「设置 → 界面」打开某个 UI 项目（实测用 `@fn-x/dsh-plugin-liquid-glass`）后，
    **同一次会话内立即生效**。
 2. 客户端提交设置走 `ctx.remote.settings.update('ui-projects', patch, revision)`：
    **不抛错、不返回错误**，renderer 与 main 两侧日志都没有相关错误行。

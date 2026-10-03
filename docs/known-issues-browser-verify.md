@@ -16,8 +16,8 @@
 - `switching the skin off restores both surfaces, the body marker, and the frosted set`
 - `a second project package takes over the skin role, one skin at a time`
 
-**原因**：profile 里没装 `@xjl-resources/dsh-plugin-example`
-与 `@xjl-resources/dsh-plugin-example-dialog`。
+**原因**：profile 里没装 `@fn-x/dsh-plugin-example`
+与 `@fn-x/dsh-plugin-example-dialog`。
 
 ### 1 × first-frame —— 跨仓库
 - `the first frame is already the skin, with the client bundle blocked`

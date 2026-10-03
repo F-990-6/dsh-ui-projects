@@ -48,7 +48,7 @@ Two consequences worth carrying into new code:
 own.** The framework owns the registry, the runtime, the settings page, the persistence and the
 first-paint CONTRACT (`src/host/service.js`); a look or an enhancement owns its stylesheet, its
 first-paint rows and its markers, and lives in its own repository —
-`@xjl-resources/dsh-plugin-liquid-glass` and `dsh-ui-project-skeleton` are the two that exist. Three
+`@fn-x/dsh-plugin-liquid-glass` and `dsh-ui-project-skeleton` are the two that exist. Three
 consequences for anything added here:
 
 - Fixtures use `scripts/test-skin.mjs`, whose id is `test-skin`. `src/**` used to contain one real

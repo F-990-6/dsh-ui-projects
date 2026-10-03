@@ -6,7 +6,7 @@ contract and the maintenance tooling. Projects — skins and enhancements — ar
 `dsh-ui-project-skeleton` is the smallest complete example of one.
 
 > **This package ships no UI project.** Step 8c moved the last one — Liquid Glass, now
-> `@xjl-resources/dsh-plugin-liquid-glass` — into a package of its own, and deleted the built-in
+> `@fn-x/dsh-plugin-liquid-glass` — into a package of its own, and deleted the built-in
 > registration that used to install it. What remains here is the system: no `src/**` code names a
 > project, and both halves are exercised by a fixture (`scripts/test-skin.mjs`) and by mounting a real
 > package's real bundle (`scripts/load-check.mjs`).
@@ -357,7 +357,7 @@ be bound to the marker individually, or a rule meant for menus ends up applying 
 
 Two sections used to sit here: *why transparency is not adjustable*, and *how Liquid Glass is built* — the
 `:has()` frame frost, its three measured constraints, the composer, the seat left untouched. Both describe
-a PACKAGE's CSS, and they now live in `@xjl-resources/dsh-plugin-liquid-glass`'s README, next to the
+a PACKAGE's CSS, and they now live in `@fn-x/dsh-plugin-liquid-glass`'s README, next to the
 stylesheets whose rules they explain. What stays here is what the framework owns: the scoper's `:where()`
 rules above, and the first-paint contract below.
 
@@ -400,11 +400,11 @@ removes the `localStorage` copy after its first successful write — so a script
 would find nothing on exactly the loads that matter.
 
 A package's sheet is DERIVED from its own stylesheets rather than hand-written, and the tool that does it
-(`scripts/derive-boot-css.mjs` in `@xjl-resources/dsh-plugin-liquid-glass`, with `--package <dir>` to point
+(`scripts/derive-boot-css.mjs` in `@fn-x/dsh-plugin-liquid-glass`, with `--package <dir>` to point
 it at another package), the predicate it shares with the package's build, and the check that the sheet is
 exactly what the CSS implies all live with the package. There is nothing here to derive: this package has
 no CSS. The worked example, including what a first frame can and cannot have, is in
-`@xjl-resources/dsh-plugin-liquid-glass`'s README.
+`@fn-x/dsh-plugin-liquid-glass`'s README.
 
 Two deviations from the specification are recorded here rather than left to be rediscovered:
 
@@ -526,7 +526,7 @@ dsh plugin --profile web add <path-to-package>   # declares the dependency and a
 
 A package's host half pushes its own stylesheet into the served `<head>`, so the first frame is already
 skinned. That sheet is derived from the package's own CSS by `scripts/derive-boot-css.mjs` in
-`@xjl-resources/dsh-plugin-liquid-glass` — `--package <dir>` points it at the package whose sheet is wanted —
+`@fn-x/dsh-plugin-liquid-glass` — `--package <dir>` points it at the package whose sheet is wanted —
 and it consists of the body-level rules only, authored already-scoped (`body[data-ui-project-<id>="on"]…`)
 because the host has no scoper to run. The tool and the package's build share one predicate, which each
 package keeps in its own `scripts/boot-css-rules.mjs`, and that shared file is what keeps "boot.css says
@@ -720,7 +720,7 @@ nothing at all.
 
 The assertions about a PALETTE moved with the palette. Every token a skin re-binds, the value it
 re-binds it to, and whether turning it off removes exactly what it introduced are properties of that
-skin's CSS, and they now live in `@xjl-resources/dsh-plugin-liquid-glass`'s suite. This one still
+skin's CSS, and they now live in `@fn-x/dsh-plugin-liquid-glass`'s suite. This one still
 asserts the half the framework owns: that a registered project's stylesheets are scoped, inserted
 while it is on and removed when it is off, whichever CSS they contain.
 

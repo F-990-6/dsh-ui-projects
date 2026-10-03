@@ -528,7 +528,7 @@ export async function scanProfile({ profileDir }) {
  * The directory name one package's snapshots live under, inside the version store.
  *
  * THE LAYOUT RULE, in the half that reads the store, and it exists because a scoped package name is not a
- * directory name: `@xjl-resources/dsh-plugin-liquid-glass` contains a `/`, which would make it a NESTED
+ * directory name: `@fn-x/dsh-plugin-liquid-glass` contains a `/`, which would make it a NESTED
  * directory — and this module reads the store exactly one level deep. So the name and the directory are
  * two different things with one agreed translation, and `install.ps1` holds the same rule on the writing
  * side (`Get-VersionsDirName`, asserted equal to this function by a parity check in the suites, because a
