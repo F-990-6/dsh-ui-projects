@@ -43,6 +43,15 @@
     "node": ">=20"
   },
   "license": "MIT",
+  "author": "xjl-resources",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xjl-resources/dsh-ui-projects.git"
+  },
+  "homepage": "https://github.com/xjl-resources/dsh-ui-projects#readme",
+  "bugs": {
+    "url": "https://github.com/xjl-resources/dsh-ui-projects/issues"
+  },
   "dependencies": {
     "@deepseek-ai/schemastery": "3.18.2"
   },

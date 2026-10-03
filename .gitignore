@@ -1,3 +1,9 @@
 ﻿node_modules/
 lib/
 .snapshots/
+
+# 过程产物（2026-10-03 开源前清理）
+one-shot-*.mjs
+one-shot-*.report.txt
+probe-first-frame.*
+*.bak-flaky-fix
