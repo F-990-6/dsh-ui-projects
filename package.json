@@ -1,6 +1,6 @@
 {
   "name": "dsh-ui-projects",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Extensible UI project system for the dsh Web GUI: a UI project registry plus a dynamically rendered Settings > UI section. It ships no UI project of its own — every project is a separate package.",
   "type": "module",
   "main": "lib/index.js",
