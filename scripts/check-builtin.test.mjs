@@ -173,5 +173,102 @@ equal(
   'while the always-loaded client half never installs it: a reader who never turns Glass on carries no sheet',
 )
 
+/* ── the equivalence check: the built-in copy against the package it came from ───────────────────── */
+/*
+ * WHY THIS IS OPT-IN. The package lives in another repository, and the path to it cannot be derived from
+ * this one — the two are not siblings. `DSH_SKIN_PACKAGE` names it. With the variable unset this reports
+ * SKIPPED and proves nothing, which is the honest outcome rather than a green tick over a file it never
+ * read.
+ *
+ * WHAT IT COMPARES, AND WHY THE MARKER IS NORMALIZED FIRST. The built-in's id is `glass` and the package's
+ * is `liquid-glass`, so every generated marker differs by that one word — and the overlay's markers are
+ * hand-written, which is why they had to be substituted when the copy was made. Normalizing the one word
+ * away and THEN comparing bytes is what turns "the same material" into a measurement.
+ */
+const skinPackage = process.env.DSH_SKIN_PACKAGE
+if (skinPackage === undefined || !existsSync(skinPackage)) {
+  process.stdout.write('  SKIP the equivalence check; set DSH_SKIN_PACKAGE to the skin package to run it\n')
+} else {
+  const normalize = (/** @type {string} */ text) =>
+    text.split('data-ui-project-liquid-glass').join('data-ui-project-glass')
+  const same = (/** @type {string} */ ours, /** @type {string} */ theirs, /** @type {string} */ label) =>
+    equal(ours === theirs, true, label)
+
+  /*
+   * THE COMPARISON DIFFERS PER FILE, AND THAT IS THE CORRECTION RATHER THAN A CONVENIENCE.
+   *
+   * `tokens.css` and `glass.css` are compared RAW. An earlier version of this check normalized the marker
+   * on both sides and failed on `glass.css` — which looked like a divergence in the material and was not:
+   * `glass.css` never writes the marker in a selector (its own contract forbids it, because the scoper
+   * appends one), so the only occurrences are inside comments, and the framework's copy keeps the
+   * package's comments verbatim. Normalizing there was normalizing text neither side had changed.
+   *
+   * `boot.css` and the overlay ARE substituted, by necessity — the built-in's id is `glass`, and a stale
+   * marker matches nothing — so those two are normalized. To keep normalization from hiding a wrong
+   * substitution behind a matching one, each is ALSO held to the counts: the built-in's marker present, the
+   * package's absent.
+   */
+  const read = (/** @type {string} */ file) => readFileSync(file, 'utf8')
+  for (const [label, fromPackage, inFramework, normalized] of [
+    ['tokens.css', 'src/client/projects/liquid-glass/tokens.css', 'src/client/skins/glass/tokens.css', false],
+    ['glass.css', 'src/client/projects/liquid-glass/glass.css', 'src/client/skins/glass/glass.css', false],
+    ['boot.css', 'src/host/boot.css', 'src/host/skins/glass/boot.css', true],
+  ]) {
+    const ours = read(join(packageRoot, inFramework))
+    const theirs = read(join(skinPackage, fromPackage))
+    same(ours, normalized ? normalize(theirs) : theirs, `${label} is byte-identical to the package's${normalized ? ', once the marker is normalized' : ''}`)
+    /*
+     * THE MARKER COUNTS ONLY MEAN SOMETHING WHERE THE MARKER IS SUBSTITUTED. `glass.css` and `tokens.css`
+     * are copied verbatim, comments included, and both mention the package's marker inside explanations of
+     * what the scoper does with it — counting occurrences there fails on prose, which is exactly what the
+     * first version of this assertion did (4 occurrences, all of them in comments).
+     */
+    if (normalized) {
+      equal(
+        (ours.match(/data-ui-project-liquid-glass/g) ?? []).length,
+        0,
+        `${label} carries none of the package's markers: a stale one would match nothing`,
+      )
+      truthy(
+        (ours.match(/data-ui-project-glass/g) ?? []).length > 0,
+        `${label} carries the built-in's own marker`,
+      )
+    }
+  }
+
+  /* The four overlay sheets, which are the only CSS that lives inside a `.js` file on either side. */
+  const sheetsIn = (/** @type {string} */ file) =>
+    Object.fromEntries(
+      [...readFileSync(file, 'utf8').matchAll(/const (OVERLAY_[A-Z]+) = `([\s\S]*?)`/g)].map((match) => [
+        match[1],
+        match[2],
+      ]),
+    )
+  const theirSheets = sheetsIn(join(skinPackage, 'src/client/index.js'))
+  const ourSheets = sheetsIn(join(packageRoot, 'src/client/skins/glass/overlay.js'))
+  equal(
+    Object.keys(ourSheets).sort().join(','),
+    Object.keys(theirSheets).sort().join(','),
+    'the overlay carries the same four sheets on both sides',
+  )
+  for (const name of Object.keys(theirSheets)) {
+    same(ourSheets[name] ?? '', normalize(theirSheets[name]), `${name} is the package's CSS, once the marker is normalized`)
+  }
+}
+
+/* ── the mirror: the host half's copy of the id against the client's manifest ────────────────────── */
+/*
+ * THE TWO HALVES ARE SEPARATE BUNDLES AND CANNOT IMPORT ONE ANOTHER, so the built-in's id is written down
+ * twice: once in `src/client/skins/glass/manifest.js`, which is the authority, and once in
+ * `src/host/index.js`, which inlines the first-paint payload for it. This is the assertion that keeps the
+ * copy honest — the same shape `SUPPORTED_PLUGIN_API` and the channel list already use in this package.
+ * A rename that reached one side only would leave the host announcing a project the client never
+ * registers, and the symptom (a first frame that paints nothing) looks like a caching problem.
+ */
+const hostId = /const BUILT_IN_PROJECT_ID = '([^']+)'/.exec(
+  readFileSync(join(packageRoot, 'src', 'host', 'index.js'), 'utf8'),
+)?.[1]
+equal(hostId, builtIn.id, 'the host half inlines the first paint for the project the client half registers')
+
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
 process.exit(failures === 0 ? 0 : 1)

@@ -36,6 +36,7 @@ import { homedir } from 'node:os'
 import { registerInstalledEndpoint } from './installed-endpoint.js'
 import { createUpdateChecker, DEFAULT_CHANNEL } from './update-check.js'
 import { UI_PROJECTS_SETTINGS_NAMESPACE, createHostService } from './service.js'
+import { BOOT_CSS } from './boot-css.js'
 
 export { UI_PROJECTS_SETTINGS_NAMESPACE }
 
@@ -272,14 +273,24 @@ export function apply(ctx) {
   /*
    * First paint — see reason 4 in the file header, and `service.js` for the contract.
    *
-   * This half used to be the service's first client: it pushed its own shipped skin's rows into
-   * `webserver/index-inject` to prove the contract was writable from outside `service.js`. It now
-   * pushes nothing, and deliberately has no `index-inject` subscription at all — a listener whose
-   * only statement would be `table.push(...[])` is a line that claims a job it does not do. The
-   * rows belong to whichever package owns the stylesheet, and the contract stays tested from both
-   * sides: `scripts/host-check.mjs` drives `uiProjectsHost.bootRows` over a fixture sheet with this
-   * package's own host half mounted, and `load-check.mjs` mounts a REAL package's rows.
+   * THE BUILT-IN'S ROWS GO IN HERE, and this is the half that makes the first frame show the skin a reader
+   * left on. This half used to push nothing, deliberately, while every project belonged to a package.
+   *
+   * THE PUSH IS UNCONDITIONAL, which is not a shortcut: `bootRows` owns the judgement — it reads the
+   * settings document at emit time and returns nothing for a project that is off — and every rule in the
+   * payload is gated by the project's marker, so a reader who has Glass off receives an inert string rather
+   * than a branch this file would have to get right.
+   *
+   * `BUILT_IN_PROJECT_ID` IS A MIRROR, like `SUPPORTED_PLUGIN_API` and the channel list: the two halves are
+   * separate bundles and cannot import one another, so `src/client/skins/glass/manifest.js` is the authority
+   * and `scripts/check-builtin.test.mjs` holds this copy equal to it. Without that, a rename reaching one
+   * side only would leave the host half announcing a project the client half never registers — and the
+   * symptom would be a first frame that paints nothing, which looks like a caching problem.
    */
+  const BUILT_IN_PROJECT_ID = 'glass'
+  ctx.on('webserver/index-inject', (table) => {
+    table.push(...ctx.uiProjectsHost.bootRows(BUILT_IN_PROJECT_ID, BOOT_CSS))
+  })
 }
 
 /**

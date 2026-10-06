@@ -229,13 +229,17 @@ if (forSkeleton.length === 1 && forSkeleton[0].kind === 'script') {
   fail(`expected 1 presence row for the package, saw ${forSkeleton.length} of ${presenceRows.length}`)
 }
 /*
- * ONE, and it was two until 8c. The second was the framework's own: it pushed rows for the skin it
- * shipped, which is exactly what this assertion should stop seeing once the framework ships no
- * project. Read together with `aloneTable` above — a package with no framework emits nothing — the
- * pair still says "one row per mounted package, contributed by the package", with the framework
- * contributing none.
+ * TWO, AND THE SECOND ONE IS THE FRAMEWORK'S OWN (2026-10-06).
+ *
+ * It was one, and this note used to say the framework contributes none -- true while every project
+ * belonged to a package. The framework ships Glass now, and its own host half injects that project's
+ * first-paint rows, so the honest count is the package's row plus the framework's. What the assertion
+ * still holds is the part that mattered: ONE row per contributor, never two for the same project.
+ *
+ * Read together with `aloneTable` above -- a package with no framework emits nothing -- the pair now says
+ * "one row per mounted side": the package's presence row, and the built-in's boot rows.
  */
-equal(presenceRows.length, 1, 'and every mounted package announces itself exactly once, the framework contributing none')
+equal(presenceRows.length, 2, 'and each mounted side announces itself exactly once: the package, and the framework’s built-in')
 equal(forSkeleton[0]?.placement, 'body', 'the presence row is a body row, so it runs before any client bundle')
 equal(
   (forSkeleton[0]?.text ?? '').includes('__dshUiProjectRows'),
