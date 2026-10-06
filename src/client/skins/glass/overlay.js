@@ -3,8 +3,9 @@
  *
  * This is a sheet inserted into `<head>` from the plugin's own `apply`, alongside the scoped stylesheets
  * the runtime inserts for the project. It arrived from `@fn-x/dsh-plugin-liquid-glass`, where it was the
- * whole of that package's browser entry; the four sheets below are that file's own strings, unchanged,
- * because the two copies have to stay identical and a rewrite here would be the first place they drift.
+ * whole of that package's browser entry, and the four sheets below are that file's own strings. They were
+ * byte-identical when they were copied in, and the package is frozen as of 2026-10-06: from here this
+ * repository is the only source of the material, and the copy relationship is history rather than a rule.
  *
  * Nothing here may `require` React or another plugin at module scope: that is the load-time contract
  * every client half in this system keeps, and the framework's suite asserts it for the framework's own

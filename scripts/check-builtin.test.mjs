@@ -24,7 +24,6 @@
  *
  * Run: `node scripts/check-builtin.test.mjs [--cordis <path to @deepseek-ai/cordis>]`
  */
-import { BUILT_IN_MAP, BUILT_IN_TREES, SKIN_PACKAGE_ENV, normalizeMarker, overlaySheets } from './builtin-map.mjs'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -174,133 +173,39 @@ equal(
 )
 
 /* ── the equivalence check: the built-in copy against the package it came from ───────────────────── */
+/* ── the framework's own consistency, now that it is the only source ────────────────────────────── */
 /*
- * WHY THIS IS OPT-IN, AND WHY AN OPT-IN CHECK HAS TO BE LOUD. The package lives in another repository and
- * the path to it cannot be derived from this one — the two are not siblings — so `DSH_SKIN_PACKAGE` names
- * it. With the variable unset, the honest outcome is not a green tick over a file it never read: it is a
- * marked UNCHECKED line AND a note in the summary, because a quietly skipped comparison is the one failure
- * this check cannot see for itself.
- *
- * WHAT IT COMPARES, AND WHY THE MARKER IS NORMALIZED FIRST. The built-in's id is `glass` and the package's
- * is `liquid-glass`, so every generated marker differs by that one word — and the overlay's markers are
- * hand-written, which is why they had to be substituted when the copy was made. Normalizing the one word
- * away and THEN comparing bytes is what turns "the same material" into a measurement.
+ * WHAT REPLACED THE EQUIVALENCE CHECK, AND WHY IT IS SMALLER. Until 2026-10-06 these sheets were compared
+ * byte for byte against the package they came from, and that check is what caught the encoding accident
+ * recorded in docs/known-issues.md. The package is frozen now and this repository is the only source, so
+ * there is nothing left to compare against -- and the claims that check was making about THIS side are the
+ * ones worth keeping.
  */
-const skinPackage = process.env.DSH_SKIN_PACKAGE
-let unchecked = false
-if (skinPackage === undefined || !existsSync(skinPackage)) {
-  unchecked = true
-  process.stdout.write(
-    '  UNCHECKED  the equivalence check against the skin package did NOT run.\n' +
-      '             Set DSH_SKIN_PACKAGE to that package and run this file again; until then a divergence\n' +
-      '             between the built-in copy and the package it came from would go unnoticed here.\n',
-  )
-} else {
-  const same = (/** @type {string} */ ours, /** @type {string} */ theirs, /** @type {string} */ label) =>
-    equal(ours === theirs, true, label)
-
-  /*
-   * THE COMPARISON DIFFERS PER FILE, AND THAT IS THE CORRECTION RATHER THAN A CONVENIENCE.
-   *
-   * `tokens.css` and `glass.css` are compared RAW. An earlier version of this check normalized the marker
-   * on both sides and failed on `glass.css` — which looked like a divergence in the material and was not:
-   * `glass.css` never writes the marker in a selector (its own contract forbids it, because the scoper
-   * appends one), so the only occurrences are inside comments, and the framework's copy keeps the
-   * package's comments verbatim. Normalizing there was normalizing text neither side had changed.
-   *
-   * `boot.css` and the overlay ARE substituted, by necessity — the built-in's id is `glass`, and a stale
-   * marker matches nothing — so those two are normalized. To keep normalization from hiding a wrong
-   * substitution behind a matching one, each is ALSO held to the counts: the built-in's marker present, the
-   * package's absent.
-   */
-  /*
-   * THE TWO TREES, FILE FOR FILE — the hole a byte comparison cannot see.
-   *
-   * Everything below compares files BOTH SIDES ALREADY HAVE. A file added on one side and forgotten on the
-   * other is invisible to that, and it is the likeliest way for two hand-edited copies to drift: a rule
-   * that changes INSIDE `glass.css` is covered, a whole new sheet is not. So the mapping is written down
-   * and asserted in both directions — an unlisted file in either tree fails here, and so does a mapped
-   * file that has moved.
-   */
-  const fileNames = (/** @type {string} */ dir) => readdirSync(dir).sort().join(',')
-  /*
-   * THE TREES AND THE FILE PAIRS COME FROM THE SHARED MAP, not from a list written again here.
-   * `scripts/builtin-map.mjs` is read by this file and by `scripts/sync-builtin.mjs`, which is the point:
-   * two lists that agree today are two lists that can disagree tomorrow, and the second one to be edited
-   * is always the one nobody reads.
-   */
-  for (const [which, directory, expected] of BUILT_IN_TREES) {
-    equal(
-      fileNames(join(which === 'framework' ? packageRoot : skinPackage, directory)),
-      expected,
-      `${which}: ${directory} holds exactly the files the shared map expects`,
-    )
+const builtInId = builtIn.id
+/*
+ * COMMENTS DO NOT COUNT, and this file learned that the same way twice: the two authored sheets mention the
+ * frozen package's marker inside explanations of what the scoper does, and a reader that does not strip
+ * comments reports those mentions as stale markers. It is the lesson the package's own suite records, applied
+ * here because this check inherited the job.
+ *
+ * AND ONLY ONE OF THE THREE CARRIES A MARKER BY HAND. `boot.css` is written the way the scoper emits it and
+ * the overlay spells its markers out, but `glass.css` is authored plainly and the runtime adds the marker --
+ * so requiring a marker there would fail a file that is exactly as it should be.
+ */
+const withoutComments = (text) => String(text).replace(/\/\*[\s\S]*?\*\//g, ' ')
+for (const [label, file, carriesMarker] of [
+  ['glass.css', 'src/client/skins/glass/glass.css', false],
+  ['boot.css', 'src/host/skins/glass/boot.css', true],
+  ['overlay.js', 'src/client/skins/glass/overlay.js', true],
+]) {
+  const text = withoutComments(readFileSync(join(packageRoot, file), 'utf8'))
+  const stale = (text.match(/data-ui-project-(?!glass)[a-z-]+/g) ?? []).filter((one) => one !== 'data-ui-project-overlay')
+  equal(stale.length, 0, `${label} names no project marker but this one`)
+  if (carriesMarker) {
+    truthy(text.includes('data-ui-project-' + builtInId), `${label} carries the built-in's marker`)
+  } else {
+    truthy(!text.includes('data-ui-project-'), `${label} is authored without a marker; the scoper adds one`)
   }
-  for (const [label, inFramework, fromPackage] of BUILT_IN_MAP) {
-    truthy(
-      existsSync(join(packageRoot, inFramework)) && existsSync(join(skinPackage, fromPackage)),
-      `${label} is where the shared map says it is, on both sides`,
-    )
-  }
-
-  const read = (/** @type {string} */ file) => readFileSync(file, 'utf8')
-  /*
-   * THE COMPARISON IS DRIVEN BY THE MAP'S MODES, which is the whole point of having a map: this file and
-   * `scripts/sync-builtin.mjs` ask the same question of the same rows, and neither keeps a list of its own.
-   * The `none` rows are skipped here for the same reason the writer refuses them — being different is what
-   * they are for.
-   */
-  for (const [label, inFramework, fromPackage, mode] of BUILT_IN_MAP) {
-    if (mode === 'none') continue
-    const ours = read(join(packageRoot, inFramework))
-    const theirs = read(join(skinPackage, fromPackage))
-    if (mode === 'sheets') {
-      const ourSheets = overlaySheets(ours)
-      const theirSheets = overlaySheets(theirs)
-      equal(
-        Object.keys(ourSheets).sort().join(','),
-        Object.keys(theirSheets).sort().join(','),
-        `${label} carries the same sheets as the package's`,
-      )
-      for (const name of Object.keys(theirSheets)) {
-        same(
-          ourSheets[name] ?? '',
-          normalizeMarker(theirSheets[name]),
-          `${name} is the package's CSS, once the marker is normalized`,
-        )
-      }
-      continue
-    }
-    same(
-      ours,
-      mode === 'raw' ? theirs : normalizeMarker(theirs),
-      `${label} is byte-identical to the package's${mode === 'marker' ? ', once the marker is normalized' : ''}`,
-    )
-    /*
-     * THE MARKER COUNTS ONLY MEAN SOMETHING WHERE THE MARKER IS SUBSTITUTED. `glass.css` and `tokens.css`
-     * are copied verbatim, comments included, and both mention the package's marker inside explanations of
-     * what the scoper does with it — counting occurrences there fails on prose, which is exactly what the
-     * first version of this assertion did (4 occurrences, all of them in comments).
-     */
-    if (mode === 'marker') {
-      equal(
-        (ours.match(/data-ui-project-liquid-glass/g) ?? []).length,
-        0,
-        `${label} carries none of the package's markers: a stale one would match nothing`,
-      )
-      truthy(
-        (ours.match(/data-ui-project-glass/g) ?? []).length > 0,
-        `${label} carries the built-in's own marker`,
-      )
-    }
-  }
-
-  /*
-   * The four overlay sheets are compared inside the loop above, under its `sheets` mode. This is where a
-   * SECOND copy of that comparison used to sit — left behind when the loop learned the mode — and it is
-   * gone for the reason the loop exists: a duplicate that agrees today is a duplicate that can disagree
-   * tomorrow, and the only sign it was there was the assertion count being five higher than the coverage.
-   */
 }
 
 /* ── the mirror: the host half's copy of the id against the client's manifest ────────────────────── */
@@ -317,7 +222,5 @@ const hostId = /const BUILT_IN_PROJECT_ID = '([^']+)'/.exec(
 )?.[1]
 equal(hostId, builtIn.id, 'the host half inlines the first paint for the project the client half registers')
 
-process.stdout.write(
-  `\n${checks} assertions, ${failures} failing${unchecked ? ', with the equivalence check UNCHECKED' : ''}\n`,
-)
+process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
 process.exit(failures === 0 ? 0 : 1)

@@ -24,6 +24,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { dirname, join, relative, resolve, sep } from 'node:path'
@@ -193,6 +194,41 @@ async function build() {
    * stale first paint that looks exactly like a caching problem) is the kind that costs a day. Restored
    * with the generation.
    */
+  /*
+   * THE FIRST-PAINT SHEET IS DERIVED, AND THE BUILD IS WHERE THAT IS ENFORCED.
+   *
+   * It used to be enforced by the package this material came from: its build ran the derive tool with
+   * --check and refused to continue when src/host/boot.css was not what its stylesheets implied. While the
+   * package was the source that was enough. It is not the source any more, and without this step nothing
+   * would notice an edit to a body-level token in glass.css that never reached the first paint -- the one
+   * failure that looks exactly like a caching problem.
+   *
+   * The tool is a sibling now, and it is pointed at this repository by default.
+   */
+  const deriveTool = join(dirname(fileURLToPath(import.meta.url)), 'derive-boot-css.mjs')
+  try {
+    execFileSync(process.execPath, [deriveTool, '--check'], { stdio: 'inherit', cwd: packageRoot })
+  } catch {
+    throw new Error(
+      '[build] src/host/skins/glass/boot.css is not what this repository\'s stylesheets imply (the tool\'s report is above).\n' +
+        '[build] Re-derive it: node scripts/derive-boot-css.mjs',
+    )
+  }
+  /*
+   * AND THE MARKER THE RULES PRODUCE MUST BE THE ID THE HOST INLINES FOR. The rules module writes the
+   * selector the first paint hangs off, and src/host/index.js names the project it pushes rows for; if a
+   * rename reached one and not the other, the sheet would be inert for every reader and nothing else in
+   * this repository would say so.
+   */
+  const hostId = /const BUILT_IN_PROJECT_ID = '([^']+)'/.exec(await readFile(hostEntry, 'utf8'))?.[1]
+  const rulesText = await readFile(join(dirname(fileURLToPath(import.meta.url)), 'boot-css-rules.mjs'), 'utf8')
+  const ids = [...new Set([...rulesText.matchAll(/data-ui-project-([a-z-]+)/g)].map((match) => match[1]))]
+  if (hostId === undefined || ids.length !== 1 || ids[0] !== hostId) {
+    throw new Error(
+      `[build] the first-paint rules name ${JSON.stringify(ids)} while the host inlines for ${JSON.stringify(hostId)}`,
+    )
+  }
+
   const impostors = (await listFiles(hostRoot)).filter((file) => file.endsWith('boot-css.js'))
   if (impostors.length > 0) {
     throw new Error(
