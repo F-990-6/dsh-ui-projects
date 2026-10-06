@@ -283,13 +283,6 @@
   overflow-wrap: anywhere;
 }
 
-.uip-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 /* ── switch ───────────────────────────────────────────────────────────────── */
 
 .uip-switch {
@@ -648,36 +641,6 @@
 }
 
 /*
- * §五's CHANGELOG, folded away (step 56b).
- *
- * The body is capped and scrollable rather than unbounded: one section can be forty lines, and forty
- * lines of monospace dropped into a settings dialog is a wall — the cap keeps the row readable and the
- * scroll keeps every line reachable. The summary is the fold's own control, so it gets the pointer and
- * nothing else; the token colours come from the shipped palette like every other surface here.
- */
-.uip-plugin-changelog > summary {
-  cursor: pointer;
-}
-
-.uip-plugin-changelogHeading {
-  margin: 8px 0 4px;
-  font-size: 13px;
-}
-
-.uip-plugin-changelog pre {
-  max-height: 240px;
-  overflow: auto;
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 18px;
-  /* The body keeps its own line breaks (`pre-wrap`), which the rule further down already states. */
-}
-
-/*
  * ── every fold's summary, and the content under it (step 56c) ───────────────
  *
  * ONE LOOK for all five kinds of fold — the row's own details, the contract panel, the maintenance
@@ -736,7 +699,6 @@
 .uip-plugin .uip-contract,
 .uip-plugin .uip-maintenance,
 .uip-plugin .uip-command,
-.uip-plugin .uip-plugin-changelog,
 .uip-plugin .uip-hint-fold {
   margin-top: 8px;
 }
@@ -769,12 +731,6 @@
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 18px;
-}
-
-.uip-copyButton {
-  flex: 0 0 auto;
-  font-size: 12px;
-  padding: 4px 10px;
 }
 
 @container (max-width: 420px) {

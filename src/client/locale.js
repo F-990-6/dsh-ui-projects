@@ -206,7 +206,6 @@ export const STRINGS = {
        * nothing here pretends to read the terminal the host writes to.
        */
       diagnosticsTitle: 'Diagnostics',
-      diagnosticsCopy: 'Copy diagnostics',
       diagnosticsUnknown: 'unknown',
       diagnosticsFailures: 'Recent update failures',
       diagnosticsRollbackHint: 'To roll back, run the command above and restart dsh.',
@@ -328,14 +327,6 @@ export const STRINGS = {
        * fact about the request: the name is not in this profile, which is also the answer a
        * path-traversal attempt gets.
        */
-      changelogTitle: 'CHANGELOG',
-      changelogLoading: 'reading the changelog…',
-      changelogFailed: (message) => `the changelog could not be read: ${message}`,
-      changelogNoFile: 'this package ships no CHANGELOG.md',
-      changelogNoSections: 'the changelog has no "## " sections',
-      changelogUnreadable: (detail) => `the changelog could not be read: ${detail}`,
-      changelogNotInstalled: (name) => `${name} is not in this profile's dependency list`,
-      changelogTruncated: (count) => `… ${count} more line(s); see CHANGELOG.md`,
       /*
        * ── step 56c: the default view, the folds, and the copy buttons ──────────
        *
@@ -352,11 +343,6 @@ export const STRINGS = {
       uninstallTitle: (name) => `Remove ${name}`,
       uninstallBrief: 'Removing it takes the package only — your switch and its settings stay.',
       copyCommand: 'Copy',
-      copyDone: 'Copied',
-      copyFailed: 'Copy failed — select it manually',
-            changelogUnavailable: 'CHANGELOG unavailable',
-                  copyUninstallCommand: 'Copy uninstall command',
-      cardMenuTitle: 'More actions',
       /* ── step 56d: short fold titles, because a fold's title is a label rather than a sentence ── */
       foldContractPassed: 'Contract: passed',
       foldContractFindings: (count) => `Contract: ${count} finding(s)`,
@@ -508,7 +494,6 @@ export const STRINGS = {
        * 诊断（第五步）。把**页面能看到**的事实整理成一段可粘贴的文字：这里没有任何东西假装能读宿主写的终端。
        */
       diagnosticsTitle: '诊断信息',
-      diagnosticsCopy: '复制诊断信息',
       diagnosticsUnknown: '未知',
       diagnosticsFailures: '最近的更新失败',
       diagnosticsRollbackHint: '要回滚，执行上面的命令并重启 dsh。',
@@ -602,14 +587,6 @@ export const STRINGS = {
       priority: SHARED.zh.priority,
       previewAlt: SHARED.zh.previewAlt,
       /* ── step 56b：折叠的更新日志（与 en 同构） ───────────────────────────── */
-      changelogTitle: '更新日志',
-      changelogLoading: '正在读取更新日志…',
-      changelogFailed: (message) => `更新日志读取失败：${message}`,
-      changelogNoFile: '这个包没有 CHANGELOG.md',
-      changelogNoSections: '更新日志里没有 "## " 章节',
-      changelogUnreadable: (detail) => `更新日志无法读取：${detail}`,
-      changelogNotInstalled: (name) => `${name} 不在本 profile 的依赖列表里`,
-      changelogTruncated: (count) => `……还有 ${count} 行，见 CHANGELOG.md`,
       /* ── step 56c：默认视图、折叠块、复制按钮（与 en 同构） ───────────────── */
       rowDetails: '包详情',
       updateAvailable: (tag) => `${tag} 通道有更新`,
@@ -619,11 +596,6 @@ export const STRINGS = {
       uninstallTitle: (name) => `卸载 ${name}`,
       uninstallBrief: '只移除此包——你的开关与它的设置都会保留。',
       copyCommand: '复制',
-      copyDone: '已复制',
-      copyFailed: '复制失败，请手动复制',
-            changelogUnavailable: '更新日志不可用',
-                  copyUninstallCommand: '复制卸载命令',
-      cardMenuTitle: '更多操作',
       /* ── step 56d：折叠标题是标签而不是句子 ─────────────────────────────── */
       foldContractPassed: '契约：通过',
       foldContractFindings: (count) => `契约：${count} 处发现`,

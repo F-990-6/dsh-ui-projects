@@ -26,15 +26,17 @@ const { createPreview } = require('./preview.js')
  * `require`, not `import`: this file is CommonJS-dialect throughout, and one ESM line in the middle of it
  * would be the only exception in 699 lines.
  */
-const { copyCommandText } = require('./clipboard.js')
-const { buildDiagnostics } = require('./plugin-diagnostics.js')
-
 /*
- * (C8 迁移) 这个常量原在 `panel-plugins.js:708`（`export const COPY_FEEDBACK_MS = 1500`），
- * 该文件于第 3 步删除，但 `CardMenu` 的 useEffect 仍引用它——浏览器里抛
- * ReferenceError 并让整个 settings.section 卸载。值 = 1500ms，与原定义一致。
+ * (C9, 2026-10-03) TWO IMPORTS AND ONE CONSTANT WERE REMOVED HERE with the card's two folds:
+ *   const { copyCommandText } = require('./clipboard.js')
+ *   const { buildDiagnostics } = require('./plugin-diagnostics.js')
+ *   const COPY_FEEDBACK_MS = 1500
+ * Both modules REMAIN in the tree and in the build graph — they are capability, not this card's
+ * furniture — so rewiring a future entry point is two lines, not an archaeology exercise. The
+ * constant went because its only consumer was the menu's copy feedback: a timer with no button to
+ * reset is a number nobody reads.
  */
-const COPY_FEEDBACK_MS = 1500
+
 /**
  * @param {object} props
  * @param {import('./store.js').UiProjectsStore} props.store
@@ -297,173 +299,24 @@ function UiProjectsSection(props) {
 
 
 /**
- * THE CARD MENU (C8, 2026-09-30) — "more actions" for one card.
+ * (C9, 2026-10-03) THE CARD MENU STOOD HERE — `function CardMenu(props)`, ~125 lines, rendering the
+ * "more actions" `<details>` (`data-uip-fold-summary: 'card-menu'`) and, inside it, the
+ * uninstall-command copy button (`data-uip-action: 'uninstall'`) and the diagnostics copy button
+ * (`data-uip-action: 'copy-diagnostics'`).
  *
- * A COMPONENT, not a bag of props handed to `createElement` inline: it owns state (which item is mid-copy,
- * and whether the CHANGELOG is showing), and `createCard` is a plain function called inside the section's
- * render — hooks there would be attributed to the PARENT and break the moment the project list changed
- * length. The checklist had to be a component for exactly this reason, and that lesson is now recorded
- * twice.
- *
- * THE COPY FEEDBACK IS TEMPORARY AND THE TIMER IS OWNED: "Copied" that stays for ever is a button a reader
- * cannot use twice, and a timer that outlives the component is a setState on something that no longer
- * exists — one effect, one ref, one cleanup. The button is never disabled: a copy button that stops
- * accepting clicks reads as broken.
- *
- * NOTHING HERE RUNS A COMMAND. The uninstall line is printed and copied; the CHANGELOG is read through the
- * store; the diagnostics are assembled from facts the page already holds. The facts it does not have — the
- * package's spec, where it was resolved from, its kind — render as "unknown", which is what
- * `buildDiagnostics` does by design rather than something this call site fakes.
- * @param {object} props
- * @returns {any}
+ * It was removed by request, together with the CHANGELOG disclosure below it. The capability it
+ * reached is deliberately untouched: `clipboard.js`, `plugin-diagnostics.js`, the changelog route
+ * and `store.changelog()` all remain, so this is a door removed, not a room demolished.
  */
-function CardMenu(props) {
-  const { R, t, project, name, pending, onRun, installed } = props
-  /*
-   * `copied` 是 OBJECT，不是字符串——每个按钮一个独立的反馈状态。
-   * 之前它是单值，两个复制按钮（uninstall / diagnostics）共享，
-   * 点其中一个两个都变"已复制"。按 key 分开后它们各自计时、各自复位。
-   */
-  const [copied, setCopied] = React.useState({})
-  const timers = React.useRef({})
-
-  React.useEffect(() => {
-    for (const key of Object.keys(copied)) {
-      const state = copied[key]
-      if (state !== 'copied' && state !== 'failed') continue
-      if (timers.current[key] !== undefined) continue
-      timers.current[key] = setTimeout(() => {
-        setCopied((cur) => {
-          const next = { ...cur }
-          delete next[key]
-          return next
-        })
-        delete timers.current[key]
-      }, COPY_FEEDBACK_MS)
-    }
-  }, [copied])
-
-  React.useEffect(() => {
-    return () => {
-      for (const key of Object.keys(timers.current)) clearTimeout(timers.current[key])
-      timers.current = {}
-    }
-  }, [])
-
-  /*
-   * 每个按钮有自己的初始 label：
-   *   · uninstall   → t.plugins.copyCommand（"复制"）
-   *   · diagnostics → t.plugins.diagnosticsCopy（"复制诊断信息"）
-   * 复制成功后都变 copyDone（"已复制"），失败都变 copyFailed。
-   */
-  const labelFor = (key, fallback) => {
-    const state = copied[key]
-    if (state === 'copied') return t.plugins?.copyDone
-    if (state === 'failed') return t.plugins?.copyFailed
-    return fallback
-  }
-  const copy = (key, source) => {
-    void copyCommandText(source).then((outcome) => {
-      setCopied((cur) => ({ ...cur, [key]: outcome }))
-    })
-  }
-
-  const scan = installed !== null && installed?.status === 'ready' ? installed.scan : undefined
-  const profileName = typeof scan?.profileName === 'string' && scan.profileName.length > 0 ? scan.profileName : null
-  const installedVersion = (scan?.dependencies ?? []).find((entry) => entry.name === project.package)?.version ?? null
-  const diagnosis = buildDiagnostics(
-    { name: project.package, version: installedVersion, problems: [], update: null },
-    scan?.versions?.[project.package],
-  )
-
-  const items = []
-  if (profileName !== null) {
-    const command = 'dsh plugin --profile ' + profileName + ' remove ' + name
-    items.push(
-      R.createElement(
-        'button',
-        {
-          type: 'button',
-          className: 'uip-button uip-copyButton',
-          key: 'uninstall',
-          'data-uip-action': 'uninstall',
-          'data-uip-copy-source': command,
-                   'aria-label': t.plugins?.copyUninstallCommand + ': ' + command,
-          onClick: () => copy('uninstall', command),
-        },
-        labelFor('uninstall', t.plugins?.copyUninstallCommand),
-      ),
-    )
-  }
-
-  items.push(
-    R.createElement(
-      'button',
-      {
-        type: 'button',
-        className: 'uip-button uip-copyButton',
-        key: 'diagnostics',
-        'data-uip-action': 'copy-diagnostics',
-        'data-uip-copy-source': diagnosis.text,
-        'aria-label': t.plugins?.diagnosticsCopy + ': ' + project.package,
-        onClick: () => copy('diagnostics', diagnosis.text),
-      },
-      labelFor('diagnostics', t.plugins?.diagnosticsCopy),
-    ),
-  )
-
-  const body = [R.createElement('div', { className: 'uip-actions', key: 'menu-items' }, items)]
-
-  return R.createElement(
-    'details',
-    { className: 'uip-menu', 'data-uip-menu': project.id, open: false },
-    R.createElement('summary', { 'data-uip-fold-summary': 'card-menu' }, t.plugins?.cardMenuTitle),
-    body,
-  )
-}
 
 /**
- * THE CHANGELOG DISCLOSURE (2026-10-02) — a card-level `<details>` beside
- * the "more actions" menu, not a button inside it.
+ * (C9, 2026-10-03) THE CHANGELOG DISCLOSURE STOOD HERE — `function ChangelogDetails(props)`, ~40
+ * lines, rendering the card-level `<details>` (`data-uip-fold-summary: 'card-changelog'`) that read
+ * `store.changelog(project.package)` lazily on open.
  *
- * `store`, not `installed`: the snapshot has `scan`, but `changelog()` and
- * `loadChangelog()` live on the STORE itself (`installed.js:360`).
- * Passing the snapshot made both `undefined`.
- *
- * Loads lazily: nothing is asked of the host until the reader opens it.
+ * Removed by request with the card menu above. `store.changelog()` / `store.loadChangelog()` and
+ * `/api/ui-projects/changelog.json` are untouched, so the reading capability outlives this entry.
  */
-function ChangelogDetails(props) {
-  const { R, t, project, store } = props
-  const [open, setOpen] = React.useState(false)
-  const changelog = typeof store?.changelog === 'function' ? store.changelog(project.package) : null
-  React.useEffect(() => {
-    if (!open) return undefined
-    if (changelog !== null && changelog?.status !== 'idle') return undefined
-    if (typeof store?.loadChangelog === 'function') void store.loadChangelog(project.package)
-    return undefined
-  }, [open, project.package, changelog?.status, store])
-  const sections = changelog?.payload?.sections
-  return R.createElement(
-    'details',
-    {
-      className: 'uip-menu',
-      key: 'changelog',
-      'data-uip-card-changelog': project.id,
-      open,
-      onToggle: (event) => setOpen(event.target.open),
-    },
-    R.createElement('summary', { 'data-uip-fold-summary': 'card-changelog' }, t.plugins?.changelogTitle),
-    Array.isArray(sections) && sections.length > 0
-      ? sections.map((section, index) =>
-          R.createElement(
-            'p',
-            { key: 'section-' + index },
-            String(section?.title ?? section?.heading ?? ''),
-          ),
-        )
-      : R.createElement('p', { className: 'uip-hint' }, t.plugins?.changelogUnavailable),
-  )
-}
 /**
  * One project card. Everything shown here comes from the project definition.
  * @param {object} input
@@ -595,32 +448,18 @@ function createCard(input) {
    * it, written silently. `onClear` never had the bug because it passes no arguments at all.)
    */
   /*
-   * THE CARD'S "MORE ACTIONS" MENU (C8, 2026-09-30). Three things a reader acts on, and nothing that only
-   * looks like an action: copy the uninstall command, open the CHANGELOG this package already ships, copy
-   * the diagnostics this build can actually see. The reset control it replaces is gone, together with the
-   * printed maintenance commands (C2) and the checklist (C3).
+   * (C9, 2026-10-03) THE CARD'S TWO FOLDS STOOD HERE and both were removed by request:
+   *
+   *   body.push(CardMenu({ … }))         — "more actions": copy the uninstall command, copy the
+   *                                        diagnostics this build can see.
+   *   body.push(ChangelogDetails({ … })) — the folded CHANGELOG.
+   *
+   * The card now carries the preview, the name, the version, the badges, the description, the hints,
+   * a project's own controls and the switch, and nothing that only looks like an action. The
+   * capability behind the two removed entries is untouched — see the notes where the components stood.
+   * `onRun`, `installed` and `store` are still destructured above for the same reason: their wiring
+   * reaches this function and a future entry point will want it.
    */
-  body.push(
-    CardMenu({
-      key: 'menu',
-      R,
-      t,
-      project,
-      name,
-      pending,
-      onRun,
-      installed,
-    }),
-  )
-  body.push(
-    ChangelogDetails({
-      key: 'changelog',
-      R,
-      t,
-      project,
-      store,
-    }),
-  )
   
   return R.createElement(
     'li',
