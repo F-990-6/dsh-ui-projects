@@ -249,10 +249,22 @@ function installOverlay() {
   return true
 }
 
-/*
- * The overlay is a SHEET and a way to install it — not a plugin. The plugin that owns it is this
- * package's own client half, which registers the project and then installs this; that separation is what
- * lets a built-in skin be a project like any other while the overlay stays the one sheet the system
- * inserts outside the scoped path.
+/**
+ * Remove the sheet `installOverlay` inserted, if it is there.
+ *
+ * The package this file came from did this from its own `dispose` handler; the framework does it from an
+ * effect disposer, which is the same thing at the same moment — the plugin's client half going away.
+ * Idempotent, and silent when there is nothing to remove.
  */
-module.exports = { installOverlay, OVERLAY_ID, OVERLAY_CSS }
+function removeOverlay() {
+  if (typeof document === 'undefined' || document === null) return
+  document.getElementById(OVERLAY_ID)?.remove?.()
+}
+
+/*
+ * The overlay is a SHEET and the two things that can be done with it — not a plugin. The plugin that
+ * owns it is this package's own client half, which registers the project and then installs this; that
+ * separation is what lets a built-in skin be a project like any other while the overlay stays the one
+ * sheet the system inserts outside the scoped path.
+ */
+module.exports = { installOverlay, removeOverlay, OVERLAY_ID, OVERLAY_CSS }

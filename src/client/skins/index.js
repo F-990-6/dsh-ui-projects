@@ -26,8 +26,8 @@
  */
 const manifest = require('./liquid-glass/manifest.js')
 const { createLiquidGlass } = require('./liquid-glass/skin.js')
-const { installOverlay } = require('./liquid-glass/overlay.js')
+const { installOverlay, removeOverlay } = require('./liquid-glass/overlay.js')
 
 module.exports = {
-  BUILT_IN_PROJECTS: [{ manifest, create: createLiquidGlass, installOverlay }],
+  BUILT_IN_PROJECTS: [{ manifest, create: createLiquidGlass, installOverlay, removeOverlay }],
 }
