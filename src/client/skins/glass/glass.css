@@ -84,10 +84,10 @@ body {
    * theme because the surface behind it is already dark. It reads as an edge because of its CONTRAST with
    * the fill, not because of its width: widening it is what makes a pane look drawn rather than lit.
    */
-  --lg-glass-border-light: rgb(255 255 255 / 18%);
-  --lg-glass-border-dark: rgb(255 255 255 / 13%);
+  --lg-glass-border-light: rgb(255 255 255 / 19%);
+  --lg-glass-border-dark: rgb(255 255 255 / 14%);
 
-  --lg-glass-blur: 24px;
+  --lg-glass-blur: 18px;
   --lg-glass-saturate: 150%;
   --lg-glass-radius: 32px;
   /*
@@ -100,7 +100,7 @@ body {
    * The dark theme overrides this below, and it has to: a black shadow on a near-black page is invisible, so
    * the same numbers would buy nothing there.
    */
-  --lg-glass-shadow: 0 2px 6px rgb(15 23 42 / 8%), 0 18px 44px rgb(15 23 42 / 13%);
+  --lg-glass-shadow: 0 2px 7px rgb(15 23 42 / 11%), 0 20px 52px rgb(15 23 42 / 17%);
   /*
    * THREE INSETS, AND NONE IS A MIRROR. The top line is an 18% hairline — the light that lands on a rounded
    * edge — and the bottom line is a 7% DARK line, which is what gives a pane the look of having THICKNESS.
@@ -113,8 +113,8 @@ body {
    * middle stops being curvature and becomes a gradient. The depth comes from the shadow pair above; this
    * only says which way the light is coming from.
    */
-  --lg-glass-inner-highlight: inset 0 1px 0 rgb(255 255 255 / 18%), inset 0 -1px 0 rgb(0 0 0 / 7%),
-    inset 0 10px 18px -14px rgb(255 255 255 / 20%);
+  --lg-glass-inner-highlight: inset 0 1px 0 rgb(255 255 255 / 19%), inset 0 -1px 0 rgb(0 0 0 / 8%),
+    inset 0 11px 20px -15px rgb(255 255 255 / 24%);
 
   /*
    * TWO TIERS, NAMED FOR WHAT THEY ARE FOR — the correction the previous rounds needed.
@@ -157,8 +157,8 @@ body {
    * RAISE THE HALO, NOT THE FILL. Going back up would undo the effect the reader asked for four
    * times; hardening the glyphs is the part that was under-tuned, not the transparency.
    */
-  --lg-glass-composer-light: rgb(255 255 255 / 6%);
-  --lg-glass-composer-dark: rgb(28 28 30 / 10%);
+  --lg-glass-composer-light: rgb(255 255 255 / 3%);
+  --lg-glass-composer-dark: rgb(28 28 30 / 6%);
 
   /*
    * The halo the paragraph above refers to, a light/dark pair like every other token here. It is
@@ -269,7 +269,7 @@ body {
    *     name per role while the paired tokens above remain the single source of truth.
    */
   --lg-glass-blur-mobile: 16px;
-  --lg-glass-blur-menu: 24px;
+  --lg-glass-blur-menu: 18px;
   /*
    * The two degradation tiers the runtime selects between by publishing `data-ui-perf`, and the
    * reason the specification's "12–16px on a low-end device" has values to name at all.
@@ -277,8 +277,8 @@ body {
    * The FULL tier is `--lg-glass-blur` (20px) and needs no token of its own: it is what the rules
    * already use when no attribute is present.
    */
-  --lg-glass-blur-medium: 16px;
-  --lg-glass-blur-low: 12px;
+  --lg-glass-blur-medium: 13px;
+  --lg-glass-blur-low: 10px;
   --lg-accent-alt: #5856d6;
   --lg-accent-alt-dark: #5e5ce6;
 }
@@ -358,7 +358,7 @@ body[data-ds-dark-theme] {
    * height. Neither is a "darker mode" of the light values — a black shadow has no colour to lose, only
    * contrast to gain.
    */
-  --lg-glass-shadow: 0 2px 6px rgb(0 0 0 / 30%), 0 20px 48px rgb(0 0 0 / 45%);
+  --lg-glass-shadow: 0 2px 7px rgb(0 0 0 / 34%), 0 22px 56px rgb(0 0 0 / 54%);
   --lg-glass-fill: var(--lg-glass-fill-dark);
   --lg-glass-composer: var(--lg-glass-composer-dark);
   --lg-glass-composer-text-shadow: var(--lg-glass-composer-text-shadow-dark);

@@ -201,17 +201,40 @@ for (const row of first.writable) {
     process.stdout.write(`  wrote ${row.label}, marker substituted\n`)
   } else {
     /*
-     * `sheets` may only re-substitute in place: the surrounding module is this repository's, not the
-     * package's, and copying the package's file here would delete the rewritten head and tail.
+     * `sheets` WRITES THE SHEETS, NOT THE FILE — the one place where copying is impossible and a sync is
+     * still the right answer. The framework's `overlay.js` is the package's `src/client/index.js` with its
+     * head, its requires and its tail rewritten for a built-in, so copying the package's file over it would
+     * delete all three. What the two DO share is the four CSS sheets inside them, and those are what this
+     * mode compares — and, since this round, what it writes: each sheet body is replaced in place,
+     * marker-normalized, and the module around it is left exactly as this repository wrote it.
+     *
+     * Before this, the mode could only re-substitute a marker, so a change to a dialog rule lived in the
+     * package and reached nowhere: the one part of the copy that still had to be carried by hand.
      */
-    const text = readFileSync(row.ours, 'utf8')
-    const fixed = text.split('data-ui-project-liquid-glass').join('data-ui-project-glass')
-    if (fixed === text) {
-      process.stdout.write(`  ${row.label}: nothing to substitute, and ${row.outcome} — left alone\n`)
+    let next = readFileSync(row.ours, 'utf8')
+    const theirSheets = overlaySheets(readFileSync(row.theirs, 'utf8'))
+    const missing = []
+    let updated = 0
+    for (const [name, body] of Object.entries(theirSheets)) {
+      const pattern = new RegExp(`(const ${name} = \`)[\\s\\S]*?(\`)`)
+      if (!pattern.test(next)) {
+        missing.push(name)
+        continue
+      }
+      const before = next
+      next = next.replace(pattern, (_match, head, tail) => head + normalizeMarker(body) + tail)
+      if (next !== before) updated += 1
+    }
+    if (missing.length > 0) {
+      fail(`${row.label}: every sheet the package has was found`, `missing in the framework's copy: ${missing.join(', ')}`)
       continue
     }
-    writeFileSync(row.ours, fixed, 'utf8')
-    process.stdout.write(`  re-substituted the marker in ${row.label}\n`)
+    if (updated === 0) {
+      process.stdout.write(`  ${row.label}: sheets already identical — left alone\n`)
+      continue
+    }
+    writeFileSync(row.ours, next, 'utf8')
+    process.stdout.write(`  wrote ${updated} of ${Object.keys(theirSheets).length} sheet(s) into ${row.label}\n`)
   }
 }
 

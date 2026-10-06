@@ -191,23 +191,23 @@ body[data-ui-project-glass="on"]{
   --lg-glass-bg-light: rgb(255 255 255 / 54%);
   --lg-glass-bg-dark: rgb(28 28 30 / 58%);
 
-  --lg-glass-border-light: rgb(255 255 255 / 18%);
-  --lg-glass-border-dark: rgb(255 255 255 / 13%);
+  --lg-glass-border-light: rgb(255 255 255 / 19%);
+  --lg-glass-border-dark: rgb(255 255 255 / 14%);
 
-  --lg-glass-blur: 24px;
+  --lg-glass-blur: 18px;
   --lg-glass-saturate: 150%;
   --lg-glass-radius: 32px;
 
-  --lg-glass-shadow: 0 2px 6px rgb(15 23 42 / 8%), 0 18px 44px rgb(15 23 42 / 13%);
+  --lg-glass-shadow: 0 2px 7px rgb(15 23 42 / 11%), 0 20px 52px rgb(15 23 42 / 17%);
 
-  --lg-glass-inner-highlight: inset 0 1px 0 rgb(255 255 255 / 18%), inset 0 -1px 0 rgb(0 0 0 / 7%),
-  inset 0 10px 18px -14px rgb(255 255 255 / 20%);
+  --lg-glass-inner-highlight: inset 0 1px 0 rgb(255 255 255 / 19%), inset 0 -1px 0 rgb(0 0 0 / 8%),
+  inset 0 11px 20px -15px rgb(255 255 255 / 24%);
 
   --lg-glass-fill-light: rgb(255 255 255 / 80%);
   --lg-glass-fill-dark: rgb(40 44 54 / 84%);
 
-  --lg-glass-composer-light: rgb(255 255 255 / 6%);
-  --lg-glass-composer-dark: rgb(28 28 30 / 10%);
+  --lg-glass-composer-light: rgb(255 255 255 / 3%);
+  --lg-glass-composer-dark: rgb(28 28 30 / 6%);
 
   --lg-glass-composer-text-shadow-light: 0 1px 0 rgb(255 255 255 / 100%);
   --lg-glass-composer-text-shadow-dark: 0 1px 0 rgb(0 0 0 / 85%);
@@ -227,10 +227,10 @@ body[data-ui-project-glass="on"]{
   --lg-glass-code-dark: #202327;
 
   --lg-glass-blur-mobile: 16px;
-  --lg-glass-blur-menu: 24px;
+  --lg-glass-blur-menu: 18px;
 
-  --lg-glass-blur-medium: 16px;
-  --lg-glass-blur-low: 12px;
+  --lg-glass-blur-medium: 13px;
+  --lg-glass-blur-low: 10px;
   --lg-accent-alt: #5856d6;
   --lg-accent-alt-dark: #5e5ce6;
 }
@@ -268,7 +268,7 @@ body[data-ui-project-glass="on"][data-ds-dark-theme]{
   --lg-glass-bg: var(--lg-glass-bg-dark);
   --lg-glass-border: var(--lg-glass-border-dark);
 
-  --lg-glass-shadow: 0 2px 6px rgb(0 0 0 / 30%), 0 20px 48px rgb(0 0 0 / 45%);
+  --lg-glass-shadow: 0 2px 7px rgb(0 0 0 / 34%), 0 22px 56px rgb(0 0 0 / 54%);
   --lg-glass-fill: var(--lg-glass-fill-dark);
   --lg-glass-composer: var(--lg-glass-composer-dark);
   --lg-glass-composer-text-shadow: var(--lg-glass-composer-text-shadow-dark);

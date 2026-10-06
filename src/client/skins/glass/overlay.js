@@ -77,8 +77,16 @@ body[data-ui-project-glass="on"] [role='dialog'] {
   backdrop-filter: blur(var(--lg-glass-blur-menu, 24px)) saturate(var(--lg-glass-saturate, 140%)) !important;
   -webkit-backdrop-filter: blur(var(--lg-glass-blur-menu, 24px)) saturate(var(--lg-glass-saturate, 140%)) !important;
   border-radius: var(--lg-glass-radius, 24px) !important;
-  box-shadow: var(--lg-glass-shadow, 0 24px 60px rgb(0 0 0 / 6%)),
-    inset 0 1px 0 rgb(255 255 255 / 14%), inset 0 -1px 0 rgb(0 0 0 / 4%) !important;
+  /*
+   * THE SAME TWO TOKENS EVERY OTHER SURFACE READS. The insets used to be spelled out here, which made the
+   * dialog the one pane that could not follow a change to the material: the depth tokens moved in the sheet
+   * and this rule kept painting the old ones. The fallbacks are the values as of this round, so an overlay
+   * running without the token sheet still looks like the material rather than like an older one.
+   */
+  border: 1px solid var(--lg-glass-border, rgb(255 255 255 / 19%)) !important;
+  box-shadow: var(--lg-glass-shadow, 0 2px 7px rgb(15 23 42 / 11%), 0 20px 52px rgb(15 23 42 / 17%)),
+    var(--lg-glass-inner-highlight, inset 0 1px 0 rgb(255 255 255 / 19%), inset 0 -1px 0 rgb(0 0 0 / 8%))
+      !important;
 }
 body[data-ui-project-glass="on"][data-shortcut-modal='settings'] [role='dialog'] {
   background: var(--lg-glass-panel, rgb(255 255 255 / 6%)) !important;
