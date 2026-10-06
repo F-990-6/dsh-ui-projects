@@ -175,10 +175,11 @@ equal(
 
 /* ── the equivalence check: the built-in copy against the package it came from ───────────────────── */
 /*
- * WHY THIS IS OPT-IN. The package lives in another repository, and the path to it cannot be derived from
- * this one — the two are not siblings. `DSH_SKIN_PACKAGE` names it. With the variable unset this reports
- * SKIPPED and proves nothing, which is the honest outcome rather than a green tick over a file it never
- * read.
+ * WHY THIS IS OPT-IN, AND WHY AN OPT-IN CHECK HAS TO BE LOUD. The package lives in another repository and
+ * the path to it cannot be derived from this one — the two are not siblings — so `DSH_SKIN_PACKAGE` names
+ * it. With the variable unset, the honest outcome is not a green tick over a file it never read: it is a
+ * marked UNCHECKED line AND a note in the summary, because a quietly skipped comparison is the one failure
+ * this check cannot see for itself.
  *
  * WHAT IT COMPARES, AND WHY THE MARKER IS NORMALIZED FIRST. The built-in's id is `glass` and the package's
  * is `liquid-glass`, so every generated marker differs by that one word — and the overlay's markers are
@@ -186,8 +187,14 @@ equal(
  * away and THEN comparing bytes is what turns "the same material" into a measurement.
  */
 const skinPackage = process.env.DSH_SKIN_PACKAGE
+let unchecked = false
 if (skinPackage === undefined || !existsSync(skinPackage)) {
-  process.stdout.write('  SKIP the equivalence check; set DSH_SKIN_PACKAGE to the skin package to run it\n')
+  unchecked = true
+  process.stdout.write(
+    '  UNCHECKED  the equivalence check against the skin package did NOT run.\n' +
+      '             Set DSH_SKIN_PACKAGE to that package and run this file again; until then a divergence\n' +
+      '             between the built-in copy and the package it came from would go unnoticed here.\n',
+  )
 } else {
   const normalize = (/** @type {string} */ text) =>
     text.split('data-ui-project-liquid-glass').join('data-ui-project-glass')
@@ -208,6 +215,40 @@ if (skinPackage === undefined || !existsSync(skinPackage)) {
    * substitution behind a matching one, each is ALSO held to the counts: the built-in's marker present, the
    * package's absent.
    */
+  /*
+   * THE TWO TREES, FILE FOR FILE — the hole a byte comparison cannot see.
+   *
+   * Everything below compares files BOTH SIDES ALREADY HAVE. A file added on one side and forgotten on the
+   * other is invisible to that, and it is the likeliest way for two hand-edited copies to drift: a rule
+   * that changes INSIDE `glass.css` is covered, a whole new sheet is not. So the mapping is written down
+   * and asserted in both directions — an unlisted file in either tree fails here, and so does a mapped
+   * file that has moved.
+   */
+  const fileNames = (/** @type {string} */ dir) => readdirSync(dir).sort().join(',')
+  equal(
+    fileNames(join(packageRoot, 'src', 'client', 'skins', 'glass')),
+    'glass.css,manifest.js,overlay.js,skin.js,tokens.css',
+    'the built-in tree holds exactly the files this check maps, and no others',
+  )
+  equal(
+    fileNames(join(skinPackage, 'src', 'client', 'projects', 'liquid-glass')),
+    'glass.css,manifest.generated.js,skin.js,tokens.css',
+    'and so does the package tree it came from',
+  )
+  for (const [label, inFramework, fromPackage] of [
+    ['skin.js', 'src/client/skins/glass/skin.js', 'src/client/projects/liquid-glass/skin.js'],
+    ['tokens.css', 'src/client/skins/glass/tokens.css', 'src/client/projects/liquid-glass/tokens.css'],
+    ['glass.css', 'src/client/skins/glass/glass.css', 'src/client/projects/liquid-glass/glass.css'],
+    ['overlay.js', 'src/client/skins/glass/overlay.js', 'src/client/index.js'],
+    ['manifest.js', 'src/client/skins/glass/manifest.js', 'src/client/projects/liquid-glass/manifest.generated.js'],
+    ['boot.css', 'src/host/skins/glass/boot.css', 'src/host/boot.css'],
+  ]) {
+    truthy(
+      existsSync(join(packageRoot, inFramework)) && existsSync(join(skinPackage, fromPackage)),
+      `${label} is where the mapping says it is, on both sides`,
+    )
+  }
+
   const read = (/** @type {string} */ file) => readFileSync(file, 'utf8')
   for (const [label, fromPackage, inFramework, normalized] of [
     ['tokens.css', 'src/client/projects/liquid-glass/tokens.css', 'src/client/skins/glass/tokens.css', false],
@@ -270,5 +311,7 @@ const hostId = /const BUILT_IN_PROJECT_ID = '([^']+)'/.exec(
 )?.[1]
 equal(hostId, builtIn.id, 'the host half inlines the first paint for the project the client half registers')
 
-process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
+process.stdout.write(
+  `\n${checks} assertions, ${failures} failing${unchecked ? ', with the equivalence check UNCHECKED' : ''}\n`,
+)
 process.exit(failures === 0 ? 0 : 1)
