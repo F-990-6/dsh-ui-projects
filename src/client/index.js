@@ -9,9 +9,10 @@
  *      +  store   (what the settings page reads)
  *      → one `settings.section` contribution, rendered from the registry alone.
  *
- * Adding a UI project means adding a PACKAGE — a client half that declares
- * `inject: ['uiProjects']` and calls `ctx.uiProjects.register(manifest, definition)`.
- * This file ships no project of its own, and its settings registration never changes.
+ * Adding a UI project means either adding a PACKAGE — a client half that declares
+ * `inject: ['uiProjects']` and calls `ctx.uiProjects.register(manifest, definition)` — or adding an entry
+ * to `./skins/index.js`, which this file registers through that same call. The settings registration never
+ * changes.
  *
  * Delivered as a browser bundle: plain CommonJS against the shell's frozen module
  * table, no JSX, no TypeScript.

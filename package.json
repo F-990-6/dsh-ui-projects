@@ -1,6 +1,6 @@
 {
   "name": "dsh-ui-projects",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Extensible UI project system for the dsh Web GUI: a UI project registry, a dynamically rendered Settings > UI section, and one built-in skin (Glass) that ships OFF and is switched on like any other project. External UI project packages stay a first-class path — a package's project registers through the same service and appears on the same list, beside the built-in.",
   "type": "module",
   "main": "lib/index.js",

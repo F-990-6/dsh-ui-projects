@@ -5,11 +5,12 @@ it. It is the framework: the registry, the runtime, the settings page, the persi
 contract and the maintenance tooling. Projects — skins and enhancements — are separate packages, and
 `dsh-ui-project-skeleton` is the smallest complete example of one.
 
-> **This package ships no UI project.** Step 8c moved the last one — Liquid Glass, now
-> `@fn-x/dsh-plugin-liquid-glass` — into a package of its own, and deleted the built-in
-> registration that used to install it. What remains here is the system: no `src/**` code names a
-> project, and both halves are exercised by a fixture (`scripts/test-skin.mjs`) and by mounting a real
-> package's real bundle (`scripts/load-check.mjs`).
+> **This package ships one UI project of its own: the `glass` built-in.** It is a project like any other —
+> registered through `ctx.uiProjects.register`, off until a reader turns it on — and it does not close the
+> package path: `@fn-x/dsh-plugin-liquid-glass` keeps its own id, so the two coexist and the one-skin
+> policy keeps them exclusive. What the framework still does not do is name a project in `src/**` outside
+> `src/client/skins/**`, and both halves are exercised by a fixture (`scripts/test-skin.mjs`) and by
+> mounting a real package's real bundle (`scripts/load-check.mjs`).
 
 Two properties define the design:
 

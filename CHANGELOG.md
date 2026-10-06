@@ -25,7 +25,70 @@ Verification vocabulary used below:
 
 ---
 
-## Round 56i — the snapshot index comes under version control, and the listing learns to skip dot-directories
+## Round 57 — the built-in round: the framework ships Glass again, through the service this time
+
+**Status: done. `node scripts/verify.mjs` 920 / 0 (was 919 / 0), `node scripts/load-check.mjs` 93 / 0,
+`node scripts/host-check.mjs` exits 0 with no failing assertion, and `node scripts/check-builtin.test.mjs` —
+NEW — 32 / 0 with `DSH_SKIN_PACKAGE` pointed at the skin package. `npm run build` green; `lib/boot-css.js`
+is generated (13097 bytes) and the anti-overwrite guard is back and PROVED by planting a file that trips it.
+A real restart confirmed the first frame already carries the skin. That run also showed a dark-then-light
+flash, which is recorded in `docs/known-issues.md` with the measurement that it belongs to the shell's theme
+bootstrap and not to this package.**
+
+### What arrived, and the one decision that made it small
+
+Liquid Glass comes back as a built-in — but as `glass`, NOT `liquid-glass`, and that single difference
+removed the whole problem this round was expected to spend itself on. Two ids mean the published package and
+the built-in never collide: the service's "already registered by package X" refusal cannot fire, nothing has
+to yield, retire or take anything over, and `service.js` needed no new branch at all. A reader with both
+installed sees two cards; `registry.conflictIds` keys on the project's TYPE, so the one-skin policy already
+keeps them exclusive. The cost is stated where a reader meets it: `liquid-glass` in an existing record and
+`glass` are different ids, so the built-in arrives OFF and is switched on once by hand.
+
+- **`src/client/skins/glass/`** — the manifest (hand-written: a built-in has no package of its own), the
+  two stylesheets, the ported `skin.js`, and the runtime overlay. `scripts/build.mjs` lists all six modules.
+- **The overlay moved into `apply` / `cleanup`.** The package installs its overlay when its PLUGIN loads,
+  which for that package is the same moment as "the reader has this on". The framework's client half is
+  loaded for every reader always, so installing it there put an inert sheet in the page of somebody who
+  never turns Glass on — and made three assertions about stylesheet ownership read two where they expected
+  one. With the overlay in `apply`, those three went green and no reader carries a sheet they did not ask
+  for.
+- **The first paint**, which is the half that makes a restart show the skin rather than grow into it:
+  `src/host/skins/glass/boot.css` (derived from the package's, marker substituted), generated into
+  `lib/boot-css.js` by the build, and pushed by a two-line `webserver/index-inject` subscription in
+  `src/host/index.js`. The push is unconditional because `bootRows` owns the judgement and every rule in the
+  payload is marker-gated.
+
+### What the round found — three findings worth more than the feature
+
+1. **Two assertions were passing VACUOUSLY.** The plain-object probe context in `scripts/verify.mjs` records
+   provided services in a Map and never exposes them as `ctx.<name>`, so `ctx.uiProjects.register` reached
+   the service with no caller and was refused — correctly — and the registry read zero for the WRONG reason.
+   One of those two assertions carried the note "this is the assertion that would have caught the framework
+   quietly keeping a built-in project". Fixing it faithfully was tried and failed instructively: setting the
+   property by hand hands over the RAW service, bypassing Cordis's tracker, and the service refuses exactly
+   as designed. The knowledge is now a comment beside the stub, and the assertions state what that
+   composition can and cannot show.
+2. **`builtIn: true` was dead data.** `registry.normalize` builds a project record from a fixed list, so a
+   manifest flag that is not threaded through `service.js`'s ownership descriptor reaches nothing. The new
+   test read `undefined` for both `project.builtIn` and `source.builtIn` until it was threaded.
+3. **The equivalence check caught a corruption I had introduced**, on its first run: two copied files had
+   been mangled by a PowerShell round trip and were already in history. They were rebuilt from clean blobs
+   rather than repaired (a lost byte is not reversible), and the divergence from the package is now measured
+   — `git diff --no-index -U0` reports six hunks for `skin.js`, which is the five edits, and no others.
+   See `docs/known-issues.md` section 2.
+
+### Four assertions and one harness, all of the same family
+
+The round began by predicting three assertions would go red. It ended having rewritten FOUR — the last one
+found by scanning every suite for the family (`ids().length`, `presenceRows.length`, "registers none",
+"contributing none") rather than by waiting for the next red one: `verify.mjs` ×3 and `load-check.mjs:238`,
+which expected one presence row and now expects two, the package's and the built-in's. Seven further hits
+were read and judged NOT the same claim: they are fresh-registry unit assertions with explicit ids.
+
+---
+
+
 
 **Status: done — two commits by the agent, one by the user, red-then-green end to end, and no self-injury to
 disclose. Offline at the end, all exit 0: `suite` 1134 / 0 (1131 → 1134), `conformance` 130 / 0, `load` 91 / 0,

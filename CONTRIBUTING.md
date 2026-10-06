@@ -44,8 +44,9 @@ Two consequences worth carrying into new code:
 | `scripts/` | builds, suites and tools. `bundle-client.mjs` and `fake-dom.mjs` are shared with sibling UI project packages |
 | `docs/` | `uninstall.md` (the twelve things a removal consists of, which driver holds each one) and `update-and-rollback.md` (the snapshot → update → rollback workflow, its on-disk layout, and what each mode refuses to do). Both end in manual acceptance steps, because the host half can only be verified by a real run |
 
-**This package ships no UI project, and a test that names one is a test that names a package it does not
-own.** The framework owns the registry, the runtime, the settings page, the persistence and the
+**A test that names a project must name one this repository is entitled to name** — the fixture
+(`scripts/test-skin.mjs`, id `test-skin`) or the built-in this package ships (`glass`), never a package's
+own project. The framework owns the registry, the runtime, the settings page, the persistence and the
 first-paint CONTRACT (`src/host/service.js`); a look or an enhancement owns its stylesheet, its
 first-paint rows and its markers, and lives in its own repository —
 `@fn-x/dsh-plugin-liquid-glass` and `dsh-ui-project-skeleton` are the two that exist. Three
