@@ -2,9 +2,19 @@
  * Keep the framework's built-in copy of Glass identical to the package it came from — or say how it isn't.
  *
  * USAGE
- *   node scripts/sync-builtin.mjs                     # --check: report, change nothing, exit 1 on a diff
- *   node scripts/sync-builtin.mjs --write             # copy the sheets over, then re-check
+ *   node scripts/sync-builtin.mjs                     # --check: report, change nothing
+ *   node scripts/sync-builtin.mjs --write             # write the rows that may be written, then re-check
  *   node scripts/sync-builtin.mjs --package <dir>     # or set DSH_SKIN_PACKAGE
+ *
+ * EXIT CODES, three of them, because three different things can have happened:
+ *   0  in sync — nothing to write, or a write that left nothing to report
+ *   1  a divergence is still there, and this run did NOT write it (check mode, or a row the writer
+ *      must not touch, or a `sheets` row whose divergence is in the module around the sheets)
+ *   2  a write was REFUSED — the mojibake guard, which aborts the whole run before the first byte
+ *
+ * The distinction is the point of the third code: `--write && next-step` must not proceed after a run
+ * that wrote nothing, and the previous version could not tell that apart from success. It exited 1 after a
+ * SUCCESSFUL write, because the failure count came from the check phase and was never recomputed.
  *
  * WHY A TOOL AND NOT A BUILD STEP. The copy is edited by hand, and a build that reached into another
  * repository would stop this package from building on its own. So the comparison runs on demand, the
@@ -37,13 +47,6 @@ import {
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
-let failures = 0
-const ok = (/** @type {string} */ label) => process.stdout.write(`  ok   ${label}\n`)
-const fail = (/** @type {string} */ label, /** @type {string} */ detail) => {
-  failures += 1
-  process.stdout.write(`  FAIL ${label}\n         ${detail}\n`)
-}
-
 /** Where the package is: `--package`, then the environment, then nothing. */
 function findSkinPackage() {
   const index = process.argv.indexOf('--package')
@@ -51,6 +54,103 @@ function findSkinPackage() {
   const named = fromArgv ?? process.env[SKIN_PACKAGE_ENV]
   if (named === undefined || named === '') return undefined
   return existsSync(named) ? resolve(named) : undefined
+}
+
+/**
+ * One whole pass: the two trees, then every mapped file.
+ *
+ * A FUNCTION RATHER THAN A STRAIGHT LINE, because a write has to be followed by another pass: the exit
+ * code has to describe the state the run LEFT BEHIND, not the state it found. Everything it needs comes
+ * from the arguments, so the second pass is the same pass.
+ * @param {string} skinPackage
+ * @returns {{ failures: number, inSync: number, writable: { label: string, mode: string, ours: string, theirs: string }[], total: number, mangled: { label: string, ours: string }[] }}
+ */
+function inspect(skinPackage) {
+  let failures = 0
+  const ok = (/** @type {string} */ label) => process.stdout.write(`  ok   ${label}\n`)
+  const fail = (/** @type {string} */ label, /** @type {string} */ detail) => {
+    failures += 1
+    process.stdout.write(`  FAIL ${label}\n         ${detail}\n`)
+  }
+  const roots = { framework: packageRoot, package: skinPackage }
+
+  for (const [which, directory, expected] of BUILT_IN_TREES) {
+    const full = join(roots[which], directory)
+    if (!existsSync(full)) {
+      fail(`${directory} exists in the ${which}`, 'missing directory')
+      continue
+    }
+    const found = readdirSync(full).sort().join(',')
+    if (found === expected) ok(`${directory} holds exactly its expected files in the ${which}`)
+    else fail(`${directory} holds exactly its expected files in the ${which}`, `expected ${expected}, got ${found}`)
+  }
+
+  /** @type {{ label: string, mode: string, ours: string, theirs: string, outcome: string }[]} */
+  const rows = []
+  /** Files the mojibake guard has to look at before any write: every row the writer may touch. */
+  const mangled = []
+  for (const [label, inFramework, inPackage, mode] of BUILT_IN_MAP) {
+    const ours = join(packageRoot, inFramework)
+    const theirs = join(skinPackage, inPackage)
+    if (!existsSync(ours) || !existsSync(theirs)) {
+      fail(
+        `${label} is where the map says it is`,
+        `framework ${existsSync(ours) ? 'ok' : 'missing'}, package ${existsSync(theirs) ? 'ok' : 'missing'}`,
+      )
+      continue
+    }
+    const ourText = readFileSync(ours, 'utf8')
+    const theirText = readFileSync(theirs, 'utf8')
+
+    const wreckage = mojibakeCount(ourText)
+    if (wreckage === 0) ok(`${label} carries no mojibake`)
+    else {
+      fail(`${label} carries no mojibake`, `${wreckage} character(s) of wreckage in the framework's copy`)
+      if (mode !== 'none') mangled.push({ label, ours })
+    }
+
+    if (mode === 'raw' || mode === 'marker') {
+      const same = ourText === (mode === 'raw' ? theirText : normalizeMarker(theirText))
+      rows.push({ label, mode, ours, theirs, outcome: same ? 'in sync' : 'differs' })
+      if (same) ok(`${label} is byte-identical to the package's${mode === 'marker' ? ', once the marker is normalized' : ''}`)
+      else fail(`${label} is byte-identical to the package's`, 'the two files differ')
+      continue
+    }
+    if (mode === 'sheets') {
+      const oursSheets = overlaySheets(ourText)
+      const theirSheets = overlaySheets(theirText)
+      const names = Object.keys(theirSheets)
+      if (Object.keys(oursSheets).sort().join(',') !== names.slice().sort().join(',')) {
+        fail(`${label} carries the same sheets as the package's`, `${Object.keys(oursSheets).join(',')} vs ${names.join(',')}`)
+        rows.push({ label, mode, ours, theirs, outcome: 'sheet set differs' })
+        continue
+      }
+      const differing = names.filter((name) => oursSheets[name] !== normalizeMarker(theirSheets[name]))
+      rows.push({
+        label,
+        mode,
+        ours,
+        theirs,
+        outcome: differing.length === 0 ? 'in sync' : `${differing.length} sheet(s) differ`,
+      })
+      if (differing.length === 0) ok(`${label} carries the package's ${names.length} sheets, marker-normalized`)
+      else fail(`${label} carries the package's sheets`, `differing: ${differing.join(', ')}`)
+      continue
+    }
+    /* `none`: deliberately different. Existence, mojibake and the marker counts are all that can be said. */
+    const stale = (ourText.match(/data-ui-project-liquid-glass/g) ?? []).length
+    rows.push({ label, mode, ours, theirs, outcome: 'deliberately different' })
+    if (stale === 0) ok(`${label} is deliberately different, and carries no stale marker`)
+    else fail(`${label} is deliberately different, and carries no stale marker`, `${stale} package marker(s) in the framework's copy`)
+  }
+
+  return {
+    failures,
+    inSync: rows.filter((row) => row.outcome === 'in sync').length,
+    writable: rows.filter((row) => row.outcome !== 'in sync' && row.mode !== 'none'),
+    total: rows.length,
+    mangled,
+  }
 }
 
 const write = process.argv.includes('--write')
@@ -65,117 +165,62 @@ if (skinPackage === undefined) {
 }
 process.stdout.write(`== built-in sync ${write ? '(write)' : '(check)'} against ${skinPackage} ==\n`)
 
-/* ── 1 · the trees, file for file, before a single file is compared ──────────────────────────────── */
-const roots = { framework: packageRoot, package: skinPackage }
-for (const [which, directory, expected] of BUILT_IN_TREES) {
-  const full = join(roots[which], directory)
-  if (!existsSync(full)) {
-    fail(`${directory} exists in the ${which}`, 'missing directory')
-    continue
-  }
-  const found = readdirSync(full).sort().join(',')
-  if (found === expected) ok(`${directory} holds exactly its expected files in the ${which}`)
-  else fail(`${directory} holds exactly its expected files in the ${which}`, `expected ${expected}, got ${found}`)
+const first = inspect(skinPackage)
+
+if (!write) {
+  process.stdout.write(`\n  ${first.inSync} of ${first.total} mapped file(s) in sync`)
+  process.stdout.write(first.writable.length === 0 ? '; nothing to write\n' : `; ${first.writable.length} would be written by --write\n`)
+  process.stdout.write(`\n  ${first.failures} failure(s)\n`)
+  process.exit(first.failures === 0 ? 0 : 1)
 }
 
-/* ── 2 · every mapped file: what it should be, and what the writer would do with it ──────────────── */
-/** @type {{ label: string, mode: string, ours: string, theirs: string, outcome: string }[]} */
-const rows = []
-for (const [label, inFramework, inPackage, mode] of BUILT_IN_MAP) {
-  const ours = join(packageRoot, inFramework)
-  const theirs = join(skinPackage, inPackage)
-  if (!existsSync(ours) || !existsSync(theirs)) {
-    fail(`${label} is where the map says it is`, `framework ${existsSync(ours) ? 'ok' : 'missing'}, package ${existsSync(theirs) ? 'ok' : 'missing'}`)
-    continue
-  }
-  const ourText = readFileSync(ours, 'utf8')
-  const theirText = readFileSync(theirs, 'utf8')
+if (first.writable.length === 0) {
+  process.stdout.write(`\n  already in sync; nothing written\n  ${first.failures} failure(s)\n`)
+  process.exit(first.failures === 0 ? 0 : 1)
+}
 
-  const mangled = mojibakeCount(ourText)
-  if (mangled === 0) ok(`${label} carries no mojibake`)
-  else fail(`${label} carries no mojibake`, `${mangled} character(s) of wreckage in the framework's copy`)
+/*
+ * THE GUARD COMES FIRST, over every file this run would touch, before the first byte is written: a partial
+ * write is worse than no write, and the whole point of counting is to refuse rather than repair.
+ */
+if (first.mangled.length > 0) {
+  process.stdout.write(
+    `\n  REFUSED  ${first.mangled.length} file(s) in the framework's copy carry mojibake; nothing was written:\n` +
+      first.mangled.map((row) => `           ${row.label}: ${mojibakeCount(readFileSync(row.ours, 'utf8'))} character(s)\n`).join(''),
+  )
+  process.stdout.write('\n  exit 2: a refused write is not the same as a divergence left alone.\n')
+  process.exit(2)
+}
 
-  if (mode === 'raw') {
-    const same = ourText === theirText
-    rows.push({ label, mode, ours, theirs, outcome: same ? 'in sync' : 'differs' })
-    if (same) ok(`${label} is byte-identical to the package's`)
-    else fail(`${label} is byte-identical to the package's`, 'the two files differ')
-    continue
-  }
-  if (mode === 'marker') {
-    const same = ourText === normalizeMarker(theirText)
-    rows.push({ label, mode, ours, theirs, outcome: same ? 'in sync' : 'differs' })
-    if (same) ok(`${label} is byte-identical once the marker is normalized`)
-    else fail(`${label} is byte-identical once the marker is normalized`, 'the two files differ')
-    continue
-  }
-  if (mode === 'sheets') {
-    const oursSheets = overlaySheets(ourText)
-    const theirSheets = overlaySheets(theirText)
-    const names = Object.keys(theirSheets)
-    const sameSet = Object.keys(oursSheets).sort().join(',') === names.sort().join(',')
-    if (!sameSet) {
-      fail(`${label} carries the same sheets as the package's`, `${Object.keys(oursSheets).join(',')} vs ${names.join(',')}`)
-      rows.push({ label, mode, ours, theirs, outcome: 'sheet set differs' })
+for (const row of first.writable) {
+  if (row.mode === 'raw') {
+    copyFileSync(row.theirs, row.ours)
+    process.stdout.write(`  wrote ${row.label} verbatim\n`)
+  } else if (row.mode === 'marker') {
+    writeFileSync(row.ours, normalizeMarker(readFileSync(row.theirs, 'utf8')), 'utf8')
+    process.stdout.write(`  wrote ${row.label}, marker substituted\n`)
+  } else {
+    /*
+     * `sheets` may only re-substitute in place: the surrounding module is this repository's, not the
+     * package's, and copying the package's file here would delete the rewritten head and tail.
+     */
+    const text = readFileSync(row.ours, 'utf8')
+    const fixed = text.split('data-ui-project-liquid-glass').join('data-ui-project-glass')
+    if (fixed === text) {
+      process.stdout.write(`  ${row.label}: nothing to substitute, and ${row.outcome} — left alone\n`)
       continue
     }
-    const differing = names.filter((name) => oursSheets[name] !== normalizeMarker(theirSheets[name]))
-    rows.push({ label, mode, ours, theirs, outcome: differing.length === 0 ? 'in sync' : `${differing.length} sheet(s) differ` })
-    if (differing.length === 0) ok(`${label} carries the package's ${names.length} sheets, marker-normalized`)
-    else fail(`${label} carries the package's sheets`, `differing: ${differing.join(', ')}`)
-    continue
+    writeFileSync(row.ours, fixed, 'utf8')
+    process.stdout.write(`  re-substituted the marker in ${row.label}\n`)
   }
-  /* `none`: deliberately different. Existence, mojibake and the marker counts are all that can be said. */
-  const stale = (ourText.match(/data-ui-project-liquid-glass/g) ?? []).length
-  rows.push({ label, mode, ours, theirs, outcome: 'deliberately different' })
-  if (stale === 0) ok(`${label} is deliberately different, and carries no stale marker`)
-  else fail(`${label} is deliberately different, and carries no stale marker`, `${stale} package marker(s) in the framework's copy`)
 }
 
-/* ── 3 · the writer ──────────────────────────────────────────────────────────────────────────────── */
-const writable = rows.filter((row) => row.outcome !== 'in sync' && row.mode !== 'none')
-if (!write) {
-  process.stdout.write(`\n  ${rows.filter((row) => row.outcome === 'in sync').length} of ${rows.length} mapped file(s) in sync`)
-  process.stdout.write(writable.length === 0 ? '; nothing to write\n' : `; ${writable.length} would be written by --write\n`)
-} else if (writable.length === 0) {
-  process.stdout.write('\n  already in sync; nothing written\n')
-} else {
-  /*
-   * THE GUARD COMES FIRST, over every file this run would touch, before the first byte is written: a
-   * partial write is worse than no write, and the whole point of counting is to refuse rather than repair.
-   */
-  const dirty = rows.filter((row) => row.mode !== 'none' && mojibakeCount(readFileSync(row.ours, 'utf8')) !== 0)
-  if (dirty.length > 0) {
-    process.stdout.write(
-      `\n  REFUSED  ${dirty.length} file(s) in the framework's copy carry mojibake; nothing was written:\n` +
-        dirty.map((row) => `             ${row.label}: ${mojibakeCount(readFileSync(row.ours, 'utf8'))} character(s)\n`).join(''),
-    )
-    process.exit(1)
-  }
-  for (const row of writable) {
-    if (row.mode === 'raw') {
-      copyFileSync(row.theirs, row.ours)
-      process.stdout.write(`  wrote ${row.label} verbatim\n`)
-    } else if (row.mode === 'marker') {
-      writeFileSync(row.ours, normalizeMarker(readFileSync(row.theirs, 'utf8')), 'utf8')
-      process.stdout.write(`  wrote ${row.label}, marker substituted\n`)
-    } else {
-      /*
-       * `sheets` may only re-substitute in place: the surrounding module is this repository's, not the
-       * package's, and copying the package's file here would delete the rewritten head and tail.
-       */
-      const text = readFileSync(row.ours, 'utf8')
-      const fixed = text.split('data-ui-project-liquid-glass').join('data-ui-project-glass')
-      if (fixed === text) {
-        process.stdout.write(`  ${row.label}: nothing to substitute, and ${row.outcome} — left alone\n`)
-        continue
-      }
-      writeFileSync(row.ours, fixed, 'utf8')
-      process.stdout.write(`  re-substituted the marker in ${row.label}\n`)
-    }
-  }
-  process.stdout.write('\n  written. Run `node scripts/sync-builtin.mjs` again to confirm, and `node scripts/build.mjs` to rebuild.\n')
-}
-
-process.stdout.write(`\n  ${failures} failure(s)\n`)
-process.exit(failures === 0 ? 0 : 1)
+/*
+ * AND THE EXIT CODE DESCRIBES WHAT IS LEFT, so the state is measured again rather than remembered. This is
+ * the fix for the version that exited 1 after a successful write: it read a counter from the check phase.
+ */
+process.stdout.write('\n  --- after the write ---\n')
+const second = inspect(skinPackage)
+process.stdout.write(`\n  ${second.inSync} of ${second.total} mapped file(s) in sync; ${second.failures} failure(s) left\n`)
+process.stdout.write('  run `node scripts/build.mjs` to rebuild.\n')
+process.exit(second.failures === 0 ? 0 : 1)

@@ -24,7 +24,7 @@
  *
  * Run: `node scripts/check-builtin.test.mjs [--cordis <path to @deepseek-ai/cordis>]`
  */
-import { BUILT_IN_MAP, BUILT_IN_TREES, SKIN_PACKAGE_ENV } from './builtin-map.mjs'
+import { BUILT_IN_MAP, BUILT_IN_TREES, SKIN_PACKAGE_ENV, normalizeMarker, overlaySheets } from './builtin-map.mjs'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -196,8 +196,8 @@ if (skinPackage === undefined || !existsSync(skinPackage)) {
       '             between the built-in copy and the package it came from would go unnoticed here.\n',
   )
 } else {
-  const normalize = (/** @type {string} */ text) =>
-    text.split('data-ui-project-liquid-glass').join('data-ui-project-glass')
+  /* The marker rule and the sheet reader live in the map, so neither is written twice. */
+  const normalize = (/** @type {string} */ text) => normalizeMarker(text)
   const same = (/** @type {string} */ ours, /** @type {string} */ theirs, /** @type {string} */ label) =>
     equal(ours === theirs, true, label)
 
@@ -246,21 +246,45 @@ if (skinPackage === undefined || !existsSync(skinPackage)) {
   }
 
   const read = (/** @type {string} */ file) => readFileSync(file, 'utf8')
-  for (const [label, fromPackage, inFramework, normalized] of [
-    ['tokens.css', 'src/client/projects/liquid-glass/tokens.css', 'src/client/skins/glass/tokens.css', false],
-    ['glass.css', 'src/client/projects/liquid-glass/glass.css', 'src/client/skins/glass/glass.css', false],
-    ['boot.css', 'src/host/boot.css', 'src/host/skins/glass/boot.css', true],
-  ]) {
+  /*
+   * THE COMPARISON IS DRIVEN BY THE MAP'S MODES, which is the whole point of having a map: this file and
+   * `scripts/sync-builtin.mjs` ask the same question of the same rows, and neither keeps a list of its own.
+   * The `none` rows are skipped here for the same reason the writer refuses them — being different is what
+   * they are for.
+   */
+  for (const [label, inFramework, fromPackage, mode] of BUILT_IN_MAP) {
+    if (mode === 'none') continue
     const ours = read(join(packageRoot, inFramework))
     const theirs = read(join(skinPackage, fromPackage))
-    same(ours, normalized ? normalize(theirs) : theirs, `${label} is byte-identical to the package's${normalized ? ', once the marker is normalized' : ''}`)
+    if (mode === 'sheets') {
+      const ourSheets = overlaySheets(ours)
+      const theirSheets = overlaySheets(theirs)
+      equal(
+        Object.keys(ourSheets).sort().join(','),
+        Object.keys(theirSheets).sort().join(','),
+        `${label} carries the same sheets as the package's`,
+      )
+      for (const name of Object.keys(theirSheets)) {
+        same(
+          ourSheets[name] ?? '',
+          normalizeMarker(theirSheets[name]),
+          `${name} is the package's CSS, once the marker is normalized`,
+        )
+      }
+      continue
+    }
+    same(
+      ours,
+      mode === 'raw' ? theirs : normalizeMarker(theirs),
+      `${label} is byte-identical to the package's${mode === 'marker' ? ', once the marker is normalized' : ''}`,
+    )
     /*
      * THE MARKER COUNTS ONLY MEAN SOMETHING WHERE THE MARKER IS SUBSTITUTED. `glass.css` and `tokens.css`
      * are copied verbatim, comments included, and both mention the package's marker inside explanations of
      * what the scoper does with it — counting occurrences there fails on prose, which is exactly what the
      * first version of this assertion did (4 occurrences, all of them in comments).
      */
-    if (normalized) {
+    if (mode === 'marker') {
       equal(
         (ours.match(/data-ui-project-liquid-glass/g) ?? []).length,
         0,
@@ -274,13 +298,7 @@ if (skinPackage === undefined || !existsSync(skinPackage)) {
   }
 
   /* The four overlay sheets, which are the only CSS that lives inside a `.js` file on either side. */
-  const sheetsIn = (/** @type {string} */ file) =>
-    Object.fromEntries(
-      [...readFileSync(file, 'utf8').matchAll(/const (OVERLAY_[A-Z]+) = `([\s\S]*?)`/g)].map((match) => [
-        match[1],
-        match[2],
-      ]),
-    )
+  const sheetsIn = (/** @type {string} */ file) => overlaySheets(readFileSync(file, 'utf8'))
   const theirSheets = sheetsIn(join(skinPackage, 'src/client/index.js'))
   const ourSheets = sheetsIn(join(packageRoot, 'src/client/skins/glass/overlay.js'))
   equal(
