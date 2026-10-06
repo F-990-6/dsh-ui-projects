@@ -209,8 +209,8 @@ body[data-ui-project-glass="on"]{
   --lg-glass-composer-light: rgb(255 255 255 / 3%);
   --lg-glass-composer-dark: rgb(28 28 30 / 6%);
 
-  --lg-glass-composer-text-shadow-light: 0 1px 0 rgb(255 255 255 / 100%);
-  --lg-glass-composer-text-shadow-dark: 0 1px 0 rgb(0 0 0 / 85%);
+  --lg-glass-composer-text-shadow-light: 0 1px 0 rgb(255 255 255 / 35%);
+  --lg-glass-composer-text-shadow-dark: 0 1px 0 rgb(0 0 0 / 40%);
 
   --lg-glass-panel-light: rgb(255 255 255 / 46%);
   --lg-glass-panel-dark: rgb(28 28 30 / 50%);
@@ -220,8 +220,8 @@ body[data-ui-project-glass="on"]{
   --lg-glass-panel-inner-strong-light: rgb(255 255 255 / 50%);
   --lg-glass-panel-inner-strong-dark: rgb(30 33 42 / 54%);
 
-  --lg-glass-panel-text-shadow-light: 0 1px 0 rgb(255 255 255 / 100%);
-  --lg-glass-panel-text-shadow-dark: 0 1px 0 rgb(0 0 0 / 85%);
+  --lg-glass-panel-text-shadow-light: 0 1px 0 rgb(255 255 255 / 35%);
+  --lg-glass-panel-text-shadow-dark: 0 1px 0 rgb(0 0 0 / 40%);
 
   --lg-glass-code-light: #EDEAE4;
   --lg-glass-code-dark: #202327;

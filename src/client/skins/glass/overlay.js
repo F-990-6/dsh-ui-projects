@@ -74,6 +74,8 @@ body[data-ui-project-glass="on"] [role='dialog'] {
   --dsw-alias-bg-layer-2: var(--lg-glass-panel-inner, rgb(255 255 255 / 46%));
   --dsw-alias-bg-layer-3: var(--lg-glass-panel-inner-strong, rgb(255 255 255 / 50%));
   --dsw-alias-bg-overlay: var(--lg-glass-panel-inner-strong, rgb(255 255 255 / 50%));
+  --dsw-alias-label-secondary: color-mix(in srgb, var(--dsw-alias-label-secondary) 76%, var(--dsw-alias-label-primary));
+  --dsw-alias-label-tertiary: color-mix(in srgb, var(--dsw-alias-label-tertiary) 68%, var(--dsw-alias-label-primary));
   backdrop-filter: blur(var(--lg-glass-blur-menu, 24px)) saturate(var(--lg-glass-saturate, 140%)) !important;
   -webkit-backdrop-filter: blur(var(--lg-glass-blur-menu, 24px)) saturate(var(--lg-glass-saturate, 140%)) !important;
   border-radius: var(--lg-glass-radius, 24px) !important;

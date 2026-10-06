@@ -165,9 +165,15 @@ body {
    * `text-shadow` rather than a fill because it must follow the GLYPHS: the card contains a
    * textarea, buttons and labels, all of which inherit it, and none of which this file can restyle
    * one by one without naming the shell's own markup.
+   *
+   * IT WAS 100%, AND 100% WAS THE BUG (2026-10-06). A fully opaque white line under near-black glyphs is
+   * as bright as the panel behind them, so it does not harden the text — it bleaches it, and a reader sees
+   * pale grey letterforms and asks for the ink to be made darker when the ink was #0f1115 all along. What
+   * this pair is for is the LAST few percent of contrast over a translucent fill, and that is what it now
+   * does: a whisper under the glyphs, in whichever direction the theme needs.
    */
-  --lg-glass-composer-text-shadow-light: 0 1px 0 rgb(255 255 255 / 100%);
-  --lg-glass-composer-text-shadow-dark: 0 1px 0 rgb(0 0 0 / 85%);
+  --lg-glass-composer-text-shadow-light: 0 1px 0 rgb(255 255 255 / 35%);
+  --lg-glass-composer-text-shadow-dark: 0 1px 0 rgb(0 0 0 / 40%);
 
   /*
    * THE PANEL TIER — THE SETTINGS MODAL AND THE ADD-PLUGINS DIALOG.
@@ -226,9 +232,13 @@ body {
   /*
    * The panels' halo, the same values as the composer's and a separate pair on purpose: a reader
    * types at 6% but reads at 6%, and the two are likely to want different compensation later.
+   *
+   * Cut from 100% and 85% with the composer's, for the reason recorded there: the halo was bleaching the
+   * ink rather than hardening it, and this is the tier the SETTINGS MODAL takes — the panel whose text a
+   * reader complained was too pale to read.
    */
-  --lg-glass-panel-text-shadow-light: 0 1px 0 rgb(255 255 255 / 100%);
-  --lg-glass-panel-text-shadow-dark: 0 1px 0 rgb(0 0 0 / 85%);
+  --lg-glass-panel-text-shadow-light: 0 1px 0 rgb(255 255 255 / 35%);
+  --lg-glass-panel-text-shadow-dark: 0 1px 0 rgb(0 0 0 / 40%);
 
   /*
    * THE CODE TIER — THE ONE PLACE THIS SKIN IS DELIBERATELY NOT TRANSLUCENT.
@@ -913,6 +923,19 @@ body :is([data-composer-card]) {
   background: var(--lg-glass-composer);
   /* The halo that pays for the thin fill. See the token's note above. */
   text-shadow: var(--lg-glass-composer-text-shadow);
+  /*
+   * THE TWO SECONDARY INKS, PUSHED TOWARD THIS THEME'S STRONGEST ONE — and written once, because the
+   * direction is carried by the reference rather than by the value. `--dsw-alias-label-primary` is near-black
+   * in the light theme and near-white in the dark one, so mixing toward it DARKENS the secondary and
+   * tertiary inks on a light page and LIGHTENS them on a dark one, which is the same correction in both.
+   *
+   * Why here rather than in the token block: the shell picked these greys against its own opaque surfaces.
+   * This card is 3% white over the page, and a subtitle that was designed for a solid background reads as
+   * washed out on air. The composer's own text is the reader's, so the scoped fix belongs to the scope that
+   * changed the surface, not to every label in the application.
+   */
+  --dsw-alias-label-secondary: color-mix(in srgb, var(--dsw-alias-label-secondary) 76%, var(--dsw-alias-label-primary));
+  --dsw-alias-label-tertiary: color-mix(in srgb, var(--dsw-alias-label-tertiary) 68%, var(--dsw-alias-label-primary));
   border-radius: var(--lg-glass-radius);
   /*
    * Three shadows, and the first is the SHIPPED ring rather than one of ours.
