@@ -1153,13 +1153,22 @@ await test('the test skin registers through the service, the way an external pac
   equal(project.source.version, '1.0.0', 'and that package’s version')
   equal(harness.registry.isEnabled('test-skin'), false, 'registered is not enabled')
   /*
-   * AND IT IS THE ONLY PROJECT IN THIS HARNESS. The framework ships none of its own: the fixture
-   * `boot()` mounts is the whole registry, so the count below is the honest form of a claim that
-   * used to be written as "and the framework still ships its own skin until 8c moves it". Stating
-   * it as a count rather than by naming the moved project is deliberate — this suite must not
-   * depend on which package happens to be installed beside it.
+   * AND THE FRAMEWORK'S OWN PROJECT IS THE ONLY OTHER ONE. This used to read "the fixture is the only
+   * project in the registry: this package registers none of its own", which was true while the skin lived
+   * in a package. It ships Glass now, so the honest form is the exact pair -- the fixture this harness
+   * mounts, and the built-in. Naming the built-in is not the brittleness the old note warned about: that
+   * warning was about depending on "whichever package happens to be installed beside it", while this is
+   * this package's own project, whose id the repository controls.
+   *
+   * The second assertion is what would catch a built-in that arrived ENABLED. A framework that turned its
+   * own skin on for every reader would be a different product, and one assertion is cheap insurance.
    */
-  equal(harness.registry.ids().length, 1, 'the fixture is the only project in the registry: this package registers none of its own')
+  equal(
+    harness.registry.ids().sort().join(','),
+    'glass,test-skin',
+    'the registry holds the fixture and the framework’s own built-in, and nothing else',
+  )
+  equal(harness.registry.isEnabled('glass'), false, 'the built-in arrives off; only the reader turns it on')
 
   // The fiber is real: unloading the package withdraws the project, and nothing else. Withdrawal is
   // asynchronous — it retires the project (releasing its stylesheets, its marker and the persisted
@@ -1761,6 +1770,15 @@ await test('the project modules register only once the settings slot is declared
      * The registration surface the client half now provides. Modelled rather than ignored because
      * a context without it takes the whole plugin down: `apply` calls `ctx.provide` before it does
      * anything else, so this stub is what keeps this probe faithful.
+     *
+     * IT IS DELIBERATELY NOT ALSO A PROPERTY, and that is exactly where this stub differs from Cordis.
+     * Cordis exposes a provided service as `ctx.<name>` through its tracker (`getTraceable`), and the
+     * tracker is what gives the service a `this.ctx` — the caller's fiber, and therefore the lifetime a
+     * registration is bound to. Setting the property here was tried on 2026-10-06 and made things
+     * worse rather than better: `Reflect.set(ctx, name, value)` hands over the RAW service, the tracker
+     * never runs, and `register` refuses — correctly — with "must be called as ctx.uiProjects.register".
+     * A plain object cannot carry a Cordis tracker, so the honest thing is to say so here and let the
+     * two assertions below state what this composition can and cannot show.
      */
     provide: (/** @type {string} */ name, /** @type {unknown} */ value) => {
       provided.set(name, value)
@@ -1802,17 +1820,16 @@ await test('the project modules register only once the settings slot is declared
     equal(diagnosis.hostPlane, 'absent', 'with no host announcement the host plane is reported as absent, not as a failure')
     equal(Array.isArray(diagnosis.projects), true, 'the diagnosis lists the projects it covers')
     /*
-     * NO PROJECT IS REGISTERED BY THE FRAMEWORK ITSELF, and this probe is where that became visible.
+     * ZERO HERE, AND IT IS THE STUB'S LIMIT RATHER THAN THE FRAMEWORK'S BEHAVIOUR (2026-10-06).
      *
-     * Until 8b this package registered its own skin straight into the registry
-     * (`installBuiltInProjects`) — the one registration that skipped the service, because a package
-     * cannot hand itself a manifest it does not have. Step 8c deleted that call for good, so what
-     * appears in a registry appears because a PACKAGE registered it: the fixture `boot()` mounts goes
-     * through `ctx.uiProjects.register`, and the test above this one asserts exactly that path. A
-     * custom context with no package in it therefore has an empty registry, which is the honest
-     * assertion rather than a gap — and the two below it are the same claim from both directions.
+     * This probe composes no UI project package, and it cannot observe the framework's OWN project
+     * either: `provide` above is a plain object method, so `ctx.uiProjects` carries no Cordis tracker,
+     * and the service refuses a registration that arrives with no caller. The framework's registration
+     * is pinned in the fixture test above, where a real context holds `glass` beside the fixture and the
+     * built-in is off. What THIS assertion adds is the other direction, and it is still worth having:
+     * a refused registration leaves nothing behind — not in the diagnosis, and not in the registry.
      */
-    equal(diagnosis.projects.length, 0, 'no project is service-registered until a package registers one')
+    equal(diagnosis.projects.length, 0, 'the service lists no project when every registration in the composition was refused')
     equal(registeredSection, undefined, 'and it does not register before the slot exists')
 
     injections[0]()
@@ -1820,17 +1837,19 @@ await test('the project modules register only once the settings slot is declared
     equal(registeredSection.id, 'ui', 'section id')
     equal(typeof registeredSection.label, 'function', 'localized label thunk')
     /*
-     * ZERO, and it used to be one. This is the assertion that would have caught the framework
-     * quietly keeping a built-in project: a composition with no UI project package in it must have
-     * an empty registry, because the framework has nothing of its own to put there. `registering a
-     * settings section` used to be the moment the shipped skin was (re-)installed — the ordering
-     * hazard `src/client/index.js` documents at length — so the count is read here, after that
-     * callback has run, rather than only at load.
+     * AND THE REGISTRY ITSELF IS EMPTY, for the same reason and with the same reading: this composition
+     * refuses the framework's own registration (see the note above), so the only honest expectation is
+     * that nothing was left half-registered. `register()` binds the caller's lifetime and rolls it back
+     * when the registry refuses, and this is the assertion that sees the rollback from the outside.
+     *
+     * The count is read AFTER the section callback has run, which is where it used to matter most:
+     * registering the settings section was once the moment the shipped skin was (re-)installed, the
+     * ordering hazard `src/client/index.js` documents at length.
      */
     equal(
       probe.registry.ids().length,
       0,
-      'a package-less composition has an empty registry: this package registers no project of its own',
+      'a registration that the service refused leaves no entry in the registry',
     )
 
     // The retired reminders section used to be a second registration here, with
@@ -6969,24 +6988,6 @@ await test('the plugin API version is declared once, and judged in one place', a
  * WHY SOURCE-LEVEL RATHER THAN BEHAVIOURAL: driving `loadUpdates` needs a fixture that feeds `payload.results`
  * through the store, and this suite has none — inventing one here would be a bigger change than the code it
  * tests. Stated plainly rather than dressed up.
- */
-/* ── Slimming: the "UI plugins" column is gone, and the clipboard moved out of it ───────────────── */
-
-/*
- * ONE SETTINGS COLUMN, NOT TWO (decision 2026-09-30). The plugins column showed every installed package —
- * framework, non-UI plugins and all — with a contract badge, a channel selector, an update dot, a
- * maintenance block, an author's sub-fold and a diagnostics block. It is being removed, and the few parts
- * a person actually needs move onto the "界面" card's own "more actions" menu.
- *
- * WHAT THIS TEST HOLDS is deliberately about the SEAM rather than about the removal:
- *   · the second slot contribution is gone from `src/client/index.js`;
- *   · `copyCommandText` now lives in its own module, imported by BOTH panels — a function that lives inside
- *     a deleted file takes the copy button with it;
- *   · the clipboard module is in `MODULE_ORDER`, before the two panels that import it (the list is a
- *     dependency order; a client module missing from it is bundled nowhere — measured three times here).
- *
- * RED TODAY: no `clipboard.js`, the plugins-section contribution is still there, and `MODULE_ORDER` has
- * never heard of the clipboard.
  */
 
 process.stdout.write(`\n${checks} assertions, ${failures} failing\n`)
