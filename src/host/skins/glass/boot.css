@@ -191,15 +191,17 @@ body[data-ui-project-glass="on"]{
   --lg-glass-bg-light: rgb(255 255 255 / 54%);
   --lg-glass-bg-dark: rgb(28 28 30 / 58%);
 
-  --lg-glass-border-light: rgb(255 255 255 / 14%);
-  --lg-glass-border-dark: rgb(255 255 255 / 10%);
+  --lg-glass-border-light: rgb(255 255 255 / 18%);
+  --lg-glass-border-dark: rgb(255 255 255 / 13%);
 
   --lg-glass-blur: 24px;
-  --lg-glass-saturate: 140%;
+  --lg-glass-saturate: 150%;
   --lg-glass-radius: 32px;
-  --lg-glass-shadow: 0 24px 60px rgb(0 0 0 / 6%);
 
-  --lg-glass-inner-highlight: inset 0 1px 0 rgb(255 255 255 / 14%), inset 0 -1px 0 rgb(0 0 0 / 4%);
+  --lg-glass-shadow: 0 2px 6px rgb(15 23 42 / 8%), 0 18px 44px rgb(15 23 42 / 13%);
+
+  --lg-glass-inner-highlight: inset 0 1px 0 rgb(255 255 255 / 18%), inset 0 -1px 0 rgb(0 0 0 / 7%),
+  inset 0 10px 18px -14px rgb(255 255 255 / 20%);
 
   --lg-glass-fill-light: rgb(255 255 255 / 80%);
   --lg-glass-fill-dark: rgb(40 44 54 / 84%);
@@ -265,6 +267,8 @@ body[data-ui-project-glass="on"][data-ds-dark-theme]{
   --lg-accent-alt-current: var(--lg-accent-alt-dark);
   --lg-glass-bg: var(--lg-glass-bg-dark);
   --lg-glass-border: var(--lg-glass-border-dark);
+
+  --lg-glass-shadow: 0 2px 6px rgb(0 0 0 / 30%), 0 20px 48px rgb(0 0 0 / 45%);
   --lg-glass-fill: var(--lg-glass-fill-dark);
   --lg-glass-composer: var(--lg-glass-composer-dark);
   --lg-glass-composer-text-shadow: var(--lg-glass-composer-text-shadow-dark);

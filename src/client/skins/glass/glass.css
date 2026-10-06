@@ -79,20 +79,42 @@ body {
   --lg-glass-bg-light: rgb(255 255 255 / 54%);
   --lg-glass-bg-dark: rgb(28 28 30 / 58%);
 
-  --lg-glass-border-light: rgb(255 255 255 / 14%);
-  --lg-glass-border-dark: rgb(255 255 255 / 10%);
+  /*
+   * THE EDGE IS LIT, AND THAT IS ALL IT IS. One hairline of light on the rim, a shade weaker in the dark
+   * theme because the surface behind it is already dark. It reads as an edge because of its CONTRAST with
+   * the fill, not because of its width: widening it is what makes a pane look drawn rather than lit.
+   */
+  --lg-glass-border-light: rgb(255 255 255 / 18%);
+  --lg-glass-border-dark: rgb(255 255 255 / 13%);
 
   --lg-glass-blur: 24px;
-  --lg-glass-saturate: 140%;
+  --lg-glass-saturate: 150%;
   --lg-glass-radius: 32px;
-  --lg-glass-shadow: 0 24px 60px rgb(0 0 0 / 6%);
   /*
-   * TWO INSETS, AND NEITHER IS A MIRROR. The top line is a 14% hairline — the light that lands on a
-   * rounded edge — and the bottom line is a 4% DARK line, which is what gives a pane the look of
-   * having thickness. iOS 27's material is matte: it catches light, it does not reflect an image.
-   * A single bright inset at 45% was the earlier reading of "glass", and it read as plastic.
+   * TWO SHADOWS, BECAUSE ONE CANNOT DO BOTH JOBS. The tight one (2px/6px) is the CONTACT shadow: it seats
+   * the pane on the surface and is what the eye reads as "this is in front". The wide one (18px/44px) is
+   * the AMBIENT shadow: it is the height. A single 24px/60px shadow at 6% — which is what this was — is
+   * neither: too diffuse to seat anything and too faint to lift it, so every pane sat in the same plane as
+   * the page and the material read as a tint rather than as a surface.
+   *
+   * The dark theme overrides this below, and it has to: a black shadow on a near-black page is invisible, so
+   * the same numbers would buy nothing there.
    */
-  --lg-glass-inner-highlight: inset 0 1px 0 rgb(255 255 255 / 14%), inset 0 -1px 0 rgb(0 0 0 / 4%);
+  --lg-glass-shadow: 0 2px 6px rgb(15 23 42 / 8%), 0 18px 44px rgb(15 23 42 / 13%);
+  /*
+   * THREE INSETS, AND NONE IS A MIRROR. The top line is an 18% hairline — the light that lands on a rounded
+   * edge — and the bottom line is a 7% DARK line, which is what gives a pane the look of having THICKNESS.
+   * iOS 27's material is matte: it catches light, it does not reflect an image. A single bright inset at 45%
+   * was the earlier reading of "glass", and it read as plastic.
+   *
+   * The third is the one this round added, and it is the difference between an edge and a body: a wide,
+   * faint inward light that falls off over the top third of the pane. It is deliberately the SOFTEST of the
+   * three (20% over 18px, with a -14px spread pulling it back to the rim) because a light that reaches the
+   * middle stops being curvature and becomes a gradient. The depth comes from the shadow pair above; this
+   * only says which way the light is coming from.
+   */
+  --lg-glass-inner-highlight: inset 0 1px 0 rgb(255 255 255 / 18%), inset 0 -1px 0 rgb(0 0 0 / 7%),
+    inset 0 10px 18px -14px rgb(255 255 255 / 20%);
 
   /*
    * TWO TIERS, NAMED FOR WHAT THEY ARE FOR — the correction the previous rounds needed.
@@ -328,6 +350,15 @@ body[data-ds-dark-theme] {
   --lg-accent-alt-current: var(--lg-accent-alt-dark);
   --lg-glass-bg: var(--lg-glass-bg-dark);
   --lg-glass-border: var(--lg-glass-border-dark);
+  /*
+   * THE DARK THEME NEEDS ITS OWN SHADOW, and this is the whole reason the token is single-valued otherwise.
+   * The light pair is a blue-grey shadow on a white page; on a near-black page the same shadow is invisible,
+   * and a pane with no shadow sits in the same plane as everything behind it. So the dark theme gets a
+   * deeper, tighter pair: the contact line at 30% so the edge still separates, the ambient one at 45% for
+   * height. Neither is a "darker mode" of the light values — a black shadow has no colour to lose, only
+   * contrast to gain.
+   */
+  --lg-glass-shadow: 0 2px 6px rgb(0 0 0 / 30%), 0 20px 48px rgb(0 0 0 / 45%);
   --lg-glass-fill: var(--lg-glass-fill-dark);
   --lg-glass-composer: var(--lg-glass-composer-dark);
   --lg-glass-composer-text-shadow: var(--lg-glass-composer-text-shadow-dark);
