@@ -24,13 +24,13 @@
  *
  * Run: `node scripts/check-builtin.test.mjs [--cordis <path to @deepseek-ai/cordis>]`
  */
+import { BUILT_IN_MAP, BUILT_IN_TREES, SKIN_PACKAGE_ENV } from './builtin-map.mjs'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const packageRoot = resolve(here, '..')
-
 let checks = 0
 let failures = 0
 const ok = (/** @type {string} */ label) => {
@@ -225,33 +225,23 @@ if (skinPackage === undefined || !existsSync(skinPackage)) {
    * file that has moved.
    */
   const fileNames = (/** @type {string} */ dir) => readdirSync(dir).sort().join(',')
-  equal(
-    fileNames(join(packageRoot, 'src', 'client', 'skins', 'glass')),
-    'glass.css,manifest.js,overlay.js,skin.js,tokens.css',
-    'the built-in tree holds exactly the files this check maps, and no others',
-  )
-  equal(
-    fileNames(join(skinPackage, 'src', 'client', 'projects', 'liquid-glass')),
-    'glass.css,skin.js,tokens.css',
-    'and the package tree holds exactly the sheets and the behaviour it maps to',
-  )
-  for (const [label, inFramework, fromPackage] of [
-    ['skin.js', 'src/client/skins/glass/skin.js', 'src/client/projects/liquid-glass/skin.js'],
-    ['tokens.css', 'src/client/skins/glass/tokens.css', 'src/client/projects/liquid-glass/tokens.css'],
-    ['glass.css', 'src/client/skins/glass/glass.css', 'src/client/projects/liquid-glass/glass.css'],
-    ['overlay.js', 'src/client/skins/glass/overlay.js', 'src/client/index.js'],
-    /*
-     * THE GENERATED MANIFEST SITS BESIDE THE ENTRY, NOT BESIDE THE MATERIAL, and this line was wrong the
-     * first time it was written: the check failed on `manifest.js is where the mapping says it is` and on
-     * the package tree's own file list, which is exactly what the file-list half of this check exists for.
-     * Corrected against the tree rather than against my memory of it.
-     */
-    ['manifest.js', 'src/client/skins/glass/manifest.js', 'src/client/manifest.generated.js'],
-    ['boot.css', 'src/host/skins/glass/boot.css', 'src/host/boot.css'],
-  ]) {
+  /*
+   * THE TREES AND THE FILE PAIRS COME FROM THE SHARED MAP, not from a list written again here.
+   * `scripts/builtin-map.mjs` is read by this file and by `scripts/sync-builtin.mjs`, which is the point:
+   * two lists that agree today are two lists that can disagree tomorrow, and the second one to be edited
+   * is always the one nobody reads.
+   */
+  for (const [which, directory, expected] of BUILT_IN_TREES) {
+    equal(
+      fileNames(join(which === 'framework' ? packageRoot : skinPackage, directory)),
+      expected,
+      `${which}: ${directory} holds exactly the files the shared map expects`,
+    )
+  }
+  for (const [label, inFramework, fromPackage] of BUILT_IN_MAP) {
     truthy(
       existsSync(join(packageRoot, inFramework)) && existsSync(join(skinPackage, fromPackage)),
-      `${label} is where the mapping says it is, on both sides`,
+      `${label} is where the shared map says it is, on both sides`,
     )
   }
 
