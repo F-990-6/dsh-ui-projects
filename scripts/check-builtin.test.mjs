@@ -232,15 +232,21 @@ if (skinPackage === undefined || !existsSync(skinPackage)) {
   )
   equal(
     fileNames(join(skinPackage, 'src', 'client', 'projects', 'liquid-glass')),
-    'glass.css,manifest.generated.js,skin.js,tokens.css',
-    'and so does the package tree it came from',
+    'glass.css,skin.js,tokens.css',
+    'and the package tree holds exactly the sheets and the behaviour it maps to',
   )
   for (const [label, inFramework, fromPackage] of [
     ['skin.js', 'src/client/skins/glass/skin.js', 'src/client/projects/liquid-glass/skin.js'],
     ['tokens.css', 'src/client/skins/glass/tokens.css', 'src/client/projects/liquid-glass/tokens.css'],
     ['glass.css', 'src/client/skins/glass/glass.css', 'src/client/projects/liquid-glass/glass.css'],
     ['overlay.js', 'src/client/skins/glass/overlay.js', 'src/client/index.js'],
-    ['manifest.js', 'src/client/skins/glass/manifest.js', 'src/client/projects/liquid-glass/manifest.generated.js'],
+    /*
+     * THE GENERATED MANIFEST SITS BESIDE THE ENTRY, NOT BESIDE THE MATERIAL, and this line was wrong the
+     * first time it was written: the check failed on `manifest.js is where the mapping says it is` and on
+     * the package tree's own file list, which is exactly what the file-list half of this check exists for.
+     * Corrected against the tree rather than against my memory of it.
+     */
+    ['manifest.js', 'src/client/skins/glass/manifest.js', 'src/client/manifest.generated.js'],
     ['boot.css', 'src/host/skins/glass/boot.css', 'src/host/boot.css'],
   ]) {
     truthy(
