@@ -196,8 +196,6 @@ if (skinPackage === undefined || !existsSync(skinPackage)) {
       '             between the built-in copy and the package it came from would go unnoticed here.\n',
   )
 } else {
-  /* The marker rule and the sheet reader live in the map, so neither is written twice. */
-  const normalize = (/** @type {string} */ text) => normalizeMarker(text)
   const same = (/** @type {string} */ ours, /** @type {string} */ theirs, /** @type {string} */ label) =>
     equal(ours === theirs, true, label)
 
@@ -297,18 +295,12 @@ if (skinPackage === undefined || !existsSync(skinPackage)) {
     }
   }
 
-  /* The four overlay sheets, which are the only CSS that lives inside a `.js` file on either side. */
-  const sheetsIn = (/** @type {string} */ file) => overlaySheets(readFileSync(file, 'utf8'))
-  const theirSheets = sheetsIn(join(skinPackage, 'src/client/index.js'))
-  const ourSheets = sheetsIn(join(packageRoot, 'src/client/skins/glass/overlay.js'))
-  equal(
-    Object.keys(ourSheets).sort().join(','),
-    Object.keys(theirSheets).sort().join(','),
-    'the overlay carries the same four sheets on both sides',
-  )
-  for (const name of Object.keys(theirSheets)) {
-    same(ourSheets[name] ?? '', normalize(theirSheets[name]), `${name} is the package's CSS, once the marker is normalized`)
-  }
+  /*
+   * The four overlay sheets are compared inside the loop above, under its `sheets` mode. This is where a
+   * SECOND copy of that comparison used to sit — left behind when the loop learned the mode — and it is
+   * gone for the reason the loop exists: a duplicate that agrees today is a duplicate that can disagree
+   * tomorrow, and the only sign it was there was the assertion count being five higher than the coverage.
+   */
 }
 
 /* ── the mirror: the host half's copy of the id against the client's manifest ────────────────────── */

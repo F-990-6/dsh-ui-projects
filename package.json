@@ -38,6 +38,7 @@
     "test:load": "node scripts/load-check.mjs",
     "test:conformance": "node scripts/check-installed.test.mjs",
     "test:builtin": "node scripts/check-builtin.test.mjs",
+    "sync:builtin": "node scripts/sync-builtin.mjs",
     "check:installed": "node scripts/check-installed.mjs"
   },
   "engines": {
