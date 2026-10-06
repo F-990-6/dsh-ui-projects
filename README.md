@@ -401,7 +401,7 @@ removes the `localStorage` copy after its first successful write — so a script
 would find nothing on exactly the loads that matter.
 
 A package's sheet is DERIVED from its own stylesheets rather than hand-written, and the tool that does it
-(`scripts/derive-boot-css.mjs` in `@fn-x/dsh-plugin-liquid-glass`, with `--package <dir>` to point
+(`scripts/derive-boot-css.mjs` in this repository, with `--package <dir>` to point
 it at another package), the predicate it shares with the package's build, and the check that the sheet is
 exactly what the CSS implies all live with the package. There is nothing here to derive: this package has
 no CSS. The worked example, including what a first frame can and cannot have, is in
@@ -526,8 +526,8 @@ dsh plugin --profile web add <path-to-package>   # declares the dependency and a
 ### The first paint
 
 A package's host half pushes its own stylesheet into the served `<head>`, so the first frame is already
-skinned. That sheet is derived from the package's own CSS by `scripts/derive-boot-css.mjs` in
-`@fn-x/dsh-plugin-liquid-glass` — `--package <dir>` points it at the package whose sheet is wanted —
+skinned. That sheet is derived from the owning stylesheets by `scripts/derive-boot-css.mjs`, which lives in
+this repository — and in any package that keeps its own copy; `--package <dir>` points it at the sheet wanted —
 and it consists of the body-level rules only, authored already-scoped (`body[data-ui-project-<id>="on"]…`)
 because the host has no scoper to run. The tool and the package's build share one predicate, which each
 package keeps in its own `scripts/boot-css-rules.mjs`, and that shared file is what keeps "boot.css says
@@ -603,10 +603,10 @@ There used to be a third artefact, `lib/boot-css.js` — the first-paint stylesh
 `src/host/boot.css` after a rule-by-rule proof that the sheet was exactly what the skin emitted, in both
 directions. It is gone in step 8c, and it went with the thing it described rather than being kept empty:
 a first-paint sheet is a subset of a PACKAGE's CSS, so the sheet, the tool that derives it
-(`scripts/derive-boot-css.mjs` in the skin package, since step 56h-5), the predicate that decides what is
+(`scripts/derive-boot-css.mjs` in this repository, since round 58), the predicate that decides what is
 body-level and the check that runs before the build writes anything all live with the package that owns the
 CSS. **This package derives nothing, because it has no CSS**, and the tool says so when it is pointed here:
-`node plugins/dsh-plugin-liquid-glass/scripts/derive-boot-css.mjs --package plugins/dsh-ui-projects --check`
+`node plugins/dsh-ui-projects/scripts/derive-boot-css.mjs --check`
 exits 1, naming the `scripts/boot-css-rules.mjs` it expected.
 
 What is worth keeping from that arrangement is the reason it was built the way it was, because it applies

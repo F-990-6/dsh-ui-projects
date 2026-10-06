@@ -283,7 +283,7 @@ export function apply(ctx) {
    *
    * `BUILT_IN_PROJECT_ID` IS A MIRROR, like `SUPPORTED_PLUGIN_API` and the channel list: the two halves are
    * separate bundles and cannot import one another, so `src/client/skins/glass/manifest.js` is the authority
-   * and `scripts/check-builtin.test.mjs` holds this copy equal to it. Without that, a rename reaching one
+   * and `scripts/check-builtin.test.mjs` holds this copy equal to it. Without that, an id change reaching one
    * side only would leave the host half announcing a project the client half never registers — and the
    * symptom would be a first frame that paints nothing, which looks like a caching problem.
    */

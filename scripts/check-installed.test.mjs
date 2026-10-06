@@ -752,7 +752,7 @@ equal(
 /** @type {Map<string, Array<{ code: string, evidence: { line: number, excerpt: string } }>>} */
 const findingsByBundle = new Map()
 for (const [name, relative, expected] of [
-  ['the framework', 'dsh-ui-projects', 2],
+  ['the framework', 'dsh-ui-projects', 10],
   ['the skin', 'dsh-plugin-liquid-glass', 0],
   ['the skeleton', 'dsh-ui-project-skeleton', 0],
 ]) {
@@ -776,19 +776,34 @@ for (const [name, relative, expected] of [
 }
 
 /*
- * THE COUNT IS NOT ENOUGH: the framework's two must be the two that were ACCEPTED, by code AND by the
- * declaration they came from. Two different findings with the same count would satisfy the loop above and
- * would leave the acceptance note describing a rule that no longer trips — the kind of green that hides a
- * change. When this goes red after an edit to `core.css`, read the excerpts before touching the baseline:
- * a value moved into a token is an improvement (update the note), a new literal is a new violation.
+ * THE COUNT IS NOT ENOUGH: the framework's findings must be the ones that were ACCEPTED, by code AND by the
+ * value they came from. Different findings with the same count would satisfy the loop above and would leave
+ * this list describing values that are no longer there — the kind of green that hides a change. When this
+ * goes red after an edit to a sheet, read the excerpts before touching the list: a value moved into a token
+ * is an improvement, a new literal is a new violation.
+ *
+ * TWO BECAME TEN IN THE BUILT-IN ROUND (2026-10-06), and they are ACCEPTED rather than pending. The eight
+ * new ones are the built-in skin's own literal colours, which the reader reviewed and accepted as they
+ * stand: the overlay's hairline and its inner fill, and the tool-call and edited-file grounds whose opacity
+ * was raised on purpose because a translucent one reads as no background at all. They are literals in a
+ * SHEET that ships with the framework, not in the framework's own components, and the alternative -- a tier
+ * for each -- is the deferred design question, not an oversight.
  */
 equal(
   (findingsByBundle.get('the framework') ?? []).map((finding) => `${finding.code} :: ${finding.evidence.excerpt}`),
   [
-    `${CONTRACT_CODES.HARD_CODED_COLOUR} :: border: 1px solid rgb(255 255 255 / 45%)`,
-    `${CONTRACT_CODES.HARD_CODED_COLOUR} :: background: rgb(255 255 255 / 32%)`,
+      `${CONTRACT_CODES.HARD_CODED_COLOUR} :: border: 1px solid rgb(255 255 255 / 45%)`,
+      `${CONTRACT_CODES.HARD_CODED_COLOUR} :: background: rgb(255 255 255 / 32%)`,
+      `${CONTRACT_CODES.HARD_CODED_COLOUR} :: background: rgb(203 199 190)`,
+      `${CONTRACT_CODES.HARD_CODED_COLOUR} :: background: rgb(26 29 34)`,
+      `${CONTRACT_CODES.HARD_CODED_COLOUR} :: background: rgb(246 244 239)`,
+      `${CONTRACT_CODES.HARD_CODED_COLOUR} :: background: rgb(26 29 34)`,
+      `${CONTRACT_CODES.HARD_CODED_COLOUR} :: background: rgb(203 199 190) !important`,
+      `${CONTRACT_CODES.HARD_CODED_COLOUR} :: background: rgb(26 29 34) !important`,
+      `${CONTRACT_CODES.HARD_CODED_COLOUR} :: background: rgb(246 244 239) !important`,
+      `${CONTRACT_CODES.HARD_CODED_COLOUR} :: background: rgb(26 29 34) !important`
   ],
-  'SNAPSHOT: and the framework’s two are EXACTLY the accepted ones — a different pair with the same count is a new finding, not a baseline',
+  'SNAPSHOT: and the framework’s ten are EXACTLY the accepted ones — a different set with the same count is a new finding, not a baseline',
 )
 
 /* ── the scan reaches the listing, through the real profile scanner ──────────

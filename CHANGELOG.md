@@ -25,7 +25,58 @@ Verification vocabulary used below:
 
 ---
 
-## Round 57 — the built-in round: the framework ships Glass again, through the service this time
+## Round 58 — the framework becomes the only source, and the derive check moves in
+
+**Status: done. `node scripts/build.mjs` green with two new checks running inside it, `node
+scripts/derive-boot-css.mjs --check` green (13 blocks, 14059 bytes), `verify.mjs` 920 / 0,
+`load-check.mjs` 93 / 0, `host-check.mjs` no failing assertion, `check-builtin.test.mjs` 28 / 0.
+`check-installed.test.mjs` is green again after two corrections recorded below.**
+
+### What changed, and what it means for everything after it
+
+The skin package is frozen and publishes nothing, so half of the built-in arrangement stopped being true at
+once: there was no second copy to compare against and no package to sync from. Two tools existed for that
+relationship and both are gone — `sync-builtin.mjs`, whose direction was package to framework and which
+would now overwrite the material with a frozen copy of itself, and `builtin-map.mjs`, which had no second
+side left to map. Nothing depended on them: the equivalence half of the built-in check was opt-in and
+reported UNCHECKED when the package path was absent.
+
+The guarantee they carried was the load-bearing one, and it moved in rather than lapsing: that the FIRST
+PAINT matches the stylesheets. `derive-boot-css.mjs` and `boot-css-rules.mjs` are now siblings of the
+build, four constants that named the package's layout point at this repository instead, the scoper import is
+one level rather than two, and `build.mjs` runs the tool with `--check`. An edit to a body-level token that
+never reaches `src/host/skins/glass/boot.css` now fails the build instead of quietly freezing the first
+frame — the failure that looks exactly like a caching problem. The build also holds the id: every
+`data-ui-project-<id>` the rules mention must be the one `src/host/index.js` inlines for.
+
+`check-builtin.test.mjs` loses the equivalence half — there is nothing left to compare against — and gains
+the framework's own consistency in its place, with comments stripped before markers are read, because the
+authored sheets mention the frozen package's marker inside explanations while the scoped ones are authored
+without any marker at all.
+
+### Two failures this round created, and both were mine
+
+**The host half's write-API scan.** `check-installed.test.mjs` reads every host module's SOURCE TEXT and
+refuses any write API, with an empty allowlist on purpose. It went red on `src/host/index.js` — because a
+COMMENT of mine used the word "rename" while explaining the id mirror, and the scanner's pattern list
+includes `\brename\b`. The fix is the prose, not the contract: the scanner is fail-closed by design and a
+false positive in a comment is the comment's problem. Worth knowing for the next editor: these words are
+API-shaped to that scan wherever they appear.
+
+**The contract snapshot.** The framework's bundle carried two accepted hardcoded-colour findings before the
+built-in round and carries TEN now. The eight new ones are the skin's own literals, which the reader
+accepted as they stand; they are now in the accepted list with the reason, so the acceptance is a line in
+the repository rather than a sentence in a conversation.
+
+### The process failure that let both sit
+
+Neither was noticed for several rounds because the six suites this work kept running did not include
+`check-installed.test.mjs`. The battery was named "the six" and was in fact five plus a subset. It is in the
+battery from here.
+
+---
+
+
 
 **Status: done. `node scripts/verify.mjs` 920 / 0 (was 919 / 0), `node scripts/load-check.mjs` 93 / 0,
 `node scripts/host-check.mjs` exits 0 with no failing assertion, and `node scripts/check-builtin.test.mjs` —
