@@ -1,0 +1,1267 @@
+/*
+ * Liquid Glass — design tokens and material.
+ *
+ * ## What this file may contain
+ *
+ * Appearance only. Every declaration here is one of: a custom property holding a colour or a
+ * length used for appearance, `background-color`, `border`, `border-radius`, `box-shadow`,
+ * `backdrop-filter`, or `color`. There is no `display`, no `width`/`height`, no `margin`, no
+ * `padding`, no `overflow`, no `position` on any element this plugin did not create, and no
+ * `z-index` outside the one frost layer described below.
+ *
+ * That line is not stylistic. An earlier version of this skin forced the shipped settings
+ * dialog's geometry from outside, using dsh's build-hashed CSS-module classes and 39
+ * `!important` declarations. It was compensating for a hosting bug it could not fix, and it
+ * broke on every frontend rebuild.
+ *
+ * ## Three kinds of selector, and nothing else
+ *
+ *   1. `body …` / `body[data-ds-dark-theme]` — scoped by the runtime to the project marker, so
+ *      they exist exactly while this project is on.
+ *   2. `:where([role='dialog'], …)` — WAI-ARIA. A published interface, not somebody's markup.
+ *   3. The plugin's own vocabulary: `--lg-*`, plus the runtime's own `data-ui-skin-column`
+ *      marker where a DOM hook is genuinely needed.
+ *
+ * No CSS-module hash appears anywhere. A hash is a build artefact: a frontend rebuild renames
+ * it, every rule referencing it stops matching, and nothing reports a problem.
+ *
+ * ## The suppressions, named
+ *
+ * Two rules here make a piece of the SHELL's own interface invisible: the shell's token statistics
+ * row with dsh-cost-meter's cost line (`body [data-composer-stats], body .cm-root`), and the
+ * composer's stats dock — the row under the input that carries the token counts and the context ring,
+ * selected through the slots the shell itself publishes
+ * (`body [data-slot='conversation.composer.bar'] div:has(> [data-slot='conversation.composer.dock'])`).
+ * Both are cross-package coupling — a skin reaching into DOM it does not own — so both are registered
+ * by name in `scripts/skin-exceptions.mjs`, and `scripts/verify.mjs` holds the two in step: this
+ * stylesheet may hide exactly what that list names, and nothing else.
+ *
+ * They hide with `visibility` rather than `display`, and that is a measurement rather than a
+ * preference: `display: none` shortens the composer container, which is anchored to the bottom of the
+ * viewport, so the input box itself moves down — see the note above the composer rules. `visibility`
+ * has no layout effect, so nothing the eye is reading moves; the price is a blank band.
+ *
+ * ## The one thing here that is not obvious
+ *
+ * `backdrop-filter` — the entire point of the skin — creates a **containing block for
+ * `position: fixed` descendants**, exactly like `transform` and `filter`. That is spec
+ * behaviour, not a bug, and it has a severe consequence for dsh: the settings dialog is
+ * `position: fixed; inset: 0` and renders *inside a layout column*.
+ *
+ * So frosting a column captures that column's dialog and confines it to the column. The
+ * reported symptom was the settings panel collapsing into a narrow strip on the left — the
+ * dialog sizing itself to the sidebar instead of the viewport. An earlier version worked
+ * around it by forcing the dialog's geometry with `!important`; the cause was never the
+ * dialog, it was this property.
+ *
+ * The escape is to frost the frame instead of the columns, and to reach the stacking context
+ * through `isolation` rather than through `backdrop-filter` on an ancestor of the dialog.
+ * Measured, not assumed: `tools/probe-backdrop-containing-block.html`, cases 6, 7 and 8.
+ */
+
+/* ── tokens ───────────────────────────────────────────────────────────────── */
+/*
+ * The paired list below is the project's published token vocabulary, spelled exactly as the
+ * specification gives it. Both members of each pair are always declared, so a consumer can
+ * reference either name whichever theme is active.
+ *
+ * Declared on `body` rather than `:root` deliberately: the runtime's project marker lives on
+ * the body element, so a `:root` rule would be rewritten to point there anyway. Saying it once,
+ * plainly, beats relying on that rewrite.
+ */
+body {
+  --lg-accent: #007aff;
+  --lg-accent-dark: #0a84ff;
+
+  --lg-bg-light: #f2f2f7;
+  --lg-bg-dark: #000000;
+
+  --lg-glass-bg-light: rgb(255 255 255 / 54%);
+  --lg-glass-bg-dark: rgb(28 28 30 / 58%);
+
+  --lg-glass-border-light: rgb(255 255 255 / 14%);
+  --lg-glass-border-dark: rgb(255 255 255 / 10%);
+
+  --lg-glass-blur: 24px;
+  --lg-glass-saturate: 140%;
+  --lg-glass-radius: 24px;
+  --lg-glass-shadow: 0 24px 60px rgb(0 0 0 / 6%);
+  /*
+   * TWO INSETS, AND NEITHER IS A MIRROR. The top line is a 14% hairline — the light that lands on a
+   * rounded edge — and the bottom line is a 4% DARK line, which is what gives a pane the look of
+   * having thickness. iOS 27's material is matte: it catches light, it does not reflect an image.
+   * A single bright inset at 45% was the earlier reading of "glass", and it read as plastic.
+   */
+  --lg-glass-inner-highlight: inset 0 1px 0 rgb(255 255 255 / 14%), inset 0 -1px 0 rgb(0 0 0 / 4%);
+
+  /*
+   * TWO TIERS, NAMED FOR WHAT THEY ARE FOR — the correction the previous rounds needed.
+   *
+   *   --lg-glass-fill-*  STRONG. Surfaces a reader works THROUGH: menus, listboxes, the add-source
+   *                      dropdown, the IDE's diff panes. Readability outranks translucency here,
+   *                      because losing a line of a list is losing the thing the reader came for.
+   *
+   *   --lg-glass-bg-*    NORMAL. Surfaces a reader looks AT while the application stays visible
+   *                      behind them: dialogs, the settings panel, the composer. Larger, and the
+   *                      content behind is the point — a dialog filled to menu density is a plate.
+   *
+   * A THIRD, SOFTER TIER IS NOT DECLARED YET, on purpose. The hover preview and the "code block"
+   * overlay have no stable hook this file can name (no role, no data attribute, and their classes
+   * are build hashes), so a `--lg-glass-fill-soft` would be a token with no consumer — a number
+   * that reads as a decision and is not one. When one of those two surfaces publishes a hook, the
+   * tier is three lines here and one assignment at that rule.
+   */
+  --lg-glass-fill-light: rgb(255 255 255 / 80%);
+  --lg-glass-fill-dark: rgb(40 44 54 / 84%);
+
+  /*
+   * THE COMPOSER'S OWN PAIR, AND WHY IT IS NOT THE MATERIAL ONE.
+   *
+   * The composer is the one surface a reader types INTO, and it is the only glass surface with
+   * nothing important behind it: the conversation scrolls UNDER it, so seeing that happen is the
+   * point of the material there. It therefore gets the thinnest fill of the three tiers.
+   *
+   * It gets its OWN pair rather than a lower `--lg-glass-bg-*` because the settings panel and the
+   * add-plugins dialog share that pair and are settled — lowering it to make the composer thinner
+   * would have thinned them too, which is the mistake this file has already made once in the other
+   * direction. A tier per surface, and one number to change when a reader says "more" or "less".
+   *
+   * 12% / 16% IS THE FLOOR, AND THE HALO BELOW CARRIES THE REST. Four rounds of "more transparent"
+   * went 54, 38, 30, 18, and a reader who has to ask four times is being stepped at rather than
+   * moved. At 12% the conversation is plainly visible through the card as it scrolls under it, which
+   * is the whole effect, and the type is held up by the halo rather than by the fill.
+   *
+   * THE RULE FOR THE NEXT ROUND IS WRITTEN HERE: if the text becomes hard to read at this opacity,
+   * RAISE THE HALO, NOT THE FILL. Going back up would undo the effect the reader asked for four
+   * times; hardening the glyphs is the part that was under-tuned, not the transparency.
+   */
+  --lg-glass-composer-light: rgb(255 255 255 / 6%);
+  --lg-glass-composer-dark: rgb(28 28 30 / 10%);
+
+  /*
+   * The halo the paragraph above refers to, a light/dark pair like every other token here. It is
+   * `text-shadow` rather than a fill because it must follow the GLYPHS: the card contains a
+   * textarea, buttons and labels, all of which inherit it, and none of which this file can restyle
+   * one by one without naming the shell's own markup.
+   */
+  --lg-glass-composer-text-shadow-light: 0 1px 0 rgb(255 255 255 / 100%);
+  --lg-glass-composer-text-shadow-dark: 0 1px 0 rgb(0 0 0 / 85%);
+
+  /*
+   * THE PANEL TIER — THE SETTINGS MODAL AND THE ADD-PLUGINS DIALOG.
+   *
+   * These two are LARGE READING SURFACES: headings, option rows, explanations, form fields and
+   * button groups. A thin fill is a different proposition here than it is on the composer, which is
+   * a small card a reader types INTO and glances at. The trade is therefore stated rather than
+   * hidden: the fill is set to the composer's own 6% / 10% because that is what was asked for, and
+   * the halo below is what pays for it.
+   *
+   * WHAT PAYS FOR IT: the shell's text in these panels is opaque, the backdrop behind them is
+   * blurred by this skin's own frost, and the halo restores the local contrast the fill gave up. The
+   * risk that remains is a BUSY backdrop — a panel opening over dense text — where small print can
+   * read a shade greyer than it does at the material fill. If that shows up in use, this pair is the
+   * one number to raise, and the composer is untouched by it.
+   *
+   * WHY A PAIR OF ITS OWN rather than a lower `--lg-glass-bg-*`: that token is shared with
+   * `.lg-glass` and the `--lg-fill` alias, so lowering it would have thinned surfaces nobody asked
+   * about. One tier per surface is the rule this file has settled on, and this is that rule applied.
+   */
+  --lg-glass-panel-light: rgb(255 255 255 / 46%);
+  --lg-glass-panel-dark: rgb(28 28 30 / 50%);
+
+  /*
+   * THE PANEL'S INNER LAYERS, AND WHY THEY ARE TOKENS RATHER THAN LITERALS.
+   *
+   * `--lg-glass-panel` fills the panel itself. These two carry the fills the panel's OWN children
+   * paint with, rebound at the panel rule so a row or a card inside the panel is the same material as
+   * the panel around it. They were written as literals there, and that made them the one part of this
+   * file the four "remove translucency" blocks could not reach: a custom property declared ON an
+   * element beats an inherited value for that element, so redefining the shipped tokens on `body`
+   * never arrived at them, and the panel stayed translucent for the reader who had asked it not to.
+   * As tokens they are reachable — the same rule the note above the composer rules states, and the
+   * same trap `runtime.js` records next to its `#marker`: the marker binds to `body` because a token
+   * declared on an element always wins for that element over an inherited value.
+   *
+   * THE TWO HALVES WERE THE SAME COLOUR, AND THAT WAS A DEFECT RATHER THAN A DECISION (2026-10-05).
+   *
+   * The rule these came from — the overlay's dialog rule, `src/client/index.js:95-98` — wrote the dark
+   * half as `rgb(255 255 255 / 46%)` and `rgb(255 255 255 / 50%)`: a copy of the LIGHT half, so the
+   * panel's inner layers would have been white in a dark theme. It was never visible, because the
+   * overlay declared the same four tokens as literals with higher specificity and won — the values here
+   * were dead code.
+   *
+   * They are now the overlay's OWN dark values, `rgb(30 33 42 / 50%)` and `rgb(30 33 42 / 54%)`, which
+   * is what the panel's inner layers have always actually rendered in dark mode. So this changes NO
+   * rendered value, and it stops being dead code at the same time — which is the point: the four
+   * "remove translucency" branches redefine `--lg-glass-panel-inner*`, and a branch can only reach a
+   * surface whose value it can actually redefine.
+   */
+  --lg-glass-panel-inner-light: rgb(255 255 255 / 46%);
+  --lg-glass-panel-inner-dark: rgb(30 33 42 / 50%);
+  --lg-glass-panel-inner-strong-light: rgb(255 255 255 / 50%);
+  --lg-glass-panel-inner-strong-dark: rgb(30 33 42 / 54%);
+
+  /*
+   * The panels' halo, the same values as the composer's and a separate pair on purpose: a reader
+   * types at 6% but reads at 6%, and the two are likely to want different compensation later.
+   */
+  --lg-glass-panel-text-shadow-light: 0 1px 0 rgb(255 255 255 / 100%);
+  --lg-glass-panel-text-shadow-dark: 0 1px 0 rgb(0 0 0 / 85%);
+
+  /*
+   * THE CODE TIER — THE ONE PLACE THIS SKIN IS DELIBERATELY NOT TRANSLUCENT.
+   *
+   * A diff is not a surface a reader looks THROUGH; it is text a reader reads, line by line, against
+   * a ground that must not move. Every other pair in this file is tuned so the application shows
+   * through, and that instinct is exactly wrong here: the first attempt gave the IDE panes the dense
+   * floating fill (80%), a reader reported the diff as still too transparent, and the honest reading
+   * of that report is that the requirement is different in kind, not in degree.
+   *
+   * So this pair is FULLY OPAQUE — no alpha at all — and the blur stays on as a softening pass.
+   *
+   * THE LAST FEW PERCENT WENT BECAUSE THEY WERE THE PROBLEM. At 94% a report still came back
+   * "too transparent", and the lesson is that a code surface has no useful translucent range: either
+   * the backdrop shows through and the reader is distracted by it, or it does not and the surface
+   * reads as a clean sheet. There is no interesting middle, so this pair does not pretend there is
+   * one. The blur remains, and it is what keeps the pane from looking like a pasted rectangle inside
+   * the glass around it.
+   */
+  --lg-glass-code-light: #EDEAE4;
+  --lg-glass-code-dark: #202327;
+
+  /*
+   * Four additions the published list does not cover. Two are new values and two are aliases,
+   * said plainly so nobody has to guess which is which:
+   *
+   *   - `--lg-glass-blur-mobile` is a NEW VALUE. The specification requires 12–16px on a phone
+   *     but gives no token for it.
+   *   - `--lg-glass-blur-menu` is a NEW VALUE. The specification requires floating surfaces to
+   *     read as more substantial than a page surface, which needs a stronger radius.
+   *   - `--lg-accent-alt` / `--lg-accent-alt-dark` are NEW VALUES, and they exist for one
+   *     reason: the ambient glow below. A single hue washed across a page reads as a tint,
+   *     not as light; a second hue to fall off toward is what makes it read as an ambient
+   *     field. The specification asks for system blue with a restrained violet, and indigo is
+   *     that violet — the same system-colour family as `--lg-accent`, paired light/dark the
+   *     same way, so nothing third-party enters the palette.
+   *   - `--lg-fill` and `--lg-highlight` are ALIASES, not new values: they let a rule read one
+   *     name per role while the paired tokens above remain the single source of truth.
+   */
+  --lg-glass-blur-mobile: 16px;
+  --lg-glass-blur-menu: 24px;
+  /*
+   * The two degradation tiers the runtime selects between by publishing `data-ui-perf`, and the
+   * reason the specification's "12–16px on a low-end device" has values to name at all.
+   *
+   * The FULL tier is `--lg-glass-blur` (20px) and needs no token of its own: it is what the rules
+   * already use when no attribute is present.
+   */
+  --lg-glass-blur-medium: 16px;
+  --lg-glass-blur-low: 12px;
+  --lg-accent-alt: #5856d6;
+  --lg-accent-alt-dark: #5e5ce6;
+}
+
+/* ── theme ────────────────────────────────────────────────────────────────── */
+/*
+ * Collapse each pair to the single name the rules consume. The theme signal is the shipped one
+ * — `body[data-ds-dark-theme]`, written by the shell — so this never fights the application's
+ * own appearance setting, and both signals live on the element the runtime already marks.
+ */
+body {
+  --lg-bg: var(--lg-bg-light);
+  --lg-accent-current: var(--lg-accent);
+  --lg-accent-alt-current: var(--lg-accent-alt);
+  --lg-glass-bg: var(--lg-glass-bg-light);
+  --lg-glass-border: var(--lg-glass-border-light);
+  --lg-glass-fill: var(--lg-glass-fill-light);
+  --lg-glass-composer: var(--lg-glass-composer-light);
+  --lg-glass-composer-text-shadow: var(--lg-glass-composer-text-shadow-light);
+  --lg-glass-panel: var(--lg-glass-panel-light);
+  --lg-glass-panel-text-shadow: var(--lg-glass-panel-text-shadow-light);
+  --lg-glass-panel-inner: var(--lg-glass-panel-inner-light);
+  --lg-glass-panel-inner-strong: var(--lg-glass-panel-inner-strong-light);
+  --lg-glass-code: var(--lg-glass-code-light);
+  --lg-fill: var(--lg-glass-bg);
+  --lg-highlight: var(--lg-glass-inner-highlight);
+
+  /*
+   * The ambient field.
+   *
+   * THE ONE THING THAT DECIDES WHETHER THE GLASS READS AS GLASS. `backdrop-filter: blur()` over a
+   * smooth wash returns a smooth wash: there is no detail to soften, so a panel over it looks like a
+   * tinted plate no matter how the blur is tuned. This file's earlier field was three 12–22% glows
+   * spread over the viewport — flat enough that turning the skin on and off changed almost nothing.
+   *
+   * FOUR CLOUD LAYERS, and each one falls off in TWO stages rather than one, so no two regions of the
+   * page share a value. Through the frost those read as soft colour with visible structure — the
+   * "weak outline of what is behind" the material is supposed to have.
+   *
+   * AND A GRAIN, WHICH IS THE ONE LAYER THAT DOES NOT NEED ANYTHING BEHIND IT. Cloud layers are
+   * still large and smooth; a 24px blur can flatten a whole one into a single value. A 3px lattice at
+   * 3% is high-frequency detail by construction, and blurring high-frequency detail produces the
+   * uniform fine tooth that frosted glass has and a flat fill never does. It is the closest thing to
+   * IOS FROST that CSS alone can make, and it is deliberately NOT a data-URI image: an inline SVG
+   * would put a `<` into this stylesheet, and the framework asserts the sheet it inlines carries
+   * none. A tiled radial gradient has no such character and costs one layer.
+   *
+   * It is still a background for a working application, not a hero image: no picture, no visible
+   * speckle, nothing that draws the eye to itself. Gradient and colour only, so nothing here has a
+   * layout consequence, and because it is declared inside a stylesheet the runtime owns it
+   * disappears completely when the project is switched off.
+   *
+   * `fixed` keeps the field anchored to the viewport rather than to the page box, so the light stays
+   * still if the document ever scrolls under the application frame; the grain rides with it, which is
+   * what keeps the tooth from sliding under a panel as the page moves.
+   */
+  background-color: var(--lg-bg);
+  background-image:
+    radial-gradient(120% 80% at 12% -10%, rgb(0 122 255 / 22%) 0%, transparent 60%),
+    radial-gradient(110% 75% at 105% 8%, rgb(88 86 214 / 18%) 0%, transparent 58%),
+    radial-gradient(140% 90% at 65% 115%, rgb(0 122 255 / 12%) 0%, transparent 62%);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+
+body[data-ds-dark-theme] {
+  --lg-bg: var(--lg-bg-dark);
+  --lg-accent-current: var(--lg-accent-dark);
+  --lg-accent-alt-current: var(--lg-accent-alt-dark);
+  --lg-glass-bg: var(--lg-glass-bg-dark);
+  --lg-glass-border: var(--lg-glass-border-dark);
+  --lg-glass-fill: var(--lg-glass-fill-dark);
+  --lg-glass-composer: var(--lg-glass-composer-dark);
+  --lg-glass-composer-text-shadow: var(--lg-glass-composer-text-shadow-dark);
+  --lg-glass-panel: var(--lg-glass-panel-dark);
+  --lg-glass-panel-text-shadow: var(--lg-glass-panel-text-shadow-dark);
+  --lg-glass-panel-inner: var(--lg-glass-panel-inner-dark);
+  --lg-glass-panel-inner-strong: var(--lg-glass-panel-inner-strong-dark);
+  --lg-glass-code: var(--lg-glass-code-dark);
+
+  /*
+   * The same field at night, with the same job: enough contrast and enough edges to survive the
+   * blur. Black swallows a low-alpha glow whole, so the stops are stronger here than in light mode,
+   * and the diagonal pass is violet rather than blue to keep the two themes in one family. The grain
+   * is LIGHT here — a dark lattice on black is invisible — and slightly finer, because a dark page
+   * shows a bright dot more readily than a light one shows a dark dot.
+   */
+  background-image:
+    radial-gradient(90% 70% at 6% -8%, rgb(10 132 255 / 52%) 0%, rgb(10 132 255 / 18%) 34%, transparent 66%),
+    radial-gradient(70% 62% at 104% 2%, rgb(94 92 230 / 48%) 0%, rgb(94 92 230 / 16%) 36%, transparent 70%),
+    radial-gradient(130% 95% at 58% 116%, rgb(10 132 255 / 36%) 0%, rgb(10 132 255 / 12%) 40%, transparent 66%),
+    linear-gradient(155deg, rgb(255 255 255 / 0%) 42%, rgb(94 92 230 / 16%) 100%),
+    radial-gradient(circle at 1px 1px, rgb(255 255 255 / 4%) 1px, transparent 0);
+  background-size: auto, auto, auto, auto, 3px 3px;
+  background-repeat: no-repeat, no-repeat, no-repeat, no-repeat, repeat;
+}
+
+/* ── the standard material ────────────────────────────────────────────────── */
+
+/*
+ * Written out rather than aliased so the core reads as one block, exactly as the specification
+ * states it: translucent fill, real blur, hairline edge, large radius, soft shadow, inner
+ * highlight. Every one of those is an appearance property.
+ */
+.lg-glass {
+  background: var(--lg-glass-bg);
+  backdrop-filter: blur(var(--lg-glass-blur)) saturate(var(--lg-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-glass-blur)) saturate(var(--lg-glass-saturate));
+  border: 1px solid var(--lg-glass-border);
+  border-radius: var(--lg-glass-radius);
+  box-shadow: var(--lg-glass-shadow), var(--lg-glass-inner-highlight);
+}
+
+/* The brand accent, used sparingly: headings only, never body text. */
+.lg-accent-text {
+  background: linear-gradient(96deg, var(--lg-accent-current) 0%, var(--lg-accent-dark) 100%);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+/* ── the frost layer ──────────────────────────────────────────────────────── */
+/*
+ * ONE frost for the whole application frame, written on the frame's `::before`.
+ *
+ * ## Why not on the columns
+ *
+ * dsh's sidebar and centre columns are `position: static` — verified in the shipped stylesheet:
+ * `.pI_x6G_sidebarCol` and `.pI_x6G_centerCol` declare no `position` at all, while the frame
+ * declares `position: relative`. A `::before` with `position: absolute` inside a static element
+ * therefore resolves against the nearest positioned ancestor, which is the frame.
+ *
+ * Measured in the probe, case 7: a frost written on a static 169px column produced a **351px**
+ * box — the frame's width, not the column's. Writing it on the columns would not frost the
+ * columns; it would produce one frame-sized frost layer *per column*, three stacked
+ * backdrop-filters over the same area, which is both wasteful and contrary to the rule against
+ * nesting blur.
+ *
+ * ## Why `:has()`
+ *
+ * The frame must be selected without naming a build-hashed class and without asking the runtime
+ * for a new marker. The frame is the only element whose *direct children* carry the marker the
+ * runtime already stamps, so `:has(> [data-ui-skin-column])` identifies it exactly.
+ *
+ * ## Why `isolation`, and why it is safe here
+ *
+ * `z-index: -1` needs a stacking context to land in. Without one, the layer escapes to an outer
+ * stacking context and can end up behind the page background. `isolation: isolate` creates that
+ * stacking context — and, unlike `backdrop-filter`, `transform`, `filter`, `perspective` or
+ * `contain`, it does **not** create a containing block for `position: fixed` descendants. That
+ * is precisely what keeps the settings dialog attached to the viewport. Probe case 8 measured
+ * the dialog-shaped probe at viewport width inside a frame carrying this rule.
+ *
+ * If a browser lacks `:has()`, nothing below matches and the skin degrades to translucent fills
+ * alone. That is a safe failure: nothing is captured, and nothing leaks.
+ */
+:where(:has(> [data-ui-skin-column])) {
+  isolation: isolate;
+}
+
+:where(:has(> [data-ui-skin-column]))::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  /*
+   * Painting order inside the frame's stacking context:
+   *
+   *   1. the frame's own background
+   *   2. this layer (-1)                 ← the frost
+   *   3-5. the columns and their text, in flow
+   *
+   * The frost therefore sits above the frame's fill and below every column. And because
+   * `backdrop-filter` blurs what is BEHIND a surface, never what is painted on it, the
+   * columns' text stays crisp — which is the whole reason a see-through column can be read.
+   */
+  z-index: -1;
+  pointer-events: none;
+  border-radius: var(--lg-glass-radius);
+  backdrop-filter: blur(var(--lg-glass-blur)) saturate(var(--lg-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-glass-blur)) saturate(var(--lg-glass-saturate));
+}
+
+/* ── floating surfaces ────────────────────────────────────────────────────── */
+/*
+ * Dialogs, menus, popovers and tooltips stand above the page, so blurring what is behind them
+ * costs the reader nothing — the text being read is on the panel, not underneath it. The
+ * specification asks for these to be more opaque and more substantial than a page surface,
+ * which is what the deeper radius expresses.
+ *
+ * `:where()` carries zero specificity on purpose: nothing shipped frosts these, so there is no
+ * fight to win, and a component that wants its own material can still have it.
+ *
+ * THAT SENTENCE WAS WRONG, AND IT COST SEVERAL ROUNDS. The shipped settings panel is
+ * `.VOzbGW_overlay .VOzbGW_panel` — one class on an ancestor and one on the panel — measured in the
+ * real DOM. A `:where()` rule is (0,1,1) after scoping and loses to that outright, so the blur, the
+ * fill and the radius were all discarded in favour of the component's own material, and every
+ * parameter tuned underneath them changed nothing a reader could see.
+ *
+ * `:is()` contributes the specificity of its most specific argument instead of nothing, so the rule
+ * below is (0,2,1) — one level above a two-class selector, and still scoped by the marker. This is
+ * the mechanism the file was missing, not a louder value: the same declarations now reach the
+ * element they were always meant for.
+ */
+body :is([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
+  backdrop-filter: blur(var(--lg-glass-blur-menu)) saturate(var(--lg-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-glass-blur-menu)) saturate(var(--lg-glass-saturate));
+  box-shadow: var(--lg-glass-shadow), var(--lg-glass-inner-highlight);
+}
+
+/*
+ * THE FLOATING FILL, AND WHY THIS RULE IS NOT INSIDE `:where()`.
+ *
+ * The rule above keeps zero specificity so a component may bring its own material. That is the
+ * right default and the wrong tool for a fill: a menu that paints its own `--dsw-alias-bg-layer-2`
+ * at (0,1,0) beats a `:where()` rule silently, which is the same contest the settings panel lost
+ * before it was written plainly (see the note above that rule).
+ *
+ * Read through the scoper, `body :where(…)` becomes `body[data-ui-project-liquid-glass="on"]
+ * :where(…)` — one attribute plus one element, (0,1,1), which wins against a single class and
+ * loses to nothing this skin has met. The blur above is unaffected: nothing shipped frosts these
+ * elements, so there is no fight to win there.
+ *
+ * `--lg-glass-fill` is the floating pair declared with the other tokens, and it is deliberately
+ * NOT `--lg-glass-bg`: the material's 52% is for panels that fill the frame, where the frost has
+ * a large area to work with; a menu is small, sits over text, and is read at speed.
+ *
+ * TOOLTIPS ARE EXCLUDED, and that exclusion is the rule's most important detail. The shipped
+ * tooltip is a near-opaque DARK plate (`--dsw-alias-tooltip-bg`, 94% / 96%) on purpose — it is the
+ * one surface read against an unknown background at a glance — and a light 72% fill would have
+ * turned every tooltip in the application into a washed-out card. The pairing is kept: anything
+ * that already ships its own fill may keep it; this rule is for the surfaces that did not. The
+ * selector therefore lists three roles and NOT `tooltip` — the exclusion is the missing member,
+ * not a `:not()`.
+ *
+ * THE ADD-SOURCE POPOVER HAS NO ROLE AT ALL, so it is named by the one stable hook it publishes:
+ * the shell marks it `data-install-registry="true"` (measured in the real DOM). It is a plain
+ * `fieldset`, which is why a role list alone never reached it and the dropdown stayed translucent.
+ *
+ * TWO CLASSES OF SURFACE, TWO FILLS — and this is the correction the single-rule version needed.
+ *
+ *   MENUS, LISTBOXES, THE ADD-SOURCE DROPDOWN — read item by item over somebody's sentence. They
+ *   take `--lg-glass-fill`, the DENSE pair, because readability outranks translucency here.
+ *
+ *   DIALOGS — including the add-plugins panel and the settings modal — take `--lg-glass-bg`, the
+ *   MATERIAL pair. They are large, the application's own content sits behind them, and a dialog
+ *   filled to menu density reads as a flat plate: it was the whole reason the settings panel
+ *   looked untouched even after it was given a blur.
+ *
+ * TOOLTIPS ARE IN NEITHER LIST, on purpose. The shipped tooltip is a near-opaque dark plate
+ * (`--dsw-alias-tooltip-bg`, 94% / 96%) and a light fill would wash it out. Anything that already
+ * ships its own fill may keep it; these rules are for the surfaces that did not.
+ */
+ * `:is()` RATHER THAN `:where()`, for the reason recorded at the shared floating rule above: this
+ * file's zero-specificity design was defeated by the shell's own `overlay .panel` selector, and a
+ * fill that loses its contest is a fill nobody sees. (0,2,1) is the floor for every rule that has
+ * to change what a shipped component already paints.
+ */
+body :is([role='menu'], [role='listbox'], [data-install-registry='true']) {
+  background: var(--lg-glass-fill);
+}
+
+body :is([role='dialog']) {
+  background: var(--lg-glass-bg);
+}
+
+/*
+ * THE SETTINGS DIALOG, GIVEN THE TIER THE PALETTE ALREADY PROMISES IT.
+ *
+ * `tokens.css` says what a dialog is meant to be: "Layer 3 and the overlay token — menus, popovers and
+ * dialogs — stay opaque, because those are read directly over arbitrary content", and it spends its
+ * contrast budget on "a ~55% white fill". The shipped shell panel resolves `--dsw-alias-bg-layer-2`
+ * instead — the COLUMN tier, 46% — so the dialog arrived one tier thinner than documented, measured in
+ * the desktop application as rgba(255,255,255,0.46) over `backdrop-filter: blur(30px) saturate(1.8)`.
+ *
+ * NAMED FROM THE REAL DOM, WHICH CORRECTED AN EARLIER READING. The shell puts
+ * `data-shortcut-modal="settings"` on the BODY, not on the panel — the panel is the `role="dialog"`
+ * element below it, and that is what carries the shipped `background: var(--dsw-alias-bg-layer-2)`.
+ * An earlier version of this rule selected `body [data-shortcut-modal='settings']`, which matched
+ * nothing at all: the attribute is on `body` itself, so a descendant combinator can never find it.
+ * Read through the scoper the selector below is (0,2,1) — two attributes and one element — which
+ * beats the panel's own single class outright rather than tying with it.
+ *
+ * THE TIER IS THE FLOATING ONE. `tokens.css` documents menus, popovers and dialogs as the opaque
+ * tier, and the shell panel arrives one tier thinner (`--dsw-alias-bg-layer-2`, 46%); a floating
+ * fill plus the material's blur, hairline edge and radius is what closes that gap.
+ *
+ * A TOKEN, NOT A LITERAL. The branches that remove translucency work by REDEFINING these tokens,
+ * so a literal value would look correct and quietly opt out of them.
+ *
+ * THE THINNEST TIER, BY REQUEST, AND THE HALO THAT PAYS FOR IT. This panel is large and the
+ * application's content shows through it — which is the effect that was asked for after the composer
+ * was accepted at the same fill. Its readability comes from three things that are all still here: the
+ * blur, the hairline edge, and the text halo; opacity is no longer one of them.
+ *
+ * THE COMMENT ABOVE ITALICISED THE OLD DECISION, and the new one is the reverse of it: the material
+ * fill made this panel a readable plate, and the request was for glass. Both are written down so the
+ * next reader can see which way the trade went and when.
+ */
+body[data-shortcut-modal='settings'] :is([role='dialog']) {
+  background: var(--lg-glass-panel);
+  text-shadow: var(--lg-glass-panel-text-shadow);
+  /*
+   * THE TOKENS THE PANEL PAINTS WITH, REBOUND INSIDE THE PANEL ITSELF.
+   *
+   * Setting `background` on this element was measurably not enough: the fill went 54% to 6% and the
+   * panel did not change, while the BLUR, RADIUS and SHADOW added at the same time were all visible.
+   * That combination has one reading — the ground a reader sees is painted by something INSIDE the
+   * panel, and this element's own background sits behind it.
+   *
+   * The shell paints its dialogs with `--dsw-alias-bg-layer-2` (documented in `tokens.css` and
+   * confirmed in the real DOM). Rebounding that family HERE means every descendant that reads it —
+   * whichever element it turns out to be — resolves to the thin fill instead. Custom properties
+   * inherit, so this reaches the painter without naming it, which is exactly what a stylesheet
+   * cannot otherwise do for a build-hashed subtree.
+   *
+   * IT ALSO THINS WHAT IS INSIDE THE PANEL, and that is intended rather than a side effect: rows and
+   * cards in these panels are the same material as the panel. The halo above is what keeps their text
+   * readable; if a nested surface ever needs its own weight back, it gets its own token.
+   */
+  --dsw-alias-bg-layer-1: var(--lg-glass-panel-inner);
+  --dsw-alias-bg-layer-2: var(--lg-glass-panel-inner);
+  --dsw-alias-bg-layer-3: var(--lg-glass-panel-inner-strong);
+  --dsw-alias-bg-overlay: var(--lg-glass-panel-inner-strong);
+  backdrop-filter: blur(var(--lg-glass-blur-menu)) saturate(var(--lg-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-glass-blur-menu)) saturate(var(--lg-glass-saturate));
+  border: 1px solid var(--lg-glass-border-light);
+  border-radius: var(--lg-glass-radius);
+  box-shadow: var(--lg-glass-shadow), var(--lg-glass-inner-highlight);
+}
+
+/*
+ * THE EMBEDDED IDE'S DOCK CONTENT — the dsh diff and editor panes.
+ *
+ * These panes are the last large surfaces the frame's frost cannot reach: they are nested inside
+ * the centre column rather than filling it, and they paint no fill of their own, so the page's
+ * ambient gradient showed through the code and the contrast fell away exactly where a reader is
+ * meant to be reading characters. Measured in the real DOM as `<div data-dockit-host="dock">`
+ * wrapping one or more `<section data-dockit-pane-panel>` elements.
+ *
+ * NO ROLE, NO ARIA, NO SHORTCUT ATTRIBUTE — so the floating-surface rule above cannot name them,
+ * and the only stable hooks they publish are these two `data-dockit-*` attributes. Every class in
+ * that subtree is build-hashed (`tabPane_6nhg2_209`), which is not a selector this file will ever
+ * write: a hash stops matching on the next frontend rebuild and reports nothing.
+ *
+ * THE FLOATING FILL, NOT THE MATERIAL'S. A diff is read line by line and compared left to right, so
+ * it takes the denser of the two fills — the same one menus and dialogs take — rather than the 52%
+ * a panel that merely frames content can afford.
+ *
+ * AND NOTHING ELSE. No border, no radius, no shadow: the IDE draws its own chrome around these
+ * panes, and a second edge laid over it would read as a seam. This rule contributes a readable
+ * ground and stops there. No `!important` either — if a shipped rule of the shell's own outranks
+ * it, the honest answer is to learn which one before shouting over it.
+ *
+ * WRITTEN AS `body […]`, LIKE EVERY OTHER SCOPED RULE HERE. Writing the marker out by hand —
+ * `body[data-ui-project-liquid-glass='on'] […]` — is REFUSED by the scoper, which appends the
+ * marker itself and throws on a selector that already carries it:
+ *
+ *   refusing to emit a selector with the project marker twice:
+ *   "body[data-ui-project-liquid-glass=\"on\"][data-ui-project-liquid-glass='on'] [data-dockit-host='dock']"
+ *
+ * That guard is the reason this file never spells the marker: one author, one place, and a loud
+ * failure instead of a rule that silently stops matching.
+ */
+body :is([data-dockit-host='dock']),
+body :is([data-dockit-pane-panel]) {
+  background: var(--lg-glass-code);
+  backdrop-filter: blur(var(--lg-glass-blur)) saturate(var(--lg-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-glass-blur)) saturate(var(--lg-glass-saturate));
+}
+
+/*
+ * AND THE BOX UNDERNEATH THE PANE, WHICH IS WHY THE PANE ALONE DID NOTHING.
+ *
+ * A build that reported "still too transparent" at 94% is evidence about STRUCTURE, not about alpha:
+ * an opaque-ish fill on the pane changed nothing a reader could see, so the pane is not the element
+ * carrying the box in that subtree — it is a host marker whose children hold the geometry and paint
+ * their own ground. Raising the number again would have changed nothing either.
+ *
+ * So the ground is applied at every level that can carry it: the dock host, the pane, and the pane's
+ * direct children. A descendant combinator is deliberately NOT used — that would reach the token
+ * spans and line boxes inside the code view and repaint the surfaces the syntax colouring needs. The
+ * child combinator stops exactly one level below the pane, which is where the boxes are.
+ *
+ * A background on a child paints BEHIND that child's own content, so this can make a region readable
+ * and cannot hide a glyph. That is the property that makes it safe to apply this broadly.
+ */
+body :is([data-dockit-host='dock']) > *,
+body :is([data-dockit-pane-panel]) > * {
+  background: var(--lg-glass-code);
+}
+
+/*
+ * ── THE CARPET, ONE LEVEL UP: THE COLUMN THAT HOLDS A PANE ─────────────────────────────────────
+ *
+ * Two rounds of raising the fill on the pane produced no visible change, and the difference between
+ * those two rounds and this one is the level the ground is applied at. A report of "still too
+ * transparent" is itself a measurement: it says SOMETHING in that subtree is transparent. Whatever
+ * that something is, a ground painted BEHIND it will show through it — so the fix does not require
+ * knowing which element it is, only being behind it.
+ *
+ * `[data-ui-skin-column]` is the marker the runtime stamps on the application's layout columns, and a
+ * pane lives inside one of them. The `:has()` clause narrows this to the column that actually
+ * contains a dock pane, so the conversation column is untouched: only the IDE's own column gains the
+ * grey. Both hooks are published by the runtime, and neither is a build hash.
+ *
+ * The grey is the CODE TIER, so this layer agrees with the two below it and with the overlay in
+ * `src/client/index.js`. It is a warm neutral — the page behind it is warm — and it is opaque, which
+ * is the point: a code surface reads best with nothing moving under it.
+ */
+body :is([data-ui-skin-column]):has([data-dockit-pane-panel]) {
+  background: var(--lg-glass-code);
+}
+
+/*
+ * ── PORTALS: THE HOVER PREVIEW AND EVERY OTHER LAYER THE SHELL APPENDS TO BODY ─────────────────
+ *
+ * The preview a reader gets when hovering an "edited <file>" card is not inside a column and not
+ * inside a dialog: like every popover in this application it is PORTALLED — appended directly to
+ * `<body>` — which is why no rule keyed on a column, a role or a data attribute had ever reached it.
+ * `#root` is the id the runtime itself falls back to for the application root, so the selector below
+ * means exactly "a top-level layer that is not the application".
+ *
+ * It rebinds TOKENS rather than painting a background, and that is the point: a portal has no stable
+ * hook to key on, but every surface inside it reads the same alias family, and custom properties
+ * inherit. Whatever the preview turns out to be built from, it resolves to this ground.
+ *
+ * THE VALUE IS DELIBERATELY READABLE RATHER THAN THIN. This is a preview of code: the reader is
+ * looking at CHARACTERS, so the request — give it a background — is answered with a light one (72% /
+ * 76%) instead of another experiment in translucency. The dialogs are unaffected: they set the same
+ * tokens on themselves, and the nearer declaration wins.
+ */
+body > :is(div, section):not(#root) {
+  --dsw-alias-bg-layer-3: rgb(255 255 255 / 72%);
+  --dsw-alias-bg-overlay: rgb(255 255 255 / 72%);
+}
+
+/*
+ * ── THE CONVERSATION'S TOOL BLOCKS: THE "CODE BLOCK" CARD, GIVEN A GREY GROUND ────────────────
+ *
+ * A screenshot finally named this one: the card a tool call renders carries the title "代码块" and a
+ * diff inside it, and its unchanged lines are transparent — so the page shows through them and the
+ * text underneath wins. Everything tried before this missed for the same reason the previous misses
+ * did: the wrong element, and then the wrong token.
+ *
+ * WHICH TOKEN, AND WHY THIS ONE. `tokens.css` says what `--dsw-alias-bg-module-platform` is for, in
+ * its own words: the "module-platform panels twelve packages put text in". A tool-block card is
+ * exactly that — a module panel holding text — and it is deliberately NOT one of the layer tokens,
+ * which paint columns, message rows and dialogs and belong to surfaces this request never mentioned.
+ * Rebinding the module token therefore reaches this card and leaves the conversation's own rows alone.
+ *
+ * WHERE IT IS REBOUND: the column, because a conversation card lives inside one and custom properties
+ * inherit. It is unscoped by `:hover` on purpose — unlike the sidebar preview, this card is simply
+ * present, and a hover-scoped rule would do nothing for a reader who is not pointing at it.
+ *
+ * Grey, not white, and not the warm page tone: the request was that unchanged lines read as GREY, and
+ * grey is what separates them from both the red and green lines and the panel around them.
+ */
+body :is([data-ui-skin-column]) {
+  --dsw-alias-bg-module-platform: rgb(237 234 228 / 92%);
+}
+
+/*
+ * ── THE TOOL CALL'S DIFF: A GREY GROUND UNDER THE LINES THAT PAINT NOTHING ────────────────────
+ *
+ * The DOM finally named the surface. A tool call renders inside `[slot="tool.call.toolview"]`, a slot
+ * the shell publishes — no hash, no guessing — and inside it a diff draws three kinds of line:
+ * removed (red), added (green) and unchanged. The third kind paints NOTHING of its own beyond a
+ * translucent white base, which is why the page showed through the code and the text underneath won.
+ *
+ * THE FIX IS THE SURFACE, NOT THE LINES. CSS cannot select an element by its text, and the line
+ * elements carry no stable attribute to key on — so per-line selection is not available and is not
+ * needed. A ground on the toolview shows through every transparent line at once, while the red and
+ * green rows keep the fills they already have. One declaration produces exactly the effect asked for:
+ * unchanged lines grey, changed lines untouched.
+ *
+ * GREY, NOT WHITE, AND DEEPER THAN THE PAGE. The lines' own base is 18% white, so the ground is set
+ * a shade darker than that base would suggest: what a reader sees is base-over-ground, and it has to
+ * land on grey rather than on the warm page tone for the unchanged majority to read as a code block.
+ *
+ * THE OVERLAY CARRIES THE SAME GROUND AND WINS, SO CHANGE BOTH OR NEITHER. `src/client/index.js`
+ * declares this background with `!important` (`:190-195`), and an `!important` declaration beats a
+ * plain one whatever the specificity — so editing the value HERE alone changes nothing on screen. The
+ * twin is kept because the overlay is the path that survives being out-specified, and this scoped rule
+ * is what remains if that path ever goes away.
+ */
+body :is([slot='tool.call.toolview']) {
+  background: rgb(203 199 190);
+}
+body[data-ds-dark-theme] :is([slot='tool.call.toolview']) {
+  background: rgb(26 29 34);
+}
+
+/*
+ * ── THE OPEN EDITED-FILES PANEL: A BACKGROUND FOR THE CARD, FROM MEASURED HOOKS ───────────────
+ *
+ * `:last-of-type` STOOD HERE AND WAS FALSIFIED BY MEASUREMENT — twice over. The selector itself is
+ * wrong (the column list is not the last of its type in the frame, so it matched nothing), and the
+ * block it sat in had lost the opening of a comment above it, which left this text outside any
+ * comment and made a CSS parser discard what followed. Both are fixed here.
+ *
+ * WHAT THE MEASUREMENT GAVE INSTEAD. Walking up from the panel's title: the element that paints is a
+ * hashed class (unwritable), its ancestors are more hashed classes, and the one STABLE hook in the
+ * chain is `div[slot="conversation.chat.node"]` — which has a zero-size box, so a background on it
+ * would paint nothing. Its CARRYING CHILD is the box the panel actually occupies.
+ *
+ * HENCE THIS SELECTOR: the chat node, narrowed by `:has()` to the one that CONTAINS a tool view, then
+ * its direct child. Every part of it is a slot the shell publishes: no class name, nothing a rebuild
+ * can rename, and no other message in the conversation is touched.
+ *
+ * OPAQUE, in the skin's own warm tone rather than the shipped blue (#EDF3FE, measured), because the
+ * request was a background for this panel and a translucent one reads as no background at all.
+ *
+ * THE OVERLAY CARRIES THE SAME GROUND AND WINS, SO CHANGE BOTH OR NEITHER — see the note above the
+ * toolview rule; the twin here is `src/client/index.js:196-201`.
+ */
+body :is([slot='conversation.chat.node']):has([slot='tool.call.toolview']) > * {
+  background: rgb(246 244 239);
+}
+body[data-ds-dark-theme] :is([slot='conversation.chat.node']):has([slot='tool.call.toolview']) > * {
+  background: rgb(26 29 34);
+}
+/*
+
+ * A diff renders three kinds of line: removed (red), added (green), and unchanged — and the third
+ * kind paints NOTHING, so it shows whatever is behind it. That is why a preview whose changed lines
+ * look right still reads as transparent: only the untouched majority is see-through.
+ *
+ * The fix does not need to name a single line, or a single class. Give the SURFACE a grey ground and
+ * the unchanged lines show grey, because they are transparent; the red and green lines keep their own
+ * fills and are untouched by this rule. One declaration, the exact effect that was asked for.
+ *
+ * WHY `:hover`, AND WHY THAT IS THE POINT. The preview opens while the pointer is over the sidebar,
+ * and this rule is scoped to the column being hovered — so it is inert on the conversation column
+ * unless a reader is pointing at it, and it leaves no permanent change anywhere. A portal rule cannot
+ * reach this preview (a sidebar preview is not portalled), and the token family that would is the
+ * same one the message rows read, which is why this is scoped rather than global.
+ *
+ * The value is a real grey rather than the page's warm white: the request was grey, and grey is what
+ * separates an unchanged line from the panel around it in both themes.
+ */
+body :is([data-ui-skin-column]):hover {
+  --dsw-alias-bg-layer-1: rgb(237 234 228 / 92%);
+  --dsw-alias-bg-layer-2: rgb(237 234 228 / 92%);
+  --dsw-alias-bg-layer-3: rgb(237 234 228 / 92%);
+  --dsw-alias-bg-overlay: rgb(237 234 228 / 92%);
+}
+
+/* ── continuous corners ───────────────────────────────────────────────────── */
+
+/*
+ * iOS 27's rounding is not a circle arc: the corner is a SUPERELLIPSE, so the curve leaves the
+ * straight edge gradually and arrives at the other edge gradually, with no point where the radius
+ * visibly begins. A `border-radius` alone gives the circular version — the "硬棱角" a square-ish
+ * panel shows at every corner once the radius is large.
+ *
+ * `corner-shape` is what changes the SHAPE of the corner the existing `border-radius` already
+ * carves, so this rule adds no geometry and moves nothing: it reinterprets a radius each of these
+ * surfaces already declares. That is also why the list can name surfaces whose radii differ — the
+ * composer's 24px and the shell's own panel radius both become continuous.
+ *
+ * GUARDED BY `@supports`, because the property is new. Where it is unknown the block is dropped
+ * whole and every surface keeps exactly the geometry it has today; there is no fallback value to
+ * get wrong.
+ */
+@supports (corner-shape: superellipse(1.5)) {
+  body :is([role='dialog'], [role='menu'], [role='listbox'], [data-install-registry='true']),
+  body[data-shortcut-modal='settings'] :is([role='dialog']),
+  body :is([data-composer-card]) {
+    corner-shape: superellipse(1.5);
+  }
+}
+
+/* ── the composer ─────────────────────────────────────────────────────────── */
+/*
+ * The input card was the last opaque surface in the application: it paints
+ * `--dsw-specific-input-major`, which resolves through `--dsw-static-neutral-bluish-00` /
+ * `-850` to `#fff` in light and `#2c2c2e` in dark, so the frame's frost stopped at its edge. This
+ * is a specification gap rather than a defect: the specification names floating surfaces — dialog,
+ * menu, listbox, tooltip — and the composer is none of those.
+ *
+ * ## Why the blur is on a pseudo-element rather than on the card
+ *
+ * The card is ALREADY `position: relative` (measured in the shipped `InputBar_module.card`), so it is
+ * already the containing block for every positioned descendant that has no closer one: adding
+ * `backdrop-filter` to it could not move a single `absolute` child. And it has no `fixed` descendant
+ * to move — every popover in the composer's neighbourhood is portalled to `document.body` (the model
+ * menu, the four stat dialogs, the attachment drop overlay and the lightbox, all verified in the
+ * deployed bundles), while the one menu that renders in place, `[data-trigger-menu]`, is
+ * `position: absolute` inside an ancestor that is positioned already.
+ *
+ * So the containing-block rule would have nothing to act on today. The pseudo-element is still the
+ * right construction, for a reason about tomorrow rather than today: `isolation` plus a `::before`
+ * keep the card free of the property that creates the containing block, so a future client that
+ * renders a popover INSIDE the card cannot be captured by it. That is the failure this project has
+ * already paid for twice — a settings panel collapsing into a column, and a dialog re-anchoring to a
+ * sidebar — and the frame's own frost is built the same way, for the same reason.
+ *
+ * ## Why `isolation` is required rather than decorative
+ *
+ * `z-index: -1` needs a stacking context to land in. Without one the pseudo-element escapes to the
+ * nearest ancestor context — here the seat, which already carries `z-index: 7` — and the seat's own
+ * background would paint over the frost. `isolation: isolate` supplies that context without creating
+ * a containing block for `fixed` descendants, which is the same distinction the frame relies on.
+ *
+ * ## The token this deliberately does NOT touch
+ *
+ * `--dsw-specific-input-major` is shared: approval cards, the question card, four attachment surfaces
+ * and a chat element all paint with it. Rebinding it would restyle five surfaces the specification
+ * never asked about, so the material is applied here, to the card.
+ *
+ * `--lg-glass-radius` is the material's own radius — 24px since the iOS 27 pass. It was 22px, the
+ * value the shipped card already declares, and the note here used to say the geometry was left
+ * alone. The material vocabulary now leads: this is the one surface where the skin changes the
+ * shipped geometry, and it is written down rather than left to be discovered.
+ */
+body :is([data-composer-card]) {
+  isolation: isolate;
+  /*
+   * THE COMPOSER'S OWN TIER, not the material one it shared with the dialogs. The conversation
+   * scrolls under this card, and a reader who cannot see that happen is looking at a plate. See the
+   * token's note above: a per-surface pair, so thinning this one cannot thin the dialogs with it.
+   */
+  background: var(--lg-glass-composer);
+  /* The halo that pays for the thin fill. See the token's note above. */
+  text-shadow: var(--lg-glass-composer-text-shadow);
+  border-radius: var(--lg-glass-radius);
+  /*
+   * Three shadows, and the first is the SHIPPED ring rather than one of ours.
+   *
+   * `--dsw-elevation-stroke` is `0 0 0 .5px var(--dsw-elevation-stroke-color)`, and the card sets
+   * that colour to `--dsw-alias-border-l2` locally — so keeping the ring keeps the design system's
+   * elevation semantics, including its colour and any future change to it. Both tokens are declared
+   * in the installed frontend, and `suite` asserts that they still are: a token that disappears
+   * should fail a test, not silently paint nothing. No `var()` fallback is written here on purpose,
+   * because a fallback would turn that loud failure back into a quiet one.
+   *
+   * What is REPLACED rather than kept: `--dsw-elevation-soft` is that ring plus two soft glows
+   * (`0 4px 16px #00000008, 0 0 24px #00000008`). Composing all four would stack two elevations on
+   * one surface, so the glows give way to `--lg-glass-shadow`. This is a deliberate change of the
+   * glow's shape, not an oversight: the shipped ring survives, the shipped glow does not.
+   */
+  box-shadow: var(--dsw-elevation-stroke), var(--lg-glass-shadow), var(--lg-glass-inner-highlight);
+}
+
+/*
+ * The frost itself: one layer, for the same reason the frame has one. The card's fill is
+ * translucent, so this shows through it — and `backdrop-filter` blurs what is BEHIND a surface, the
+ * messages scrolling under the input box, never the text on it.
+ */
+body :is([data-composer-card])::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: var(--lg-glass-radius);
+  backdrop-filter: blur(var(--lg-glass-blur)) saturate(var(--lg-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-glass-blur)) saturate(var(--lg-glass-saturate));
+}
+
+
+/* ── the composer's stat rows — cross-package, by request ─────────────────── */
+/*
+ * Two rows of small text sit under the composer: dsh's own token and efficiency pills, and
+ * dsh-cost-meter's session cost line. An earlier version of this skin hid both; their return
+ * was reported as a regression, so the hiding is restored here, by request.
+ *
+ * ## `visibility`, not `display` — and the measurement that decided it
+ *
+ * `display: none` was tried first, and it moved the composer. Removing the rows from the box
+ * tree shortens the composer container, the container is anchored to the bottom of the
+ * viewport, and so its top edge — and with it the input box — moved down by roughly the height
+ * of the two rows. Confirmed in use rather than predicted.
+ *
+ * `visibility: hidden` leaves both boxes exactly where they were, so nothing above or below
+ * them shifts. The price is a blank band where the rows used to be, and that is the side of the
+ * trade the requirement asks for: the input box's position is the hard constraint, the gap is
+ * cosmetic.
+ *
+ * This also means the rule is **no longer an exception** to the appearance-only rule at the top
+ * of this file. `visibility` has no layout effect, so nothing is overridden to make room for
+ * it. What remains is cross-package coupling — a skin reaching into another package's DOM —
+ * and that is written down rather than folded in quietly.
+ *
+ * ## What it targets, and why exactly those two
+ *
+ *   [data-composer-stats]  dsh's own stats row, rendered by `ui-chat`. A hand-written data
+ *                          attribute: the only stable hook on that element, and the one dsh
+ *                          itself keys CSS off (`:has([data-composer-stats])` in InputBar).
+ *                          Its class name is a CSS-module reference and is deliberately not
+ *                          named here.
+ *   .cm-root               dsh-cost-meter's row, which that package renders into the
+ *                          `conversation.input.dock` slot. Its entire namespace is plain
+ *                          `cm-*` — 177 distinct classes, none build-hashed — so this is a
+ *                          public class name, not a build artefact.
+ *
+ * Both survive a frontend rebuild. Neither is a hash.
+ *
+ * ## Why this is NOT wrapped in `:where()`
+ *
+ * `:where()` carries zero specificity, and dsh-cost-meter ships `.cm-root{display:block}` at
+ * specificity (0,1,0). A `:where()` rule would lose any contest with it — which is precisely
+ * how an earlier attempt at this failed, silently, for several rounds. The scoper gives
+ * `body[marker] .cm-root` enough weight to win, so the rule is written plainly. This is the one
+ * place in this file where winning a specificity contest is the point.
+ *
+ * Scoped like everything else here, so switching the project off brings both rows straight
+ * back. The reduced-transparency and forced-colors branches need no special case: this is a
+ * hidden element, not a visual treatment.
+ */
+body [data-composer-stats],
+body .cm-root {
+  visibility: hidden;
+}
+
+/*
+ * The composer's stats dock, by product decision: the token counts and the context ring under the
+ * input should not be on screen.
+ *
+ * `visibility`, not `display`, for the reason measured directly above — the dock is the last row of
+ * the same bottom-anchored composer band, and taking it out of the box tree moves the input box down
+ * with it. A blank band is the accepted price.
+ *
+ * WHY THE SELECTOR LOOKS LIKE THIS. The dock itself carries only a build-hashed class
+ * (`RlGAzG_dock`), and a hash stops matching on the next frontend rebuild without reporting anything
+ * — the failure mode this file refuses everywhere else. What the shell DOES publish are slots: the
+ * bar (`data-slot="conversation.composer.bar"`) and, as a child of the dock, the empty
+ * `data-slot="conversation.composer.dock"`. Anchoring on that child with `:has(> …)` therefore names
+ * the dock through two published hooks and nothing else. Verified in the desktop application: the
+ * selector matches exactly ONE element, `div.RlGAzG_dock`, and never the composer card beside it.
+ *
+ * It replaces a rule aimed at `div.contextCandidates`, a container that does not exist in the
+ * shipped frontend at all — a dead selector, and a dead selector is invisible to every guard this
+ * repository has. Registered by name in `scripts/skin-exceptions.mjs`; changing this rule means
+ * changing that entry and the suite with it.
+ */
+body [data-slot='conversation.composer.bar'] div:has(> [data-slot='conversation.composer.dock']) {
+  visibility: hidden;
+}
+
+/* ── degradation ──────────────────────────────────────────────────────────── */
+
+/* Without `backdrop-filter` there is nothing to refract, so the blur is dropped and `tokens.css`
+   has already raised every fill to opaque. Edges, radii and highlights stay: only the
+   transparency goes. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  body :is(:has(> [data-ui-skin-column]))::before,
+  body :is([data-composer-card])::before,
+  body :is([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  /*
+   * And the material fill itself goes opaque, for every consumer at once.
+   *
+   * This used to be a rule on `[data-composer-card]` — a patch, written because the token layer had
+   * nothing to say here. Raising it to the token means `.lg-glass`, the composer and anything else
+   * that reads the material follow together, and there is one place to keep right instead of one per
+   * consumer. A translucent fill is only readable while something is blurring what is behind it, so
+   * without `backdrop-filter` the composer would otherwise show the message text scrolling under it
+   * at 42% opacity — the exact failure the checklist item `text-readable` exists for.
+   *
+   * `#fff` is `--lg-glass-bg-light` with its alpha removed, and `#1c1c1e` is `--lg-glass-bg-dark`
+   * (`rgb(28 28 30 / 58%)`): the material's own opaque form. Deliberately NOT
+   * `--dsw-alias-bg-base`, which is the page's bottom layer (`#14161c` in dark) — a surface made of
+   * material should become the material's solid colour, not the page's.
+   *
+   * The SEAT is deliberately not treated the same way, and the reason is worth keeping. The shipped
+   * rule on it ramps to `var(--dsw-alias-bg-base)` over 36px and then HOLDS that colour for the rest
+   * of the seat, which is invisible only while the token matches the page around it. Restating it
+   * with the translucent glass fill was tried, and a screenshot of the running application showed
+   * exactly what that shape implies: a glass-tinted rectangle spanning the column below the card,
+   * with a hard edge where the seat ends — a visible band, not a fade. Leaving the shipped rule
+   * alone is the honest option, so this skin has no opinion about the seat at all.
+   */
+  :root {
+    /*
+     * EVERY translucent tier this skin introduces, taken opaque together — the material fill AND the
+     * three per-surface pairs the WIP added, plus the panel's inner pair (see the note in the token
+     * block). A tier left out here is a surface that stays translucent for the reader who asked it not
+     * to be: the fills the branches take opaque are the ones they name, and nothing else.
+     */
+    --lg-glass-bg: #fff;
+    --lg-glass-fill: #fff;
+    --lg-glass-composer: #fff;
+    --lg-glass-panel: #fff;
+    --lg-glass-panel-inner: #fff;
+    --lg-glass-panel-inner-strong: #fff;
+  }
+
+  body[data-ds-dark-theme] {
+    --lg-glass-bg: #1c1c1e;
+    --lg-glass-fill: #1c1c1e;
+    --lg-glass-composer: #1c1c1e;
+    --lg-glass-panel: #1c1c1e;
+    --lg-glass-panel-inner: #1c1c1e;
+    --lg-glass-panel-inner-strong: #1c1c1e;
+  }
+}
+
+/* The user has asked the platform for less translucency. Take it literally: no blur, and
+   `tokens.css` raises the fills under the same query.
+ *
+ * The ambient gradient goes with the blur, because it only ever existed to be refracted. Left
+ * in place it would be decoration with no job — and a moving wash of colour behind text is
+ * exactly what someone asking for less transparency is asking to be rid of. The system
+ * background colour stays. */
+@media (prefers-reduced-transparency: reduce) {
+  /*
+   * BOTH selectors, and the second one is the whole point. The themed gradient is painted by
+   * `body[data-ds-dark-theme]`, which is one attribute more specific than a bare `body` — and a
+   * media query adds no specificity of its own. `body { background-image: none }` therefore won in
+   * light mode (where the gradient is painted by a plain `body` rule that comes earlier) and lost
+   * in dark mode, silently: the suppression looked correct in every light-mode check and left a
+   * moving wash of colour behind the text for exactly the person who had asked for it to stop.
+   */
+  body,
+  body[data-ds-dark-theme] {
+    background-image: none;
+  }
+
+  body :is(:has(> [data-ui-skin-column]))::before,
+  body :is([data-composer-card])::before,
+  body :is([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  /* The material fill, opaque with the rest — see the note in the `@supports not` block. The two
+     values differ per theme, which is why this is a pair of rules rather than one. */
+  :root {
+    /*
+     * EVERY translucent tier this skin introduces, taken opaque together — the material fill AND the
+     * three per-surface pairs the WIP added, plus the panel's inner pair (see the note in the token
+     * block). A tier left out here is a surface that stays translucent for the reader who asked it not
+     * to be: the fills the branches take opaque are the ones they name, and nothing else.
+     */
+    --lg-glass-bg: #fff;
+    --lg-glass-fill: #fff;
+    --lg-glass-composer: #fff;
+    --lg-glass-panel: #fff;
+    --lg-glass-panel-inner: #fff;
+    --lg-glass-panel-inner-strong: #fff;
+  }
+
+  body[data-ds-dark-theme] {
+    --lg-glass-bg: #1c1c1e;
+    --lg-glass-fill: #1c1c1e;
+    --lg-glass-composer: #1c1c1e;
+    --lg-glass-panel: #1c1c1e;
+    --lg-glass-panel-inner: #1c1c1e;
+    --lg-glass-panel-inner-strong: #1c1c1e;
+  }
+}
+
+/* The platform owns the palette in forced-colors mode, so the skin steps back entirely —
+   gradient included: a decorative tint is precisely what that mode exists to remove.
+
+   THE TOKENS ARE STILL NEEDED HERE, and that is a correction the browser suite forced. The
+   reasoning was that the platform replaces author background colours, so every translucent fill
+   would already be opaque by the time it paints. It does replace them — and it keeps the author's
+   ALPHA: a probe at `rgba(1, 2, 3, 0.52)` comes back `rgba(0, 0, 0, 0.52)`, and the settings panel
+   and the composer card each reported the alpha of their own translucent fill under this query. So
+   `tokens.css` takes the fills opaque here exactly as it does in the other two suppression blocks,
+   and this block still handles only the two paint effects the platform does NOT take over: the
+   gradient below, and the blur. */
+@media (forced-colors: active) {
+  /* The same two selectors as the other suppression blocks, for the same reason: the themed
+     gradient is the more specific rule, so a bare `body` would leave it painted in dark mode. */
+  body,
+  body[data-ds-dark-theme] {
+    background-image: none;
+  }
+
+  body :is(:has(> [data-ui-skin-column]))::before,
+  body :is([data-composer-card])::before,
+  body :is([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  /* The material fill, opaque with the rest — see the note in the `@supports not` block. */
+  :root {
+    /*
+     * EVERY translucent tier this skin introduces, taken opaque together — the material fill AND the
+     * three per-surface pairs the WIP added, plus the panel's inner pair (see the note in the token
+     * block). A tier left out here is a surface that stays translucent for the reader who asked it not
+     * to be: the fills the branches take opaque are the ones they name, and nothing else.
+     */
+    --lg-glass-bg: #fff;
+    --lg-glass-fill: #fff;
+    --lg-glass-composer: #fff;
+    --lg-glass-panel: #fff;
+    --lg-glass-panel-inner: #fff;
+    --lg-glass-panel-inner-strong: #fff;
+  }
+
+  body[data-ds-dark-theme] {
+    --lg-glass-bg: #1c1c1e;
+    --lg-glass-fill: #1c1c1e;
+    --lg-glass-composer: #1c1c1e;
+    --lg-glass-panel: #1c1c1e;
+    --lg-glass-panel-inner: #1c1c1e;
+    --lg-glass-panel-inner-strong: #1c1c1e;
+  }
+}
+
+/* ── the effect tier the device can afford ────────────────────────────────── */
+
+/*
+ * `perfLevel` on a project is a declaration of what it was designed for; the runtime compares the
+ * heaviest declaration among the active projects against the device and writes the LOWER of the two
+ * as `data-ui-perf` on the body. These two blocks are what reads it.
+ *
+ * AUTHORED AS `body[…]`, AND THAT IS NOT COSMETIC. The scoper replaces a leading `html`/`:root`
+ * with the project marker, and the marker is a `body[…]` selector — so `html[data-ui-perf='low']`
+ * here would compile to `body[marker][data-ui-perf='low']` and work, while the same attribute
+ * written on `<html>` by the runtime would match nothing at all. Naming the element the attribute
+ * actually lives on makes that failure impossible to reintroduce by accident. `runtime.js` carries
+ * the same note next to `PERF_ATTRIBUTE`.
+ *
+ * No `!important`, no specificity fight: both blocks are one attribute more specific than the base
+ * rules above, which is exactly what a later-specified override of the same property needs.
+ */
+body[data-ui-perf='medium'] :where(:has(> [data-ui-skin-column]))::before,
+body[data-ui-perf='medium'] [data-composer-card]::before,
+body[data-ui-perf='medium'] :where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
+  backdrop-filter: blur(var(--lg-glass-blur-medium)) saturate(var(--lg-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-glass-blur-medium)) saturate(var(--lg-glass-saturate));
+}
+
+body[data-ui-perf='low'] :where(:has(> [data-ui-skin-column]))::before,
+body[data-ui-perf='low'] [data-composer-card]::before,
+body[data-ui-perf='low'] :where([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
+  backdrop-filter: blur(var(--lg-glass-blur-low)) saturate(var(--lg-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-glass-blur-low)) saturate(var(--lg-glass-saturate));
+}
+
+/* A request for MORE contrast. `tokens.css` has already taken every fill to opaque, which is what
+   raises the text ratio; two things follow from that here.
+
+   The ambient gradient goes: it is a decorative wash of colour behind the text, and a coloured
+   backdrop is exactly what a contrast request is asking to be rid of — the same reasoning as
+   `forced-colors`, reached from a different direction.
+
+   The blur goes too, and this one is worth stating: with opaque fills there is nothing behind the
+   glass left to refract, so keeping the filter would cost a full-viewport `backdrop-filter` for no
+   visible effect at all. Removing it is not "punishing" the user for asking for contrast; it is
+   the layer becoming redundant. */
+@media (prefers-contrast: more) {
+  body,
+  body[data-ds-dark-theme] {
+    background-image: none;
+  }
+
+  body :is(:has(> [data-ui-skin-column]))::before,
+  body :is([data-composer-card])::before,
+  body :is([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  /* The material fill, opaque with the rest — see the note in the `@supports not` block. Under this
+     query every fill in `tokens.css` has gone opaque, and the composer would otherwise be the only
+     translucent surface left on a page someone asked for more contrast on. */
+  :root {
+    /*
+     * EVERY translucent tier this skin introduces, taken opaque together — the material fill AND the
+     * three per-surface pairs the WIP added, plus the panel's inner pair (see the note in the token
+     * block). A tier left out here is a surface that stays translucent for the reader who asked it not
+     * to be: the fills the branches take opaque are the ones they name, and nothing else.
+     */
+    --lg-glass-bg: #fff;
+    --lg-glass-fill: #fff;
+    --lg-glass-composer: #fff;
+    --lg-glass-panel: #fff;
+    --lg-glass-panel-inner: #fff;
+    --lg-glass-panel-inner-strong: #fff;
+  }
+
+  body[data-ds-dark-theme] {
+    --lg-glass-bg: #1c1c1e;
+    --lg-glass-fill: #1c1c1e;
+    --lg-glass-composer: #1c1c1e;
+    --lg-glass-panel: #1c1c1e;
+    --lg-glass-panel-inner: #1c1c1e;
+    --lg-glass-panel-inner-strong: #1c1c1e;
+  }
+}
+
+/* ── narrow viewports ─────────────────────────────────────────────────────── */
+
+/* A smaller radius is both cheaper and more correct on a phone, where the surface behind the
+   glass is close to the glass. The value comes from a token rather than a second literal, so
+   the rule and the value cannot drift apart.
+
+   The composer is in this list for the same reason it is in the tier lists: on a phone it is
+   nearly the full width of the viewport, so it is the one card whose blur is worth reducing
+   there. Found by reading the emitted sheet rather than by remembering the block existed. */
+@media (max-width: 768px) {
+  body :is(:has(> [data-ui-skin-column]))::before,
+  body :is([data-composer-card])::before,
+  body :is([role='dialog'], [role='menu'], [role='listbox'], [role='tooltip']) {
+    backdrop-filter: blur(var(--lg-glass-blur-mobile)) saturate(var(--lg-glass-saturate));
+    -webkit-backdrop-filter: blur(var(--lg-glass-blur-mobile)) saturate(var(--lg-glass-saturate));
+  }
+}

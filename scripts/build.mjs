@@ -91,6 +91,19 @@ const MODULE_ORDER = [
   'preview.js',
   'panel.js',
   'styles/core.css',
+  /*
+   * THE BUILT-IN SKIN, and the order inside it is its own dependency order: both stylesheets are
+   * required by `skin.js`, which is required by `index.js`'s registration, and `overlay.js` is required
+   * by that registration too. The CSS entries have to be here for the same reason the skin package lists
+   * them in its own build — a file under `src/client` that is not in this list is bundled nowhere, and
+   * the failure it produces ("no such shell module") is a runtime one.
+   */
+  'skins/liquid-glass/tokens.css',
+  'skins/liquid-glass/glass.css',
+  'skins/liquid-glass/skin.js',
+  'skins/liquid-glass/overlay.js',
+  'skins/liquid-glass/manifest.js',
+  'skins/index.js',
   'index.js',
 ]
 
