@@ -229,21 +229,42 @@ function apply(ctx) {
   })
 
   /*
-   * NO PROJECT IS REGISTERED HERE, and the ordering problem this comment used to describe is gone
-   * with the registration that caused it.
+   * THE BUILT-IN PROJECTS, REGISTERED THROUGH THE SAME SERVICE EVERY PACKAGE USES.
    *
-   * The framework used to register its own skin right here, BEFORE `start()` — because `start()`
-   * walks the registry, so a project added after it missed the restore that happens on that very
-   * boot, and a skin enabled in a previous session came back off after a reload. That ordering was
-   * the framework's to control only while the framework owned the project.
+   * The framework ships Glass, and it registers exactly as an installed package does --
+   * `ctx.uiProjects.register(manifest, definition)`, on the service this apply has just provided. One
+   * path, so a built-in project is not a special kind of project; what differs is where its manifest comes
+   * from.
    *
-   * A project now arrives from its own package, whenever that package's fiber applies, and the
-   * service closes the gap rather than the composition: `service.register()` calls `deps.adopt(id)`
-   * after the definition lands, and `runtime.adopt()` applies a project the restored record already
-   * asks for without persisting anything. So both orders are correct, and neither is the framework's
-   * business — `scripts/verify.mjs` pins the late one by name ("a record that arrives after the bind
-   * is still restored").
+   * IT RUNS BEFORE THE `start()` EFFECT BELOW. `start()` walks the registry, and that used to be the
+   * framework's reason for registering its own skin here at all: a project added after that walk missed
+   * the restore of the previous session's state, and a skin the reader had left on came back off. The
+   * service closes that gap itself now -- `register()` calls `deps.adopt(id)`, so a project arriving later
+   * is applied too -- but registering here is still the earliest correct place, and the only one this file
+   * controls.
+   *
+   * THE ID IS THE FRAMEWORK'S OWN (`glass`), DIFFERENT FROM THE PACKAGE'S (`liquid-glass`), and that is
+   * what lets the two coexist: a reader who installed the package sees two cards, and the one-skin policy
+   * keeps them exclusive. Nothing here yields, retires, or takes anything over.
+   *
+   * THE OVERLAY IS NOT INSTALLED HERE, and that is deliberate: it belongs to the project being ON, so it
+   * goes in and out with the definition's `apply` / `cleanup`. Installing it from this always-loaded half
+   * would put a sheet in the page of a reader who never turns Glass on. See `skins/glass/skin.js`.
+   *
+   * THE CATCH IS DEFENSIVE RATHER THAN CONTROL FLOW. Nothing in this composition can refuse this
+   * registration -- the manifest is a literal and the id is free by construction -- so a failure means a
+   * third party has claimed `glass`, or the service is not what this file expects. Either way the framework
+   * still has to load: the panel, the host plane and every installed package live in this same apply, and
+   * discarding all of them because one skin could not register is a worse outcome than a missing card. One
+   * `error` line says which project and why.
    */
+  for (const builtIn of require('./skins/index.js').BUILT_IN_PROJECTS) {
+    try {
+      ctx.uiProjects.register(builtIn.manifest, builtIn.create())
+    } catch (error) {
+      console.error(`[dsh-ui-projects] the built-in project "${builtIn.manifest?.id}" did not register`, error)
+    }
+  }
 
   const store = createStore({
     runtime,

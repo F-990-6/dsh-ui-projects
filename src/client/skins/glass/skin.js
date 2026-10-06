@@ -23,6 +23,19 @@
  * `apply`, or twice, or during unload. It reads its record, deletes it, and only then acts, so a second
  * call finds nothing to do.
  *
+ * ## What this copy adds to the package's
+ *
+ * THE OVERLAY GOES IN AND OUT WITH `apply` / `cleanup`, NOT WITH THE PLUGIN (2026-10-06). The package
+ * installs its overlay when its PLUGIN loads, and for that package that is the same moment as "the reader
+ * has this on", because the plugin exists to register this one project. The framework's client half is not
+ * that: it is loaded for every reader, always. Installing the overlay there put a sheet into the page of
+ * somebody who never turns Glass on -- inert, since every rule in it is gated by the project's marker, but
+ * present, and not part of the runtime's stylesheet bookkeeping. `apply` and `cleanup` are the two moments
+ * that do mean "the reader has this on", so the overlay goes in and comes out with them.
+ *
+ * The sheets themselves are untouched: `installOverlay` inserts the same string the package inserts, by
+ * the same `<head>` insertion, so the emitted CSS still matches the package's byte for byte.
+ *
  * ## What it does not do
  *
  * It owns no DOM, runs no observer and starts no timer: everything it contributes is a stylesheet handed
@@ -33,6 +46,12 @@
 
 const tokensCss = require('./tokens.css')
 const glassCss = require('./glass.css')
+/*
+ * The runtime overlay, and the one place this copy behaves differently from the package's -- see the
+ * header section "What this copy adds to the package's". Both halves are called from `apply` / `cleanup`
+ * rather than from a plugin, and the reason is in that section.
+ */
+const { installOverlay, removeOverlay } = require('./overlay.js')
 
 /**
  * The behaviour this package contributes, as a FACTORY.
@@ -82,6 +101,11 @@ function createLiquidGlass() {
         // this only asks.
         ctx.dismissBootPage?.()
 
+        // The overlay is the third sheet, and the only one the runtime does not own: it goes into <head>
+        // raw, because the scoped path cannot out-specify the shell's own dialog rules. See the header.
+        // Idempotent by id, so a second apply stacks nothing.
+        installOverlay()
+
         applied.add(ctx.id)
       } catch (error) {
         // Roll back to the OFF state rather than leaving a half-applied skin behind, then report it.
@@ -96,10 +120,14 @@ function createLiquidGlass() {
      * @param {import('dsh-ui-projects/registry').UiProjectContext} ctx
      */
     cleanup(ctx) {
-      // Nothing to release, and that is the design: no DOM, no observer, no timer, and the stylesheets
-      // belong to the runtime. Clearing the record is what makes a re-apply possible, and what makes a
-      // second cleanup a no-op.
+      // The record is cleared FIRST: that is what makes a second cleanup a no-op and a re-apply possible,
+      // and everything below assumes it has already happened.
       applied.delete(ctx.id)
+
+      // The one thing this file owns in the DOM -- the overlay `apply` inserted. The two scoped sheets
+      // belong to the runtime and went with the project before this was called. Idempotent, and silent
+      // when there is nothing to remove.
+      removeOverlay()
     },
   }
 }

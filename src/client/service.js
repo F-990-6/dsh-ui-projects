@@ -267,7 +267,23 @@ export function createUiProjectsService(deps) {
       )
     }
     if (manifest.package === undefined) throw new TypeError('unreachable')
-    return { package: manifest.package, version: manifest.version, registeredBy: currentFiberName(this?.ctx) }
+    /*
+     * `builtIn` TRAVELS WITH THE OWNERSHIP DESCRIPTOR, and it has to travel HERE rather than as a project
+     * field: the registry's `normalize` builds a project record from a fixed list of keys, so a manifest
+     * flag that is not threaded through this object reaches nothing at all. Measured rather than assumed —
+     * the framework's built-in check read `undefined` for BOTH `project.builtIn` and `source.builtIn`
+     * until this line existed (2026-10-06).
+     *
+     * It belongs on `source` for the same reason `package` does: whether a project ships with the
+     * framework is a fact about WHO registered it. Always a boolean, so a reader never has to tell
+     * "declared false" from "not declared": a package that says nothing is simply not built in.
+     */
+    return {
+      package: manifest.package,
+      version: manifest.version,
+      registeredBy: currentFiberName(this?.ctx),
+      builtIn: manifest.builtIn === true,
+    }
   }
 
   return {

@@ -84,7 +84,7 @@ body {
 
   --lg-glass-blur: 24px;
   --lg-glass-saturate: 140%;
-  --lg-glass-radius: 24px;
+  --lg-glass-radius: 32px;
   --lg-glass-shadow: 0 24px 60px rgb(0 0 0 / 6%);
   /*
    * TWO INSETS, AND NEITHER IS A MIRROR. The top line is a 14% hairline — the light that lands on a
