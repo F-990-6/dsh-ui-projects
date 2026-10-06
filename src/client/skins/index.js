@@ -10,12 +10,12 @@
  * WHAT AN ENTRY IS, and why these three things:
  *
  *   manifest        the fields the card shows and the registry keys on. Hand-written here for a built-in
- *                   (see `./liquid-glass/manifest.js`), generated from `package.json` for a package.
+ *                   (see `./glass/manifest.js`), generated from `package.json` for a package.
  *   create()        the behaviour — `apply` and `cleanup` and nothing else. A FACTORY, because a
  *                   registration owns its own state and the registry may register the same definition
  *                   twice across a reload.
  *   installOverlay() an optional sheet inserted outside the scoped path, for the surfaces the scoped path
- *                   cannot out-specify. Most projects have none; see `./liquid-glass/overlay.js` for why
+ *                   cannot out-specify. Most projects have none; see `./glass/overlay.js` for why
  *                   this one does.
  *
  * NOTHING HERE IS REQUIRED AT LOAD TIME BY `src/client/index.js`'s MODULE SCOPE — only from inside
@@ -24,9 +24,9 @@
  * shell's frozen modules, so a load-time `require` of anything outside that table makes the whole plugin
  * fail to load.
  */
-const manifest = require('./liquid-glass/manifest.js')
-const { createLiquidGlass } = require('./liquid-glass/skin.js')
-const { installOverlay, removeOverlay } = require('./liquid-glass/overlay.js')
+const manifest = require('./glass/manifest.js')
+const { createLiquidGlass } = require('./glass/skin.js')
+const { installOverlay, removeOverlay } = require('./glass/overlay.js')
 
 module.exports = {
   BUILT_IN_PROJECTS: [{ manifest, create: createLiquidGlass, installOverlay, removeOverlay }],

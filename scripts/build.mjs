@@ -98,11 +98,11 @@ const MODULE_ORDER = [
    * them in its own build — a file under `src/client` that is not in this list is bundled nowhere, and
    * the failure it produces ("no such shell module") is a runtime one.
    */
-  'skins/liquid-glass/tokens.css',
-  'skins/liquid-glass/glass.css',
-  'skins/liquid-glass/skin.js',
-  'skins/liquid-glass/overlay.js',
-  'skins/liquid-glass/manifest.js',
+  'skins/glass/tokens.css',
+  'skins/glass/glass.css',
+  'skins/glass/skin.js',
+  'skins/glass/overlay.js',
+  'skins/glass/manifest.js',
   'skins/index.js',
   'index.js',
 ]
