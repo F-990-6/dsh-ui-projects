@@ -1069,7 +1069,7 @@ body .cm-root {
  * fill, the lit rim, the shadow pair and the inner highlight are what the eye reads as glass in the first
  * place.
  */
-body :is([data-chat-flow-kind='user'], [data-chat-flow-kind='steering']) > * {
+body :is([data-chat-flow-kind='user'], [data-chat-flow-kind='steering']) [class*='_bubble'] {
   background-color: var(--lg-glass-panel-inner);
   border: 1px solid var(--lg-glass-border);
   box-shadow: var(--lg-glass-shadow), var(--lg-glass-inner-highlight);

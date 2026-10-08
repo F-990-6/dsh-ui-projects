@@ -32,6 +32,8 @@ body[data-ui-project-glass="on"]{
 
   --dsw-alias-bg-layer-3: rgb(255 255 255 / 62%);
   --dsw-alias-bg-overlay: rgb(255 255 255 / 62%);
+
+  --dsw-specific-bubble: var(--lg-glass-panel-inner);
   --dsw-alias-bg-module-platform: rgb(248 249 255 / 46%);
   --dsw-alias-bg-skeleton: rgb(15 23 42 / 6%);
 

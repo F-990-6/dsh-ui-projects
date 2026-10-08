@@ -58,6 +58,22 @@
      anything at all. */
   --dsw-alias-bg-layer-3: rgb(255 255 255 / 62%);
   --dsw-alias-bg-overlay: rgb(255 255 255 / 62%);
+
+  /*
+   * THE READER'S OWN MESSAGE, AND WHY IT NEEDED A LINE OF ITS OWN HERE.
+   *
+   * This sheet rebinds the four `bg-layer` aliases and stops, which is enough for every panel the material
+   * was designed around. The conversation bubble is NOT one of those aliases: the chat's own stylesheet
+   * paints it with `background: var(--dsw-specific-bubble)`, a token of its own, so it kept the shell's
+   * opaque default while everything around it went translucent. A selector could not have fixed that
+   * cleanly -- those class names are hashed per build -- and a selector is not where this belongs: the
+   * bubble is a token consumer like every other surface here, so it gets the token.
+   *
+   * THEMED ONCE, DELIBERATELY: `--lg-glass-panel-inner` is the themed alias and resolves to the dark pair
+   * inside the material's own dark block, so a literal dark half here would only be one more place for the
+   * two to drift apart.
+   */
+  --dsw-specific-bubble: var(--lg-glass-panel-inner);
   --dsw-alias-bg-module-platform: rgb(248 249 255 / 46%);
   --dsw-alias-bg-skeleton: rgb(15 23 42 / 6%);
   /* The sidebar is the most see-through of all: it is the surface a reader looks
