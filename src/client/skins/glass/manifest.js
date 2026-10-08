@@ -45,10 +45,17 @@ module.exports = {
    * THE VERSION IS THE MATERIAL'S, NOT THE FRAMEWORK'S, and this is a deliberate departure from the rule
    * `src/client/service.js` states for ordinary projects. The version is what a checklist confirmation is
    * stamped with, so tying it to the framework would invalidate every reader's confirmed checklist on
-   * every framework patch — a change to the panel would mark the skin as unverified. It tracks the
-   * version of the skin package this copy came from, and moves when the material moves.
+   * every framework patch — a change to the panel would mark the skin as unverified.
+   *
+   * IT USED TO TRACK THE SKIN PACKAGE, AND THAT PACKAGE IS GONE. This was the material's own line, continued
+   * into this copy; the package froze on 2026-10-06 and was archived and deleted, so the line continues here.
+   * 1.0.2 is the frost dropping to 2px and the reader's own messages getting the material, both 2026-10-08.
+   *
+   * AND IT IS NOT DECORATION: it is the only thing in the settings card that says WHICH material is running.
+   * It stayed at 1.0.1 across two visible changes, so the card went on claiming the old skin while the new
+   * one was live — which is exactly how a reader concludes that a change never landed.
    */
-  version: '1.0.1',
+  version: '1.0.2',
 
   schemaVersion: 1,
   pluginApiVersion: 1,
