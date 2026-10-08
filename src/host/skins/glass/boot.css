@@ -194,7 +194,7 @@ body[data-ui-project-glass="on"]{
   --lg-glass-border-light: rgb(255 255 255 / 19%);
   --lg-glass-border-dark: rgb(255 255 255 / 14%);
 
-  --lg-glass-blur: 18px;
+  --lg-glass-blur: 2px;
   --lg-glass-saturate: 150%;
   --lg-glass-radius: 32px;
 
@@ -227,10 +227,10 @@ body[data-ui-project-glass="on"]{
   --lg-glass-code-dark: #202327;
 
   --lg-glass-blur-mobile: 16px;
-  --lg-glass-blur-menu: 18px;
+  --lg-glass-blur-menu: 3px;
 
-  --lg-glass-blur-medium: 13px;
-  --lg-glass-blur-low: 10px;
+  --lg-glass-blur-medium: 2px;
+  --lg-glass-blur-low: 2px;
   --lg-accent-alt: #5856d6;
   --lg-accent-alt-dark: #5e5ce6;
 }

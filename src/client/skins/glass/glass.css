@@ -87,7 +87,7 @@ body {
   --lg-glass-border-light: rgb(255 255 255 / 19%);
   --lg-glass-border-dark: rgb(255 255 255 / 14%);
 
-  --lg-glass-blur: 18px;
+  --lg-glass-blur: 2px;
   --lg-glass-saturate: 150%;
   --lg-glass-radius: 32px;
   /*
@@ -279,16 +279,16 @@ body {
    *     name per role while the paired tokens above remain the single source of truth.
    */
   --lg-glass-blur-mobile: 16px;
-  --lg-glass-blur-menu: 18px;
+  --lg-glass-blur-menu: 3px;
   /*
    * The two degradation tiers the runtime selects between by publishing `data-ui-perf`, and the
    * reason the specification's "12–16px on a low-end device" has values to name at all.
    *
-   * The FULL tier is `--lg-glass-blur` (20px) and needs no token of its own: it is what the rules
+   * The FULL tier is `--lg-glass-blur` and needs no token of its own: it is what the rules
    * already use when no attribute is present.
    */
-  --lg-glass-blur-medium: 13px;
-  --lg-glass-blur-low: 10px;
+  --lg-glass-blur-medium: 2px;
+  --lg-glass-blur-low: 2px;
   --lg-accent-alt: #5856d6;
   --lg-accent-alt-dark: #5e5ce6;
 }
