@@ -49,13 +49,15 @@ module.exports = {
    *
    * IT USED TO TRACK THE SKIN PACKAGE, AND THAT PACKAGE IS GONE. This was the material's own line, continued
    * into this copy; the package froze on 2026-10-06 and was archived and deleted, so the line continues here.
-   * 1.0.2 is the frost dropping to 2px and the reader's own messages getting the material, both 2026-10-08.
+   * 1.0.2 was the frost dropping to 2px and the first attempt at the reader's own message; 1.0.3 is that
+   * message ACTUALLY following the material, because its own token had never been rebound and the selector
+   * written for it could not do the job. Both on 2026-10-08.
    *
    * AND IT IS NOT DECORATION: it is the only thing in the settings card that says WHICH material is running.
    * It stayed at 1.0.1 across two visible changes, so the card went on claiming the old skin while the new
    * one was live — which is exactly how a reader concludes that a change never landed.
    */
-  version: '1.0.2',
+  version: '1.0.3',
 
   schemaVersion: 1,
   pluginApiVersion: 1,
