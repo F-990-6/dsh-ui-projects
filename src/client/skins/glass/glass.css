@@ -1047,6 +1047,43 @@ body .cm-root {
  * repository has. Registered by name in `scripts/skin-exceptions.mjs`; changing this rule means
  * changing that entry and the suite with it.
  */
+/*
+ * THE CONVERSATION'S OWN CARD, which the skin never dressed.
+ *
+ * The reader compared this material against a wallpaper plugin whose glass controls cover, in its own
+ * words, "the settings window, the composer, the BUBBLES and the sidebar", and asked why its conversation
+ * looked like glass while this one's did not. The answer was a gap rather than a difference of taste:
+ * `tokens.css` makes the bubble's fill translucent -- it is one of the alias layers -- but nothing here
+ * ever gave it the material's edge, its shadow or its inner light, so a message read as a tinted rectangle
+ * while every panel around it read as a pane.
+ *
+ * THE ANCHOR IS THE SHELL'S OWN, taken from its stylesheet rather than guessed: it identifies the reader's
+ * own rows as `:is([data-chat-flow-kind=user],[data-chat-flow-kind=steering])` when it decides which rows
+ * can reveal their action bar, and `steering` is the same voice interrupting mid-turn. Both are here for
+ * that reason.
+ *
+ * NO FROST, ON PURPOSE, and the wallpaper plugin is the reason to say so out loud: it applies its blur to
+ * its conversation cards too, which means one backdrop-filter layer per message in a list that keeps the
+ * whole history in the DOM. At the 2px this material now uses the frost would not be visible anyway, so
+ * the depth is carried by the parts that cost nothing -- and the card still reads as glass because the
+ * fill, the lit rim, the shadow pair and the inner highlight are what the eye reads as glass in the first
+ * place.
+ */
+body :is([data-chat-flow-kind='user'], [data-chat-flow-kind='steering']) > * {
+  background-color: var(--lg-glass-panel-inner);
+  border: 1px solid var(--lg-glass-border);
+  box-shadow: var(--lg-glass-shadow), var(--lg-glass-inner-highlight);
+}
+
+/*
+ * NO DARK HALF, AND THE FIRST DRAFT HAD ONE. It read `--lg-glass-shadow-dark` and
+ * `--lg-glass-inner-highlight-dark`, and neither name exists: the shadow and the inner highlight are THEMED
+ * ALIASES, redefined inside the token section's dark block rather than paired light and dark. A var() that
+ * resolves to nothing invalidates the whole declaration, so that half would have silently removed the
+ * shadow from every message in dark mode -- the failure this repository keeps meeting in new disguises. The
+ * four aliases in the rule above already switch with the theme, so there is nothing for a second rule to do.
+ */
+
 body [data-slot='conversation.composer.bar'] div:has(> [data-slot='conversation.composer.dock']) {
   visibility: hidden;
 }
