@@ -73,39 +73,59 @@ environment, file edits go through an editor/tool, not through the shell.
 
 ---
 
-## 3 · Two glass plugins on one surface: whoever writes the tokens last wins
+## 3 · The window washes out, and only a client-plugin restart brings it back
 
 **Observed** (reported 2026-10-30, screenshot): *the interface "disappears" often — the whole window washes
 out to near-white and the text behind it is barely visible; restarting the PLUGIN brings it back, restarting
-dsh makes it go away again.*
+dsh makes it go away again.* Asked which plugin, the reader answered plainly: **this one.** The wallpaper
+engine is installed on that machine but switched off, so it is not in the picture.
 
-**Why that symptom shape points at ordering rather than at a style bug.** The two facts are a signature, not
-a coincidence: a plugin restart fixes it, a dsh restart breaks it. A media query or a bad declaration cannot
-behave that way — it would be constant. What changes between an app start and a client-plugin re-activation
-is **WHEN each half injects its stylesheet**, and only an ordering-dependent conflict behaves like this.
+**A correction worth keeping, because the first version of this entry got it wrong.** It blamed
+`dsh-plugin-wallpaper-engine` for writing the same shell tokens. That diagnosis was reasoned from the two
+plugins' code and was never measured, and the reader's next message falsified it in one line. The lesson is
+not "be careful"; it is that *ordering* was inferred from a symptom and then attached to a convenient suspect
+— the symptom is real, the suspect was not.
 
-**The conflict is real and it is structural.** This skin and `dsh-plugin-wallpaper-engine` both write the
-same shell tokens — `--dsw-alias-bg-layer-1/2/3`, `--dsw-alias-bg-overlay` and the module/platform fills — and
-both also style `[role='dialog']`, the columns and the body-level portal containers. Custom properties have
-one value per element and no arbitration: the LAST writer in the cascade wins, so an engine preset that
-happens to be light and dense (its `作者自用`, 70% white) landing after this skin's dark tokens produces
-exactly a white wash, and the reverse order looks correct.
+**What the symptom does establish.** A plugin restart fixes it and a dsh restart breaks it. Nothing static
+can behave that way: a media query or a bad declaration would be constant. So something about this skin is
+injected, or measured, in a different ORDER on the two paths. This package has exactly two injection
+channels, and both are plausible carriers:
 
-**What to do, in order, and each step is one click:**
+1. **`src/host/skins/glass/boot.css`** — pushed by the host into `<head>` at page load, first paint, already
+   scoped (`body[data-ui-project-glass="on"]`), and carrying the token block.
+2. **The client half** — `glass.css` + `tokens.css` scoped by `scopeCss` when the project is enabled, plus
+   the four overlay sheets inserted RAW into `<head>` (never scoped, by design).
 
-1. In the wallpaper engine, set its glass preset to `原色直出` (raw colour, no treatment) or turn its glass
-   off and keep the wallpaper. Then restart dsh. If the interface stays correct, the conflict is confirmed
-   and this skin can own the material on its own.
-2. If it still washes out, disable this skin (project list → Glass) and restart dsh. A stable plain shell
-   means the wash was the engine, not this skin; a still-broken shell means neither and the shell's own
-   theme bootstrap is the place to look (see section 1).
-3. Only if both are stable alone does it make sense to spend time making them coexist — and the honest
-   design answer is that two plugins painting one material cannot be reconciled by either of them alone.
+**The three questions that would settle it, and none of them needs a restart to answer.** They are listed in
+this order because each one shrinks the space by half:
 
-**What this package must NOT do about it**: adding `!important` to every token, or a mutation observer that
-re-stamps on every external style change, would win the fight by making the other plugin unpredictable
-instead. A token war has no stable outcome, and the fix belongs in the composition (one plugin owns the
-material), not in a stronger selector.
+- **When the window is washed out, does the skin's settings card still show its material version?** A version
+  means the client half ran and its sheet is applied, so the wash is a VALUE problem inside our own sheet. No
+  version means the client half did not run, and what the reader sees is the boot sheet or the plain shell.
+- **Is the wash light or dark?** A near-white wash under a DARK theme is the light token block winning, which
+  points at the order of the scoped sheets. A wash in light mode is more likely the opaque branch (see
+  below) rather than a wrong palette.
+- **Does it happen on a fresh page load, or only after opening a dialog/menu?** The overlay is the only sheet
+  that runs on dialogs and portals, and it is the only one inserted raw rather than scoped — a bug there
+  appears exactly when a dialog opens and would look like "the background vanished behind the dialog".
 
-**Status: recorded, not fixed here. Not ours to fix — the two plugins must not both paint the shell.**
+**The candidate that needs no ordering at all, and should be checked before any of the above**: the four
+degradation branches — `@supports not ((backdrop-filter: blur(1px)) …)`, `prefers-reduced-transparency`,
+`forced-colors` and `prefers-contrast` — all raise every fill to OPAQUE (`#fff` / `#1c1c1e`). If any of them
+is active on this machine, the whole app is drawn with opaque fills and reads as a flat wash, and a plugin
+restart would change nothing (so this candidate is falsified only by the restart fixing it — which the reader
+reports it does).
+
+**Status: OPEN, and ours.** Not diagnosed, not fixed. The next step is measurement, not more reasoning: the
+three questions above, plus — if a browser with an authenticated tab can be attached — a capture of
+`document.body.getAttributeNames()` and the computed `--dsw-alias-bg-layer-1` while the window is washed out.
+
+## 4 · Two plugins on one surface (kept as a shape, not as a diagnosis)
+
+The concern that produced the first version of section 3 is still real in general: custom properties have one
+value per element and no arbitration, so any two plugins that both paint the shell's token layer will fight,
+and the last writer wins. It is recorded here only as a shape to check when the composition actually contains
+two such plugins — **not** as the cause of section 3. And the guidance stands: the answer to that shape is one
+owner per surface, never an `!important` sweep or an observer that re-stamps after a foreign write.
+
 
