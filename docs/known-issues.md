@@ -65,3 +65,47 @@ Use Node (`readFileSync(…, 'utf8')` / `writeFileSync(…, 'utf8')`) or PowerSh
 `Set-Content -Encoding utf8NoBOM`, never PS 5.1's `WriteAllText` and never a shell redirect into a source
 file. Then count the mojibake characters; zero is the only acceptable number. The full account lives in the
 skin monorepo's `docs/known-issues.md` (section 8), where it happened.
+
+**And PS 5.1 is not hypothetical here**: on 2026-10-30 this machine's shell was Windows PowerShell 5.1, and
+`Set-Content -Encoding utf8NoBOM` failed outright ("cannot convert the value "utf8NoBOM"") on the release
+bump. It failed SAFELY — the file was neither changed nor corrupted — but the lesson stands: in this
+environment, file edits go through an editor/tool, not through the shell.
+
+---
+
+## 3 · Two glass plugins on one surface: whoever writes the tokens last wins
+
+**Observed** (reported 2026-10-30, screenshot): *the interface "disappears" often — the whole window washes
+out to near-white and the text behind it is barely visible; restarting the PLUGIN brings it back, restarting
+dsh makes it go away again.*
+
+**Why that symptom shape points at ordering rather than at a style bug.** The two facts are a signature, not
+a coincidence: a plugin restart fixes it, a dsh restart breaks it. A media query or a bad declaration cannot
+behave that way — it would be constant. What changes between an app start and a client-plugin re-activation
+is **WHEN each half injects its stylesheet**, and only an ordering-dependent conflict behaves like this.
+
+**The conflict is real and it is structural.** This skin and `dsh-plugin-wallpaper-engine` both write the
+same shell tokens — `--dsw-alias-bg-layer-1/2/3`, `--dsw-alias-bg-overlay` and the module/platform fills — and
+both also style `[role='dialog']`, the columns and the body-level portal containers. Custom properties have
+one value per element and no arbitration: the LAST writer in the cascade wins, so an engine preset that
+happens to be light and dense (its `作者自用`, 70% white) landing after this skin's dark tokens produces
+exactly a white wash, and the reverse order looks correct.
+
+**What to do, in order, and each step is one click:**
+
+1. In the wallpaper engine, set its glass preset to `原色直出` (raw colour, no treatment) or turn its glass
+   off and keep the wallpaper. Then restart dsh. If the interface stays correct, the conflict is confirmed
+   and this skin can own the material on its own.
+2. If it still washes out, disable this skin (project list → Glass) and restart dsh. A stable plain shell
+   means the wash was the engine, not this skin; a still-broken shell means neither and the shell's own
+   theme bootstrap is the place to look (see section 1).
+3. Only if both are stable alone does it make sense to spend time making them coexist — and the honest
+   design answer is that two plugins painting one material cannot be reconciled by either of them alone.
+
+**What this package must NOT do about it**: adding `!important` to every token, or a mutation observer that
+re-stamps on every external style change, would win the fight by making the other plugin unpredictable
+instead. A token war has no stable outcome, and the fix belongs in the composition (one plugin owns the
+material), not in a stronger selector.
+
+**Status: recorded, not fixed here. Not ours to fix — the two plugins must not both paint the shell.**
+
