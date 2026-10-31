@@ -70,7 +70,9 @@ const defaultCancel = (handle) => {
  * @param {Record<string, unknown>} [deps.options] The registration options, minus `name`.
  * @param {unknown} deps.render What the slot renders.
  * @param {(entry: { source: 'inject'|'fallback', ok: boolean, message?: string }) => void} [deps.record]
- *   Called exactly once, with which path won and whether the shell accepted it.
+ *   Called once PER ATTEMPT: a refusal is recorded and the other path still gets its turn, so a reader that
+ *   wants the outcome should look for the row whose `ok` is true. Before the settle-on-success fix there
+ *   could only ever be one row, because a refusal ended the contribution.
  * @param {(fn: () => void, ms: number) => any} [deps.schedule]
  * @param {(handle: any) => void} [deps.cancel]
  * @param {number} [deps.fallbackMs]
@@ -93,9 +95,23 @@ export function registerIntoSlot({
   /** @param {'inject'|'fallback'} source */
   const contribute = (source) => {
     if (settled) return
-    settled = true
     try {
       const handle = slots.register({ name, ...options }, render)
+      /*
+       * SETTLED ON SUCCESS ONLY, AND THIS LINE WAS THE BUG.
+       *
+       * It used to be `settled = true` BEFORE the try, so an attempt that THREW still counted as the
+       * contribution: the other path then returned at the guard above and the section was lost with no
+       * second chance. That is exactly what a reader saw on 2026-10-31 after the desktop app updated --
+       * no Settings › UI section at all, while re-activating the plugin brought it back, because by then
+       * the first attempt succeeded.
+       *
+       * The two paths are not interchangeable attempts at the same thing: `inject` fires when the shell
+       * declares the slot, and a registration can still be refused at that instant (the declaration is
+       * announced before the slot is ready to accept). Letting a refusal fall through to the deadline is
+       * the whole point of having a deadline.
+       */
+      settled = true
       registered = typeof handle === 'function' ? handle : () => {}
       record({ source, ok: true })
     } catch (error) {
