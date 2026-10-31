@@ -55,14 +55,19 @@
 [data-uip-section-row]::before {
   content: '';
   flex: none;
-  /* The inner rectangle: 14x11 of border box, so the outline lands at about the gear's own footprint. */
-  width: 14px;
-  height: 11px;
-  border: 1.5px solid currentColor;
-  border-radius: 2.5px;
-  /* The outer rectangle, and the gap between the two. */
-  outline: 1.5px solid currentColor;
-  outline-offset: 2.5px;
+  /*
+   * SIZED TO THE OTHER NAV ICONS, NOT TO ITSELF. With 1.25px rings at a 1.75px offset the outline sits 3px
+   * outside the border box, so 12x9 of border box reads as about 18x15 in total — the footprint of the
+   * gears beside it. The first version was 14x11 with 1.5px rings at a 2.5px offset, which came out around
+   * 24x21 and looked oversized next to them; the fix is the four numbers, and they are listed together so
+   * the next adjustment is one place.
+   */
+  width: 12px;
+  height: 9px;
+  border: 1.25px solid currentColor;
+  border-radius: 2px;
+  outline: 1.25px solid currentColor;
+  outline-offset: 1.75px;
   box-sizing: border-box;
 }
 
