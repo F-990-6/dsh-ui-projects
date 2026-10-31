@@ -25,6 +25,64 @@ Verification vocabulary used below:
 
 ---
 
+## Round 59 — a settings section that could be lost, an icon that cannot be contributed, and four wrong guesses recorded
+
+**Status: done. `build` green, `verify.mjs` 920 / 0, `load-check.mjs` 93 / 0, `host-check.mjs` no failing
+assertion, `check-builtin.test.mjs` 28 / 0, `check-installed.test.mjs` 140 / 0. Material stays at 1.0.7 —
+none of this round touched the skin.**
+
+### The one real bug: a refused contribution settled the slot
+
+Reported as *"after restarting dsh the interface is gone; restarting the plugin brings it back"*. The cause
+was one line's position in `slot-registration.js`: `settled = true` ran BEFORE the `try`, so an attempt that
+THREW still counted as the contribution, the deadline fallback returned at the guard, and the section was
+lost with no second chance. The two paths are not interchangeable — `inject` fires when the shell declares
+the slot, and a registration can still be refused at that instant, which is exactly what the deadline is
+for. It now settles on success only.
+
+**And it explains the whole report**: with no Settings › UI section there is no way to open the project list,
+so the Glass skin could not be switched on either, and the cost page losing the material was a consequence
+rather than a second bug.
+
+### The section's icon: contributed is impossible, marked is what shipped
+
+The live slot catalog for `settings.section` lists exactly three registrant options — `id`, `order`,
+`label` — so the gear the shell draws beside every section cannot be replaced through the registration. The
+row does contain the one thing this plugin owns in it, its own label, so the client half marks that row
+(`data-uip-section-row`) and `core.css` draws two nested rounded rectangles: the `border` is the inner ring,
+the `outline` is the outer one, and `outline-offset` is the gap between them. Two rings from one
+pseudo-element, `currentColor` throughout, so the nav's own ink carries both themes and the active state.
+
+Three follow-ups came from looking at it: the first version was oversized next to its neighbours; the second
+still looked larger; the third revealed a **layout fact** rather than a size one — an outline takes no part
+in layout, so a 12x9 border box whose ring spilled 3px on every side occupied 12x9 and painted 18x15, which
+is why its visual left edge began left of every gear. The `margin` now reserves exactly
+`outline-offset + ring weight`, so the space occupied and the space painted are the same number.
+
+**And it cannot be in the first frame**: the nav row is created by the shell when the settings panel mounts,
+long after the first paint, and a marker cannot be applied to an element that does not exist. The gear IS
+the first frame. What can be bought is a shorter gap, so the marker is scheduled on `requestAnimationFrame`
+— after layout, where styling can take effect — with an already-marked guard that keeps a streaming reply
+from paying for a scan per token.
+
+### Four wrong guesses, recorded because they cost rounds
+
+1. **The cost meter.** Three attempts (material 1.0.4, 1.0.5, 1.0.6) rebound `--cm-opaque-base` on the body,
+   then on the plugin's own subtree, then at another tier. Decoding that plugin's compressed stylesheet
+   produced the actual declaration — `rgb(from var(--dsw-alias-bg-layer-2, …) r g b / 1)` — and the `/ 1`
+   forces this skin's alpha to 1 inside its own rules. `--cm-opaque-base` is used once, for a gauge. All
+   three attempts are reverted; `docs/known-issues.md` section 5 has the account.
+2. **The two-plugins token war** (known-issues section 3, first version) blamed the wallpaper engine, which
+   the reader had switched off the whole time. Corrected in place.
+3. **`manifest.js` corrupted by my own hand**: a version bump through PowerShell 5.1's
+   `Set-Content -Encoding Ascii` replaced nine em-dashes with question marks. Repaired with a UTF-8-safe
+   write; the trap is the one section 2 of known-issues already documents.
+4. **Two of my own checks were wrong**, in the same way: a scan for the literal `??` flagged 25 files
+   because that is JavaScript's nullish operator, and a "does this file still have em-dashes" test reported
+   false because PowerShell 5.1 decodes UTF-8 as ANSI. Verify the instrument before trusting its reading.
+
+---
+
 ## Round 58 — the framework becomes the only source, and the derive check moves in
 
 **Status: done. `node scripts/build.mjs` green with two new checks running inside it, `node
