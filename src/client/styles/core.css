@@ -56,18 +56,26 @@
   content: '';
   flex: none;
   /*
-   * SIZED TO THE OTHER NAV ICONS, NOT TO ITSELF. With 1.25px rings at a 1.75px offset the outline sits 3px
-   * outside the border box, so 12x9 of border box reads as about 18x15 in total — the footprint of the
-   * gears beside it. The first version was 14x11 with 1.5px rings at a 2.5px offset, which came out around
-   * 24x21 and looked oversized next to them; the fix is the four numbers, and they are listed together so
-   * the next adjustment is one place.
+   * SMALLER THAN THE NEIGHBOURS, AND CENTRED IN THE SAME SLOT THEY USE.
+   *
+   * The margin is not spacing: an outline takes no part in layout, so a 10x7 border box whose outer ring
+   * spills 2.5px on every side occupied only 10x7 in the flex row while looking 15x12. That is why the icon
+   * read as "protruding forward" -- its visual left edge sat 2.5px further left than every gear beside it.
+   * The margin reserves exactly the ring's overflow, so the visual starts where the other icons start.
+   *
+   * The four numbers, together, because the next adjustment should be one place:
+   *   width / height      the INNER rectangle
+   *   border / outline    the two rings, deliberately the same weight
+   *   outline-offset      the gap between them
+   *   margin              exactly offset + ring weight, so layout matches the paint
    */
-  width: 12px;
-  height: 9px;
-  border: 1.25px solid currentColor;
-  border-radius: 2px;
-  outline: 1.25px solid currentColor;
-  outline-offset: 1.75px;
+  width: 10px;
+  height: 7px;
+  border: 1px solid currentColor;
+  border-radius: 1.5px;
+  outline: 1px solid currentColor;
+  outline-offset: 1.5px;
+  margin: 2.5px;
   box-sizing: border-box;
 }
 
