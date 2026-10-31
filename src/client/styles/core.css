@@ -35,9 +35,16 @@
  * `settings.section` accepts id, order and label and NOTHING else, so the shell draws its own gear beside
  * every section and an icon cannot be contributed through the registration. The row belongs to the shell,
  * so this does not guess at its markup: the client half marks OUR row (found by our own label, see
- * `index.js`) with `data-uip-section-row`, and the rules below replace the gear with a rectangle — a frame
- * with a bar across its top, which is what 界面 means. `currentColor` throughout, so the nav's own ink
- * carries both themes and the active state without a second rule.
+ * `index.js`) with `data-uip-section-row`, and the rules below replace the gear with TWO nested rounded
+ * rectangles — an outer frame and an inner one with a gap between them, which is the shape a reader asked
+ * for: a window with a window inside it. `currentColor` throughout, so the nav's own ink carries both themes
+ * and the active state without a second rule.
+ *
+ * TWO RINGS FROM ONE PSEUDO-ELEMENT, and the trick is worth stating because it is one line: the `border`
+ * draws the INNER rectangle and the `outline` draws the OUTER one, with `outline-offset` as the gap. An
+ * outline does not take part in layout, so the row's flex item is the inner rectangle and the outer ring
+ * spills around it — which is exactly the "inset frame" look, without a second pseudo-element and without
+ * absolutely positioning anything in the shell's row.
  *
  * Delete the marker, these rules and this note if the shell ever accepts an icon in the registration.
  */
@@ -48,11 +55,14 @@
 [data-uip-section-row]::before {
   content: '';
   flex: none;
+  /* The inner rectangle: 14x11 of border box, so the outline lands at about the gear's own footprint. */
   width: 14px;
   height: 11px;
   border: 1.5px solid currentColor;
   border-radius: 2.5px;
-  background: linear-gradient(currentColor, currentColor) top / 100% 1.5px no-repeat;
+  /* The outer rectangle, and the gap between the two. */
+  outline: 1.5px solid currentColor;
+  outline-offset: 2.5px;
   box-sizing: border-box;
 }
 
