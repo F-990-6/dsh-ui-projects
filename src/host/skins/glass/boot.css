@@ -35,7 +35,7 @@ body[data-ui-project-glass="on"]{
 
   --dsw-specific-bubble: var(--lg-glass-panel-inner);
 
-  --cm-opaque-base: var(--lg-glass-panel-inner-strong);
+  --cm-opaque-base: var(--lg-glass-panel-inner);
 
   --dsw-alias-bg-module-platform: rgb(248 249 255 / 46%);
   --dsw-alias-bg-skeleton: rgb(15 23 42 / 6%);
