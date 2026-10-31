@@ -1027,6 +1027,23 @@ body .cm-root {
 }
 
 /*
+ * AND THE COST METER'S OPAQUE BASE IS REBOUND ON ITS OWN ELEMENTS, not inherited from the body.
+ *
+ * A body-level declaration was the first attempt and it changed nothing: the plugin declares
+ * `--cm-opaque-base` on one of its OWN containers, and a declaration on the element itself beats anything
+ * inherited from an ancestor however specific the ancestor's selector is. The version card read 1.0.4 while
+ * the cost page stayed white, which is exactly what that cascade rule predicts.
+ *
+ * THE PREFIX IS THE PLUGIN'S, not a guess from its markup: its stylesheet is assembled from a vocabulary
+ * whose class fragments all begin `.cm-`. `[class^='cm-'], [class*=' cm-']` therefore names the plugin's own
+ * subtree and nothing else — and the rule is written UNSCOPED, because the scoper wraps every rule in this
+ * file with the project's marker. Writing that marker by hand here is the one thing this file must not do:
+ * it would be wrapped twice and never match. The suite asserts it, and it caught exactly that twice.
+ */
+:is([class^='cm-'], [class*=' cm-']) {
+  --cm-opaque-base: var(--lg-glass-panel-inner-strong);
+}
+/*
  * The composer's stats dock, by product decision: the token counts and the context ring under the
  * input should not be on screen.
  *
