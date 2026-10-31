@@ -386,8 +386,11 @@ function apply(ctx) {
    * recomputed behind a short debounce whenever the document changes, so a re-render, a locale change or a
    * panel that mounts later are all picked up without keeping state.
    *
-   * The debounce is not decoration: the conversation streams text into the DOM continuously, and a
-   * per-mutation scan of every button in the document would be a cost paid on every token.
+   * AND IT CANNOT BE IN THE FIRST FRAME, which is worth stating because it was asked for: the nav row is
+   * created by the shell when the settings panel mounts, long after the first paint, and the marker cannot
+   * be applied to an element that does not exist. The gear is therefore the first frame, and the only thing
+   * a rule here can buy is a shorter gap — hence a frame rather than a debounce, plus the cheap
+   * already-marked guard that keeps a streaming conversation from paying for a scan per token.
    */
   ctx.effect(() => {
     /*
@@ -399,12 +402,16 @@ function apply(ctx) {
      */
     if (typeof document === 'undefined' || document.body === null) return () => {}
     const labels = new Set([strings(detectLocale(ctx)).sectionLabel, 'UI', '界面'])
-    let timer
+    let frame
     const mark = () => {
       try {
-        for (const row of document.querySelectorAll('[data-uip-section-row]')) {
-          row.removeAttribute('data-uip-section-row')
-        }
+        /*
+         * ALREADY MARKED MEANS NOTHING TO DO, and this line is what makes a per-mutation schedule affordable:
+         * the conversation inserts nodes continuously while a reply streams, and without the guard every one
+         * of those mutations would cost a scan of every button in the document. One querySelector is the
+         * whole price when the marker is already in place.
+         */
+        if (document.querySelector('[data-uip-section-row]') !== null) return
         for (const row of document.querySelectorAll('button, a, [role="tab"]')) {
           if (labels.has((row.textContent ?? '').trim())) row.setAttribute('data-uip-section-row', '')
         }
@@ -412,10 +419,25 @@ function apply(ctx) {
         console.error('[dsh-ui-projects] the section icon could not be marked', error)
       }
     }
+    /*
+     * NEXT FRAME, NOT IN 300ms, AND NOT SYNCHRONOUSLY EITHER.
+     *
+     * The row is created by the shell when the settings panel mounts, which is long after the first paint --
+     * so the gear IS the first frame and no rule here can change that. What can be changed is how long the
+     * gear survives: this used to wait out a 300ms debounce, which is long enough to see. A frame is not.
+     * Scheduled rather than called directly because a MutationObserver callback runs before the DOM is
+     * painted; `requestAnimationFrame` lands after layout, which is when the row can actually be styled.
+     */
     const schedule = () => {
-      if (typeof setTimeout !== 'function') return
-      clearTimeout(timer)
-      timer = setTimeout(mark, 300)
+      if (typeof requestAnimationFrame === 'function') {
+        if (frame !== undefined) return
+        frame = requestAnimationFrame(() => {
+          frame = undefined
+          mark()
+        })
+        return
+      }
+      if (typeof setTimeout === 'function') frame = setTimeout(mark, 0)
     }
     mark()
     let observer
@@ -427,7 +449,8 @@ function apply(ctx) {
     }
     return () => {
       observer?.disconnect()
-      clearTimeout(timer)
+      if (frame !== undefined && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame)
+      else if (frame !== undefined && typeof clearTimeout === 'function') clearTimeout(frame)
     }
   }, 'ui-projects: section icon')
 
