@@ -30,6 +30,32 @@
  * and still be impossible to leak: no marker, no effect.
  */
 
+/* ── the section's nav icon ───────────────────────────────────────────────────
+ *
+ * `settings.section` accepts id, order and label and NOTHING else, so the shell draws its own gear beside
+ * every section and an icon cannot be contributed through the registration. The row belongs to the shell,
+ * so this does not guess at its markup: the client half marks OUR row (found by our own label, see
+ * `index.js`) with `data-uip-section-row`, and the rules below replace the gear with a rectangle — a frame
+ * with a bar across its top, which is what 界面 means. `currentColor` throughout, so the nav's own ink
+ * carries both themes and the active state without a second rule.
+ *
+ * Delete the marker, these rules and this note if the shell ever accepts an icon in the registration.
+ */
+[data-uip-section-row] svg {
+  display: none;
+}
+
+[data-uip-section-row]::before {
+  content: '';
+  flex: none;
+  width: 14px;
+  height: 11px;
+  border: 1.5px solid currentColor;
+  border-radius: 2.5px;
+  background: linear-gradient(currentColor, currentColor) top / 100% 1.5px no-repeat;
+  box-sizing: border-box;
+}
+
 /* ── page layout ───────────────────────────────────────────────────────────── */
 
 .uip-root {

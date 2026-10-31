@@ -374,6 +374,64 @@ function apply(ctx) {
   )
 
   /*
+   * THE NAV ICON, MARKED RATHER THAN DECLINED.
+   *
+   * `settings.section` accepts id, order and label and nothing else (the live slot catalog is the source of
+   * that, not a guess), so the gear the shell draws beside a section cannot be replaced through the
+   * registration. The row does still contain the one thing this plugin owns in it — our own label — so this
+   * marks the row that carries exactly that label, and `core.css` draws a rectangle in place of the gear.
+   *
+   * BY LABEL, NOT BY POSITION: a positional rule would break the day another plugin adds a section, and it
+   * would break silently. Every label this plugin can render is in the set below, and the marker is
+   * recomputed behind a short debounce whenever the document changes, so a re-render, a locale change or a
+   * panel that mounts later are all picked up without keeping state.
+   *
+   * The debounce is not decoration: the conversation streams text into the DOM continuously, and a
+   * per-mutation scan of every button in the document would be a cost paid on every token.
+   */
+  ctx.effect(() => {
+    /*
+     * A DECORATION MUST NEVER BE ABLE TO BREAK AN APPLY. The first version of this block called
+     * `MutationObserver.observe(document.body, …)` without asking whether a body exists, and the suite's
+     * sandbox has none — the throw aborted the whole client apply and took thirteen assertions with it,
+     * including every one about the service. That is the same rule this repository states for diagnostics,
+     * and it applies with more force to something a reader would never notice was missing.
+     */
+    if (typeof document === 'undefined' || document.body === null) return () => {}
+    const labels = new Set([strings(detectLocale(ctx)).sectionLabel, 'UI', '界面'])
+    let timer
+    const mark = () => {
+      try {
+        for (const row of document.querySelectorAll('[data-uip-section-row]')) {
+          row.removeAttribute('data-uip-section-row')
+        }
+        for (const row of document.querySelectorAll('button, a, [role="tab"]')) {
+          if (labels.has((row.textContent ?? '').trim())) row.setAttribute('data-uip-section-row', '')
+        }
+      } catch (error) {
+        console.error('[dsh-ui-projects] the section icon could not be marked', error)
+      }
+    }
+    const schedule = () => {
+      if (typeof setTimeout !== 'function') return
+      clearTimeout(timer)
+      timer = setTimeout(mark, 300)
+    }
+    mark()
+    let observer
+    try {
+      observer = typeof MutationObserver === 'function' ? new MutationObserver(schedule) : undefined
+      observer?.observe(document.body, { childList: true, subtree: true, characterData: false })
+    } catch {
+      observer = undefined
+    }
+    return () => {
+      observer?.disconnect()
+      clearTimeout(timer)
+    }
+  }, 'ui-projects: section icon')
+
+  /*
    * (D7, 2026-09-30: this block used to be introduced as "Settings › UI plugins: what is INSTALLED, from
    * the host, read-only." That column has been removed — the listing it described now feeds the "界面"
    * column's card menu instead.)
