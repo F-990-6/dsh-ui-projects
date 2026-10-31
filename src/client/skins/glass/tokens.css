@@ -74,6 +74,21 @@
    * two to drift apart.
    */
   --dsw-specific-bubble: var(--lg-glass-panel-inner);
+
+  /*
+   * THE COST METER'S OWN OPAQUE BASE — the same shape as the bubble above, one plugin further out.
+   *
+   * `dsh-cost-meter` 1.9.46 paints its panels with `var(--cm-opaque-base, #fff)`, a PRIVATE custom property
+   * whose name states its intent: that surface is deliberately opaque, because it is a table of figures read
+   * under time pressure. Rebinding the `--dsw-alias-bg-*` family cannot reach a property the plugin owns,
+   * which is why the settings window went glass while the cost page inside it stayed a white card.
+   *
+   * NOT TRANSPARENCY, DELIBERATELY: the densest material tier keeps the readability that intent was for,
+   * follows the theme through the same themed alias, and still carries the material's rim. The strong tier
+   * rather than the standard one, because this is the one surface in the window that is a number table.
+   */
+  --cm-opaque-base: var(--lg-glass-panel-inner-strong);
+
   --dsw-alias-bg-module-platform: rgb(248 249 255 / 46%);
   --dsw-alias-bg-skeleton: rgb(15 23 42 / 6%);
   /* The sidebar is the most see-through of all: it is the surface a reader looks

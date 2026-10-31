@@ -51,13 +51,15 @@ module.exports = {
    * into this copy; the package froze on 2026-10-06 and was archived and deleted, so the line continues here.
    * 1.0.2 was the frost dropping to 2px and the first attempt at the reader's own message; 1.0.3 is that
    * message ACTUALLY following the material, because its own token had never been rebound and the selector
-   * written for it could not do the job. Both on 2026-10-08.
+   * written for it could not do the job. Both on 2026-10-08. 1.0.4 (2026-10-31) is the cost meter following
+   * the material at last: its panels are painted with its own `--cm-opaque-base`, a token no `--dsw-alias-*`
+   * rebind could ever reach, so the settings window was glass while the cost page inside it was not.
    *
    * AND IT IS NOT DECORATION: it is the only thing in the settings card that says WHICH material is running.
    * It stayed at 1.0.1 across two visible changes, so the card went on claiming the old skin while the new
    * one was live — which is exactly how a reader concludes that a change never landed.
    */
-  version: '1.0.3',
+  version: '1.0.4',
 
   schemaVersion: 1,
   pluginApiVersion: 1,
