@@ -128,4 +128,39 @@ and the last writer wins. It is recorded here only as a shape to check when the 
 two such plugins — **not** as the cause of section 3. And the guidance stands: the answer to that shape is one
 owner per surface, never an `!important` sweep or an observer that re-stamps after a foreign write.
 
+---
+
+## 5 · The cost meter's pane is opaque on purpose, and this skin cannot reach it
+
+**Observed** (2026-10-31, three rounds of attempts): *the settings window is glass while the cost page inside
+it stays a solid white card; the material version moved three times and the page never changed.*
+
+**The declaration, decoded rather than grepped.** `dsh-cost-meter` 1.9.46 ships its stylesheet compressed — a
+vocabulary of `property:value` pairs plus rule templates whose placeholders index into it — which is why
+grepping that bundle only ever surfaces the vocabulary. Reading it and substituting the table produced the
+line that matters:
+
+```css
+rgb(from var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base, #fff)) r g b / 1)
+```
+
+`/ 1` is the whole story. The plugin takes this skin's translucent token and sets relative-colour alpha to 1,
+inside its own rules, for a pane that holds a table of figures. It is a decision, not an oversight.
+
+**`--cm-opaque-base` is a red herring, and it cost three rounds.** The package declares it (on `body`, next to
+a dark override) and uses it in exactly ONE place — a gauge's `var(--cm-opaque-base,#fff)` — so rebinding it,
+on the body or on the plugin's own subtree, at either tier, could never have touched a panel. The three
+attempts are reverted in material 1.0.7, and this section is what remains of them.
+
+**Who owns the fix**: the plugin. Two routes exist and neither is ours: its own `显示` tab if it ever offers a
+transparency or background option, or accepting the card as it is. Overriding its rules would mean
+out-specifying another package's design one selector at a time and re-doing it whenever that package ships —
+the same trap section 4 warns about, in the opposite direction.
+
+**The generalisable lesson, because this is the third time in a week**: when a surface does not follow the
+material, find the token it consumes — and then CHECK HOW IT CONSUMES IT. A plugin can consume a token and
+neutralise it (`/ 1` here; `rgb(from …)` is new syntax and easy to miss), and a token that exists and is
+rebound proves nothing about a surface that never read it.
+
+
 

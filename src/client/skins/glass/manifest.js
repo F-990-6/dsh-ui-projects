@@ -53,16 +53,18 @@ module.exports = {
    * message ACTUALLY following the material, because its own token had never been rebound and the selector
    * written for it could not do the job. Both on 2026-10-08.
    *
-   * 1.0.4 (2026-10-31) was the cost meter at last: its panels are painted with its own `--cm-opaque-base`,
-   * a token no `--dsw-alias-*` rebind could ever reach. 1.0.5 rebinds it on the plugin's own subtree. 1.0.6
-   * is the tier it was rebound to — the plugin declares the token on `body`, exactly where this sheet does,
-   * so the override WAS winning; 62% white over a light, already-blurred backdrop simply reads as white.
+   * 1.0.4, 1.0.5 AND 1.0.6 WERE ALL THE COST METER, AND ALL THREE WERE WRONG. They found
+   * `--cm-opaque-base`, rebound it on the body, then on the plugin's own subtree, then moved it a tier —
+   * and the page never changed, because that token is used once, for a gauge. The real declaration is
+   * `rgb(from var(--dsw-alias-bg-layer-2, …) r g b / 1)`: the plugin forces this skin's alpha to 1 inside
+   * its own rules, so its pane is opaque BY ITS OWN DESIGN and no rule here can reach it. 1.0.7 removes
+   * those three attempts and records the finding instead; docs/known-issues.md section 5 has the account.
    *
    * AND IT IS NOT DECORATION: it is the only thing in the settings card that says WHICH material is running.
    * It stayed at 1.0.1 across two visible changes, so the card went on claiming the old skin while the new
    * one was live — which is exactly how a reader concludes that a change never landed.
    */
-  version: '1.0.6',
+  version: '1.0.7',
 
   schemaVersion: 1,
   pluginApiVersion: 1,

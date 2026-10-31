@@ -75,24 +75,9 @@
    */
   --dsw-specific-bubble: var(--lg-glass-panel-inner);
 
-  /*
-   * THE COST METER'S OWN OPAQUE BASE — the same shape as the bubble above, one plugin further out.
-   *
-   * `dsh-cost-meter` 1.9.46 paints its panels with `var(--cm-opaque-base, #fff)`, a PRIVATE custom property
-   * whose name states its intent: that surface is deliberately opaque, because it is a table of figures read
-   * under time pressure. Rebinding the `--dsw-alias-bg-*` family cannot reach a property the plugin owns,
-   * which is why the settings window went glass while the cost page inside it stayed a white card.
-   *
-   * ONE DECLARATION IS NOT ENOUGH FOR IT, WHICH IS UNUSUAL IN THIS FILE. The plugin declares the token on
-   * `body` — exactly where this block lives — and although the scoper gives this declaration the higher
-   * specificity, `glass.css` repeats it on the plugin's own subtree so that a future version which moves the
-   * declaration onto a container cannot silently win again. Both sites carry the same value on purpose.
-   *
-   * THE STANDARD TIER, NOT THE STRONG ONE, and that was measured rather than argued: with the strong tier the
-   * page was reported as "still white" while the override was in fact winning, because 62% white over a light,
-   * already-blurred backdrop is white. The standard tier is the material the conversation panels use.
-   */
-  --cm-opaque-base: var(--lg-glass-panel-inner);
+  /* The cost meter is NOT rebound here, and it cannot be: that plugin forces every ground it paints to
+     alpha 1 with relative-colour syntax, so a translucent token is turned opaque inside its own rules.
+     The account is in glass.css beside the composer rules and in docs/known-issues.md section 5. */
 
   --dsw-alias-bg-module-platform: rgb(248 249 255 / 46%);
   --dsw-alias-bg-skeleton: rgb(15 23 42 / 6%);

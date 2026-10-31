@@ -1027,22 +1027,24 @@ body .cm-root {
 }
 
 /*
- * AND THE COST METER'S OPAQUE BASE IS REBOUND ON ITS OWN ELEMENTS, not inherited from the body.
+ * AND THE COST METER IS DELIBERATELY OUT OF REACH — there is deliberately NO RULE HERE, and this comment is
+ * the reason it must stay that way.
  *
- * A body-level declaration was the first attempt and it appeared to do nothing. The plugin declares
- * `--cm-opaque-base` on `body` as well, exactly where this sheet does, so the override WAS winning: with the
- * strong tier the page still read as white because 62% white over a light, already-blurred backdrop is white.
- * The value below is therefore the STANDARD tier — the same material the conversation panels use.
+ * Three rounds were spent trying: `--cm-opaque-base` was found, rebound on the body and then on the plugin's
+ * own subtree, at two tiers, with the material version moving each time. Nothing changed the page, and the
+ * page was right not to change. Decoding the plugin's compressed stylesheet — a vocabulary plus rule
+ * templates, which is why grep only ever showed the token and never the rule — produced the actual declaration:
  *
- * THE PREFIX IS THE PLUGIN'S, not a guess from its markup: its stylesheet is assembled from a vocabulary
- * whose class fragments all begin `.cm-`. `[class^='cm-'], [class*=' cm-']` therefore names the plugin's own
- * subtree and nothing else — and the rule is written UNSCOPED, because the scoper wraps every rule in this
- * file with the project's marker. Writing that marker by hand here is the one thing this file must not do:
- * it would be wrapped twice and never match. The suite asserts it, and it caught exactly that twice.
+ *     rgb(from var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base, #fff)) r g b / 1)
+ *
+ * The `/ 1` is the whole answer: it takes this skin's translucent token and forces alpha to 1. The opaque
+ * pane is not an oversight in that plugin, it is one line of relative-colour syntax asking for an opaque
+ * ground under a table of figures. `--cm-opaque-base` exists in the package and is used exactly once, for a
+ * gauge, so rebinding it could never have touched a panel.
+ *
+ * Overriding those rules would mean out-specifying another plugin's design, one selector at a time, and
+ * re-doing it every time that plugin ships. The recorded conclusion is in docs/known-issues.md section 5.
  */
-:is([class^='cm-'], [class*=' cm-']) {
-  --cm-opaque-base: var(--lg-glass-panel-inner);
-}
 /*
  * The composer's stats dock, by product decision: the token counts and the context ring under the
  * input should not be on screen.
